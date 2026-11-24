@@ -387,7 +387,8 @@
     "google_live": {
       "sources": [
         "https://aistudio.google.com/docs/live-api/capabilities",
-        "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-8-live"
+        "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-8-live",
+        "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/2-5-flash-live-api"
       ],
       "defaults": {
         "llm_model": "gemini-3.8-live",
@@ -429,8 +430,11 @@
           },
           {
             "id": "gemini-live-2.5-flash-native-audio",
-            "label": "gemini-live-2.5-flash-native-audio",
-            "api": "vertex"
+            "label": "gemini-live-2.5-flash-native-audio (deprecated; use gemini-3.8-live)",
+            "api": "vertex",
+            "status": "deprecated",
+            "shutdown_date": "2026-12-13",
+            "replacement": "gemini-3.8-live"
           },
           {
             "id": "gemini-live-2.5-flash-preview-native-audio-09-2025",

@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { MODULAR_SUBTYPES } from '../../../config/modularProviderSubtypes';
 import ModularSubtypeForm from './ModularSubtypeForm';
@@ -136,12 +137,33 @@ describe('model-aware speech options', () => {
         expect(onChange).not.toHaveBeenCalled();
     });
 
-    it('stores multilingual Flux hints as an array', () => {
+    it('keeps typed separators until committing multilingual Flux hints', async () => {
         const flux = MODULAR_SUBTYPES.stt.find(subtype => subtype.id === 'deepgram_flux')!;
         const onChange = vi.fn();
-        render(<ModularSubtypeForm subtype={flux} config={{ language_hints: ['en', 'es'] }} onChange={onChange} />);
-        fireEvent.change(screen.getByRole('textbox', { name: 'Language Hints' }), { target: { value: 'en, fr, ' } });
+        const Form = () => {
+            const [config, setConfig] = useState({ language_hints: [] as string[] });
+            return <ModularSubtypeForm subtype={flux} config={config} onChange={(key, value) => {
+                onChange(key, value);
+                setConfig(previous => ({ ...previous, [key]: value }));
+            }} />;
+        };
+        render(<Form />);
+        const user = userEvent.setup();
+        const hints = screen.getByRole('textbox', { name: 'Language Hints' });
+        await user.type(hints, 'en, fr');
+        expect(hints).toHaveValue('en, fr');
+        expect(onChange).not.toHaveBeenCalled();
+        await user.tab();
         expect(onChange).toHaveBeenCalledWith('language_hints', ['en', 'fr']);
+    });
+
+    it('clears Flux-only expressivity on an explicit switch to Aura', () => {
+        const deepgram = MODULAR_SUBTYPES.tts.find(subtype => subtype.id === 'deepgram')!;
+        const onChange = vi.fn();
+        render(<ModularSubtypeForm subtype={deepgram} config={{ tts_version: 'v2', tts_model: 'flux-kit-en', tts_expressivity: 0 }} onChange={onChange} />);
+        expect(onChange).not.toHaveBeenCalled();
+        fireEvent.change(screen.getByLabelText('TTS API Version'), { target: { value: 'v1' } });
+        expect(onChange).toHaveBeenCalledWith('tts_version', 'v1', { tts_expressivity: null });
     });
 });
 

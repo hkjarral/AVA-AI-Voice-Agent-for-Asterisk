@@ -194,6 +194,14 @@ describe('Deepgram Voice Agent supported language surface', () => {
 });
 
 describe('Deepgram opt-in Flux TTS surface', () => {
+    it('clears Flux-only expressivity when explicitly selecting Aura without rewriting the saved voice', () => {
+        const onChange = vi.fn();
+        const config = { tts_version: 'v2', tts_model: 'flux-kit-en', tts_expressivity: 1 };
+        render(<DeepgramProviderForm config={config} onChange={onChange} />);
+        expect(onChange).not.toHaveBeenCalled();
+        fireEvent.change(screen.getByLabelText('TTS API Version'), { target: { value: 'v1' } });
+        expect(onChange).toHaveBeenCalledWith({ ...config, tts_version: 'v1', tts_expressivity: null });
+    });
     it('offers Flux languages and voices when explicitly selecting v2', () => {
         const onChange = vi.fn();
         render(<DeepgramProviderForm config={{ tts_version: 'v2', tts_model: 'flux-bruno-pt', agent_language: 'pt', model: 'nova-3' }} onChange={onChange} />);

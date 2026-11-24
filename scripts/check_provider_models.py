@@ -40,6 +40,14 @@ RUNTIME_BINDINGS = {
     "AzureTTSProviderConfig": "azure",
     "LocalProviderConfig": "local",
 }
+# Dedicated classes own only their capability's defaults. Other classes own
+# every default of their provider; missing fields must never be skipped.
+RUNTIME_OWNED_FIELDS = {
+    "GroqSTTProviderConfig": {"stt_model"},
+    "GroqTTSProviderConfig": {"tts_model", "voice"},
+    "AzureSTTProviderConfig": {"api_version"},
+    "AzureTTSProviderConfig": {"voice_name"},
+}
 SAMPLE_BINDINGS = {
     "openai_realtime": ("openai_realtime", {"model", "voice", "input_transcription_model"}),
     "openai_llm": ("openai", {"chat_model", "reasoning_effort"}),
@@ -150,6 +158,26 @@ def check_catalog(data: Any) -> list[str]:
                 failures.append(f"{provider_id}.{field}: default {value!r} is absent from the catalog")
             if model_entries.get(value, {}).get("status") in {"retired", "deprecated", "legacy"}:
                 failures.append(f"{provider_id}.{field}: new-provider default {value!r} is not active")
+            roles = {
+                "stt_model": ("stt", "flux_stt"), "input_transcription_model": ("stt",),
+                "tts_model": ("tts", "flux_tts"), "model_id": ("tts",), "speech_model": ("tts",),
+                "chat_model": ("llm",), "llm_model": ("llm", "live"), "think_model": ("llm",),
+                "stt_backend": ("stt_backends",), "tts_backend": ("tts_backends",),
+            }.get(field)
+            if field == "model":
+                roles = {
+                    "openai_realtime": ("realtime",), "grok": ("realtime",),
+                    "deepgram": ("stt", "flux_stt"), "fishaudio": ("tts",),
+                    "ollama": ("llm",),
+                }.get(provider_id)
+            if roles:
+                valid_ids = {
+                    entry["id"] for kind in ("models", "voices") for role in roles
+                    for entry in provider.get(kind, {}).get(role, [])
+                    if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+                }
+                if value not in valid_ids:
+                    failures.append(f"{provider_id}.{field}: default {value!r} is absent from its role catalog {roles!r}")
         voice_models = provider.get("voice_models", {})
         if not isinstance(voice_models, dict):
             failures.append(f"{provider_id}.voice_models: expected an object")
@@ -167,6 +195,8 @@ def check_catalog(data: Any) -> list[str]:
                 failures.append(f"{provider_id}.voice_models.{model}: unknown voices {sorted(unknown)!r}")
         default_model = defaults.get("tts_model") or defaults.get("model")
         default_voice = defaults.get("voice")
+        if defaults.get("tts_model") and default_voice is not None and provider.get("models", {}).get("tts") and provider.get("voices", {}).get("tts") and default_model not in voice_models:
+            failures.append(f"{provider_id}: default TTS model {default_model!r} requires a voice_models compatibility entry")
         if default_model in voice_models and default_voice is not None and default_voice not in voice_models[default_model]:
             failures.append(f"{provider_id}: default voice {default_voice!r} is incompatible with {default_model!r}")
     return failures
@@ -199,6 +229,12 @@ def check_runtime(root: Path, data: dict[str, Any]) -> list[str]:
             failures.append(f"runtime binding: missing config class {name}")
             continue
         fields = {node.target.id: node.value for node in cls.body if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)}
+        owned = RUNTIME_OWNED_FIELDS.get(name, set(data["providers"][provider]["defaults"]))
+        for field in owned:
+            if field not in fields:
+                failures.append(f"{name}: catalog default {field!r} has no runtime field")
+            if field not in data["providers"][provider]["defaults"]:
+                failures.append(f"{name}: owned default {field!r} is absent from the catalog")
         for field, expected in data["providers"][provider]["defaults"].items():
             if field not in fields:
                 # A catalog provider may serve two dedicated capability classes.
@@ -278,6 +314,9 @@ def check_local_catalog(root: Path) -> list[str]:
     )
     if set(language_codes) != set(catalog.KOKORO_LANGUAGE_CODES):
         failures.append("Kokoro server language codes drift from the voice catalog")
+    server_constants = _load_module(root / "local_ai_server/constants.py", "provider_check_local_constants")
+    if server_constants.KOKORO_STOCK_VOICES != set(voices):
+        failures.append("Kokoro server stock voices drift from the downloadable voice catalog")
     for group in (catalog.VOSK_STT_MODELS, catalog.PIPER_TTS_MODELS):
         identifiers = [entry["id"] for entry in group]
         if len(identifiers) != len(set(identifiers)):

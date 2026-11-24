@@ -1111,6 +1111,9 @@ class PipelineOrchestrator:
             # Fish performs its own per-instance hydration (including legacy
             # aliases and managed secrets). Restore only this entry's result.
             fish_config = self._fishaudio_component_configs.get(str(name))
+            if isinstance(raw, (LocalProviderConfig, OpenAIProviderConfig)):
+                typed_kind = "local" if isinstance(raw, LocalProviderConfig) else "openai"
+                raw = {**raw.model_dump(), "type": typed_kind}
             prefix = _extract_provider(str(name)) or ""
             kind = (
                 str(raw.get("type") or prefix).strip().lower()

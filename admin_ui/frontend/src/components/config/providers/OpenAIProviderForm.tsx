@@ -191,7 +191,8 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
                                 value={config.chat_model || providerDefault('openai', 'chat_model')}
-                                onChange={(e) => handleChange('chat_model', e.target.value)}
+                                onChange={(e) => onChange({ ...config, chat_model: e.target.value,
+                                    ...(e.target.value.startsWith('gpt-6.2-') && config.reasoning_effort === 'none' ? { reasoning_effort: null } : {}) })}
                             >
                                 {config.chat_model && !modelIds('openai', 'llm').includes(config.chat_model) && <option value={config.chat_model}>{config.chat_model} (configured)</option>}
                                 {modelOptions('openai', 'llm').map(model => <option key={model.value} value={model.value}>{model.label}</option>)}

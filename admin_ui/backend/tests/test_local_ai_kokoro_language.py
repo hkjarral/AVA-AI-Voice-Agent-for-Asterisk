@@ -61,8 +61,9 @@ def test_failed_switch_restores_previous_language_and_absence(tmp_path):
     assert "KOKORO_LANG" not in env_file.read_text()
 
 
-def test_custom_voice_does_not_overwrite_existing_language():
-    request = local_ai.SwitchModelRequest(model_type="tts", backend="kokoro", voice="custom-voice-id")
+@pytest.mark.parametrize("voice", ["custom-voice-id", "jf_custom", "af_unknown"])
+def test_custom_voice_does_not_overwrite_existing_language(voice):
+    request = local_ai.SwitchModelRequest(model_type="tts", backend="kokoro", voice=voice)
     env, yaml = local_ai._build_local_ai_env_and_yaml_updates(request)
     assert "KOKORO_LANG" not in env
     assert "kokoro_lang" not in yaml

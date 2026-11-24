@@ -30,6 +30,13 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('Kokoro environment settings', () => {
+  it.each([[undefined, 'j'], ['p', 'p']])('displays the effective language for a stock voice with configured language %s', async (language, expected) => {
+    savedEnv = { LOCAL_TTS_BACKEND: 'kokoro', KOKORO_MODE: 'local', KOKORO_VOICE: 'jf_alpha', ...(language ? { KOKORO_LANG: language } : {}) };
+    render(<MemoryRouter><EnvPage /></MemoryRouter>);
+    await screen.findByRole('option', { name: 'jf_alpha (ja-JP)' });
+    await waitFor(() => expect(screen.getByLabelText('Kokoro Language')).toHaveValue(expected));
+    expect(axios.post).not.toHaveBeenCalled();
+  });
   it('saves and reopens the matching voice and language as one selection', async () => {
     const view = render(<MemoryRouter><EnvPage /></MemoryRouter>);
     const japanese = await screen.findByRole('option', { name: 'jf_alpha (ja-JP)' });

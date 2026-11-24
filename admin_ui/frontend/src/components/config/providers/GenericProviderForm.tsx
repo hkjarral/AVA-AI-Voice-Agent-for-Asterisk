@@ -217,6 +217,12 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
                 defaults[f.key] = f.default;
             }
         });
+        const previousSubtype = selectedSubtype ?? inferSubtype(config);
+        if (cap === 'stt' && ['deepgram', 'deepgram_flux'].includes(subtype.id)
+            && previousSubtype && ['deepgram', 'deepgram_flux'].includes(previousSubtype.id)
+            && previousSubtype.id !== subtype.id) {
+            defaults.model = subtype.fields.find(field => field.key === 'model')?.default;
+        }
         const managedSubtypeKeys = getManagedSubtypeKeys(subtype);
         const additionalFields = customFields.filter(field => !managedSubtypeKeys.has(field.key));
         setCustomFields(additionalFields);

@@ -75,6 +75,30 @@ def test_runtime_lookup_and_literal_drift(tmp_path, monkeypatch, catalog):
     assert checks.check_runtime(tmp_path, catalog) == ["ExampleConfig.voice: runtime default 'voice-b' != catalog 'voice-a'"]
 
 
+def test_missing_groq_tts_voice_field_fails_even_though_stt_owns_other_defaults(tmp_path):
+    data = json.loads((ROOT / checks.CATALOG_PATH).read_text())
+    (tmp_path / "src").mkdir()
+    source = (ROOT / "src/config.py").read_text()
+    start = source.index("class GroqTTSProviderConfig")
+    end = source.index("class ElevenLabsProviderConfig", start)
+    block = source[start:end]
+    block = "\n".join(line for line in block.splitlines() if not line.strip().startswith("voice: str")) + "\n\n"
+    (tmp_path / "src/config.py").write_text(source[:start] + block + source[end:])
+    assert "GroqTTSProviderConfig: catalog default 'voice' has no runtime field" in checks.check_runtime(tmp_path, data)
+
+
+def test_stt_default_cannot_use_model_from_tts_role(catalog):
+    provider = catalog["providers"]["example"]
+    provider["models"]["stt"] = [{"id": "recognizer", "label": "STT"}]
+    provider["defaults"]["stt_model"] = "speech-current"
+    assert any("role catalog" in failure for failure in checks.check_catalog(catalog))
+
+
+def test_default_static_model_requires_compatibility_mapping(catalog):
+    catalog["providers"]["example"]["voice_models"].clear()
+    assert any("requires a voice_models" in failure for failure in checks.check_catalog(catalog))
+
+
 def test_sample_drift_and_inherited_defaults(tmp_path, monkeypatch, catalog):
     monkeypatch.setattr(checks, "SAMPLE_BINDINGS", {"example_tts": ("example", {"tts_model", "voice"})})
     path = tmp_path / "config/ai-agent.yaml"

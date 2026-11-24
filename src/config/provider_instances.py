@@ -128,6 +128,8 @@ def credential_provider_kind(provider_key: str, provider_cfg: Any) -> Optional[s
     role = next((role for role in MODULAR_ROLE_KINDS if key.endswith(f"_{role}")), None)
     modular_kinds = MODULAR_ROLE_KINDS[role] if role else MODULAR_LLM_KINDS | MODULAR_TTS_KINDS
     raw_type = str(provider_cfg.get("type") or "").strip().lower()
+    if raw_type == "deepgram_flux":
+        raw_type = "deepgram"
     if raw_type:
         return raw_type if raw_type in modular_kinds else None
     if role:

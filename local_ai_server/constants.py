@@ -43,12 +43,19 @@ SENSE_VOICE_LANGUAGES = ("auto", "zh", "en", "ja", "ko", "yue")
 # Kokoro's language code is the first character of its built-in voice ID.
 # Mirrors the publisher-verified catalog; checked by provider catalog CI.
 KOKORO_LANGUAGES = ("a", "b", "e", "f", "h", "i", "j", "p", "z")
+KOKORO_STOCK_VOICES = frozenset("""
+af_alloy af_aoede af_bella af_heart af_jessica af_kore af_nicole af_nova af_river af_sarah af_sky
+am_adam am_echo am_eric am_fenrir am_liam am_michael am_onyx am_puck am_santa
+bf_alice bf_emma bf_isabella bf_lily bm_daniel bm_fable bm_george bm_lewis
+ef_dora em_alex em_santa ff_siwis hf_alpha hf_beta hm_omega hm_psi if_sara im_nicola
+jf_alpha jf_gongitsune jf_nezumi jf_tebukuro jm_kumo pf_dora pm_alex pm_santa
+zf_xiaobei zf_xiaoni zf_xiaoxiao zf_xiaoyi zm_yunjian zm_yunxi zm_yunxia zm_yunyang
+""".split())
 
 
 def kokoro_voice_language(voice: str) -> str | None:
     """Infer the phonemizer for a single stock voice; leave custom values alone."""
-    import re
     value = str(voice or "").strip()
-    if re.fullmatch(r"[abefhijpz][fm]_[a-z]+", value):
+    if value in KOKORO_STOCK_VOICES:
         return value[0]
     return None

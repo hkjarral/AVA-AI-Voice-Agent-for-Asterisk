@@ -1732,11 +1732,19 @@ class GoogleLiveProvider(AIProviderInterface):
         finally:
             await self._drain_tool_calls(reason="websocket_closed")
 
+    @staticmethod
+    def _interaction_status(data: Dict[str, Any]) -> Optional[str]:
+        content = data.get("serverContent") or {}
+        return (
+            content.get("interactionStatus") or content.get("interaction_status")
+            or data.get("interactionStatus") or data.get("interaction_status")
+        )
+
     async def _handle_server_message(self, data: Dict[str, Any]) -> None:
         """Handle incoming message from Gemini Live API."""
         message_type = None
         thinking = self._normalize_model_name(self.config.llm_model) == self.GEMINI_3_8_THINKING_MODEL
-        interaction_status = data.get("interactionStatus") or data.get("interaction_status")
+        interaction_status = self._interaction_status(data)
         if thinking and interaction_status == "IDLE" and "serverContent" not in data:
             # Keep any tool/control event intact; completion is processed after it.
             if not any(key in data for key in ("toolCall", "toolCallCancellation", "setupComplete", "goAway")):
@@ -2030,7 +2038,7 @@ class GoogleLiveProvider(AIProviderInterface):
         if self._normalize_model_name(self.config.llm_model) == self.GEMINI_3_8_THINKING_MODEL:
             # Intermediate filler utterances also emit turnComplete. Only IDLE
             # closes the interaction / arms terminal cleanup / emits TTSEnd.
-            turn_complete = (data.get("interactionStatus") or data.get("interaction_status")) == "IDLE"
+            turn_complete = self._interaction_status(data) == "IDLE"
 
         # Save final transcriptions when turn completes (per API recommendation)
         if turn_complete and not self.long_audio_playback_enabled:
@@ -2441,7 +2449,23 @@ class GoogleLiveProvider(AIProviderInterface):
         response_id = self._audio_response_id
         generation_already_complete = False
         if self.long_audio_playback_enabled:
-            if (
+            thinking = self._normalize_model_name(self.config.llm_model) == self.GEMINI_3_8_THINKING_MODEL
+            if thinking:
+                # IDLE closes the whole interaction. Earlier filler responses
+                # must finish their own media without acting on the current turn.
+                queued = self._generated_audio_turns
+                while queued and queued[0]["response_id"] != response_id:
+                    completed = queued.pop(0)
+                    self._last_audio_turn_completed_id = completed["response_id"]
+                    if self.on_event and not completed.get("interrupted", False):
+                        await self.on_event({
+                            "type": "AgentAudioDone", "call_id": self._call_id,
+                            "streaming_done": True, "audio_response_id": completed["response_id"],
+                            "media_already_complete": True,
+                        })
+                    if self._closing or self._closed or self._audio_response_id != response_id:
+                        return
+            elif (
                 not self._generated_audio_turns and self._in_audio_burst
                 and self._last_audio_turn_completed_id > 0
                 and self._audio_response_id > self._last_audio_turn_completed_id

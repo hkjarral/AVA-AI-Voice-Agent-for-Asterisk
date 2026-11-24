@@ -51,7 +51,14 @@ Speech model IDs continue to use the configured Speech endpoint. An explicit
 a tools-disabled, bounded session per text fragment; cancellation/hangup closes
 its sockets. It converts native PCM to the negotiated telephone output format.
 `tts_realtime_timeout_sec` bounds each fragment (30 seconds by default) without
-changing the existing Speech/LLM/STT timeout. `tts_instructions` optionally controls delivery; the text is requested verbatim.
+changing the existing Speech/LLM/STT timeout. Readiness requires the selected
+model to acknowledge a session using the TTS role's configured credential.
+`tts_instructions` optionally controls delivery. The text is requested verbatim.
+
+OpenAI REST STT buffers caller speech through a pause before uploading it.
+An explicit STT pipeline `chunk_ms` retains fixed-window behavior unless
+`utterance_buffering: true` is also set. Streaming adapters keep their existing
+end-of-turn behavior.
 
 Chat-completion request parameters also depend on the model. Modern OpenAI
 models use `max_completion_tokens`; unsupported temperature settings are omitted.

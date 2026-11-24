@@ -153,6 +153,8 @@ def _decode_audio_payload(raw_bytes: bytes) -> bytes:
 class OpenAISTTAdapter(STTComponent):
     """OpenAI Speech-to-Text adapter using /v1/audio/transcriptions (Whisper-style REST)."""
 
+    requires_utterance_buffer = True
+
     def __init__(
         self,
         component_key: str,
@@ -797,6 +799,12 @@ class OpenAILLMAdapter(LLMComponent):
 
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         runtime_options = runtime_options or {}
+        token_fields = ("max_completion_tokens", "max_tokens")
+        token_options = next(
+            (options for options in (runtime_options, self._pipeline_defaults)
+             if any(field in options for field in token_fields)),
+            {field: getattr(self._provider_defaults, field, None) for field in token_fields},
+        )
         merged = {
             "api_key": runtime_options.get("api_key", self._pipeline_defaults.get("api_key", self._provider_defaults.api_key)),
             "organization": runtime_options.get("organization", self._pipeline_defaults.get("organization", self._provider_defaults.organization)),
@@ -834,8 +842,8 @@ class OpenAILLMAdapter(LLMComponent):
             "system_prompt": runtime_options.get("system_prompt", self._pipeline_defaults.get("system_prompt")),
             "instructions": runtime_options.get("instructions", self._pipeline_defaults.get("instructions")),
             "temperature": runtime_options.get("temperature", self._pipeline_defaults.get("temperature", getattr(self._provider_defaults, "temperature", 0.7))),
-            "max_tokens": runtime_options.get("max_tokens", self._pipeline_defaults.get("max_tokens", getattr(self._provider_defaults, "max_tokens", None))),
-            "max_completion_tokens": runtime_options.get("max_completion_tokens", self._pipeline_defaults.get("max_completion_tokens", getattr(self._provider_defaults, "max_completion_tokens", None))),
+            "max_tokens": token_options.get("max_tokens"),
+            "max_completion_tokens": token_options.get("max_completion_tokens"),
             "reasoning_effort": runtime_options.get("reasoning_effort", self._pipeline_defaults.get("reasoning_effort", getattr(self._provider_defaults, "reasoning_effort", None))),
             "timeout_sec": float(runtime_options.get("timeout_sec", self._pipeline_defaults.get("timeout_sec", self._default_timeout))),
             "use_realtime": runtime_options.get("use_realtime", self._pipeline_defaults.get("use_realtime", False)),
@@ -1005,13 +1013,23 @@ class OpenAITTSAdapter(TTSComponent):
         # The base validator expects URLs/credentials in the options dict. For OpenAI modular providers
         # those values typically live in provider defaults, so we validate using composed options.
         merged = self._compose_options(options or {})
-        if merged["tts_transport"] == "realtime" or (merged["tts_transport"] == "auto" and str(merged["tts_model"]).startswith("gpt-realtime")):
-            parsed = urlparse(merged["tts_realtime_base_url"])
-            from urllib.parse import parse_qsl, urlencode, urlunparse
-            query = dict(parse_qsl(parsed.query))
-            query["model"] = merged["tts_model"]
-            merged["base_url"] = urlunparse(parsed._replace(query=urlencode(query)))
-        return await super().validate_connectivity(merged)
+        model = str(merged["tts_model"])
+        transport = merged["tts_transport"]
+        if transport != "realtime" and not (transport == "auto" and model.startswith("gpt-realtime")):
+            return await super().validate_connectivity(merged)
+        if not merged["api_key"]:
+            return {"healthy": False, "error": "No OpenAI Realtime TTS credential configured"}
+        options = {**merged, "timeout_sec": min(merged["tts_realtime_timeout_sec"], 15.0)}
+        try:
+            await self._realtime_tts.validate_session(options)
+        except (TimeoutError, ValueError, RuntimeError, OSError, websockets.exceptions.WebSocketException) as exc:
+            error = (
+                "OpenAI Realtime TTS model unavailable for the configured credential"
+                if "model_not_found" in str(exc)
+                else f"OpenAI Realtime TTS setup failed ({type(exc).__name__})"
+            )
+            return {"healthy": False, "error": error, "details": {"model": model}}
+        return {"healthy": True, "details": {"model": model, "session_acknowledged": True}}
 
     async def synthesize(
         self,

@@ -399,7 +399,8 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                     </div>
                     <div className="space-y-2">
                         <label htmlFor="deepgram-tts-version" className="text-sm font-medium">TTS API Version</label>
-                        <select id="deepgram-tts-version" className="w-full p-2 rounded border border-input bg-background" value={selectedVersion} onChange={event => handleChange('tts_version', event.target.value)}>
+                        <select id="deepgram-tts-version" className="w-full p-2 rounded border border-input bg-background" value={selectedVersion} onChange={event => onChange({ ...config, tts_version: event.target.value,
+                            ...(event.target.value === 'v1' && config.tts_expressivity != null ? { tts_expressivity: null } : {}) })}>
                             <option value="v1">Aura (v1)</option><option value="v2">Flux (v2, opt-in)</option>
                         </select>
                         <p className="text-xs text-muted-foreground">Select a matching voice and language after changing versions. Flux supports raw audio and requires a real-call acceptance test. Early Access languages need numbers and dates written out; non-English voices are unavailable on the Australia endpoint.</p>

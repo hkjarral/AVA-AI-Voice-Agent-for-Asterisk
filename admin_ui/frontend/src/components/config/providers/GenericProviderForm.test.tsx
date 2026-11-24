@@ -81,6 +81,17 @@ const FormHarness = ({ initial, isNew = true }: { initial: Record<string, unknow
 const draft = () => JSON.parse(screen.getByTestId('draft').textContent || '{}');
 
 describe('GenericProviderForm initialization and transitions', () => {
+    it.each([
+        ['nova-3', 'deepgram', 'deepgram_flux', 'flux-general-en'],
+        ['flux-general-multi', 'deepgram_flux', 'deepgram', 'nova-3'],
+    ])('switches the actual recognition model from %s with its Deepgram subtype', (model, initialSubtype, nextSubtype, expectedModel) => {
+        render(<FormHarness initial={{ name: 'custom_stt', type: 'deepgram', capabilities: ['stt'], model }} isNew={false} />);
+        expect(screen.getByLabelText('STT Provider Type')).toHaveValue(initialSubtype);
+        expect(draft().model).toBe(model);
+        fireEvent.change(screen.getByLabelText('STT Provider Type'), { target: { value: nextSubtype } });
+        expect(screen.getByLabelText('STT Provider Type')).toHaveValue(nextSubtype);
+        expect(draft()).toMatchObject({ type: 'deepgram', model: expectedModel });
+    });
     it('allows naming a new preselected provider until its capability is explicitly chosen', () => {
         render(<FormHarness initial={{ name: 'custom_llm', type: 'openai', capabilities: ['llm'] }} />);
         expect(screen.getByLabelText('Provider Name')).toBeEnabled();

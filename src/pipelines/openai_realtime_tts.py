@@ -51,7 +51,13 @@ class RealtimeTTSPool:
             # Closing never masks the original provider/timeout/cancellation error.
             pass
 
-    async def synthesize(self, call_id: str, text: str, options: dict[str, Any]) -> AsyncIterator[bytes]:
+    async def validate_session(self, options: dict[str, Any]) -> None:
+        # A successful WebSocket upgrade does not establish model access. Wait
+        # for the configured audio session to be acknowledged without generating.
+        async for _ in self.synthesize("readiness", None, options):
+            raise RuntimeError("Unexpected audio during OpenAI Realtime TTS setup")
+
+    async def synthesize(self, call_id: str, text: str | None, options: dict[str, Any]) -> AsyncIterator[bytes]:
         if self._stopped:
             raise RuntimeError("OpenAI Realtime TTS adapter is stopped")
         timeout = float(options.get("timeout_sec", 15.0))
@@ -113,6 +119,8 @@ class RealtimeTTSPool:
                 if request.cancelled:
                     raise asyncio.CancelledError
                 raw = await bounded(ws.recv())
+                if request.cancelled:
+                    raise asyncio.CancelledError
                 if isinstance(raw, bytes):
                     raise RuntimeError("OpenAI Realtime TTS returned an unexpected binary event")
                 event = json.loads(raw)
@@ -122,6 +130,8 @@ class RealtimeTTSPool:
                     code = (event.get("error") or {}).get("code") or "provider_error"
                     raise RuntimeError(f"OpenAI Realtime TTS failed ({code})")
                 if kind == "session.updated" and not response_sent:
+                    if text is None:
+                        return
                     await bounded(ws.send(json.dumps({"type": "response.create", "response": {
                         "conversation": "none", "output_modalities": ["audio"],
                         "input": [{"type": "message", "role": "user", "content": [
@@ -164,6 +174,13 @@ class RealtimeTTSPool:
                         if converted:
                             yield converted
                     return
+        except websockets.exceptions.ConnectionClosed as exc:
+            if request.cancelled:
+                raise asyncio.CancelledError from exc
+            close = exc.rcvd
+            if close is not None and close.reason == "invalid_request_error.model_not_found":
+                raise RuntimeError("OpenAI Realtime TTS model_not_found for the configured credential") from exc
+            raise RuntimeError("OpenAI Realtime TTS session closed before completion") from exc
         finally:
             if request.websocket is not None:
                 await self._close(request.websocket)

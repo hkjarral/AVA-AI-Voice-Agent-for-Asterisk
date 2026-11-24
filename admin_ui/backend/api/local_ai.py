@@ -260,12 +260,10 @@ def _normalize_switch_request(request: SwitchModelRequest) -> SwitchModelRequest
     backend = (request.backend or "").strip().lower()
     updater = getattr(request, "model_copy", None) or getattr(request, "copy", None)
     if request.model_type == "tts" and backend == "kokoro" and updater:
-        from api.models_catalog import KOKORO_LANGUAGE_CODES
+        from api.models_catalog import KOKORO_LANGUAGE_CODES, KOKORO_TTS_MODELS
         language = request.kokoro_lang
         if language is None and request.voice:
-            import re
-            if re.fullmatch(r"[abefhijpz][fm]_[a-z]+", request.voice.strip()):
-                language = request.voice.strip()[0]
+            language = KOKORO_TTS_MODELS[0]["voice_lang_codes"].get(request.voice.strip())
         if language is not None:
             language = language.strip().lower()
             if language not in KOKORO_LANGUAGE_CODES:

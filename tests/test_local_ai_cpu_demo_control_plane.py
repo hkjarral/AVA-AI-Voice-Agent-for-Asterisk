@@ -4,6 +4,7 @@ import importlib
 import sys
 from dataclasses import replace
 from pathlib import Path
+import pytest
 
 
 LOCAL_AI_DIR = str(Path(__file__).resolve().parents[1] / "local_ai_server")
@@ -137,9 +138,10 @@ def test_kokoro_language_only_switch_and_invalid_input_are_atomic():
     assert cfg.kokoro_lang == "a"
 
 
-def test_kokoro_custom_voice_does_not_guess_language():
+@pytest.mark.parametrize("voice", ["custom-voice-id", "jf_custom", "af_unknown"])
+def test_kokoro_custom_voice_does_not_guess_language(voice):
     config = _load_module("config")
     cp = _load_module("control_plane")
     cfg = replace(config.LocalAIConfig.from_env(), tts_backend="kokoro", kokoro_lang="p")
-    updated, _ = cp.apply_switch_model_request(cfg, {"kokoro_voice": "custom-voice-id"})
+    updated, _ = cp.apply_switch_model_request(cfg, {"kokoro_voice": voice})
     assert updated.kokoro_lang == "p"

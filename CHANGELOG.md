@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credentials; disabled or invalid role blocks cannot inherit a shared
   full-provider adapter. ElevenLabs output choices match implemented decoders.
 
+### Fixed
+
+- Check OpenAI Realtime TTS model access during pipeline readiness. Buffer
+  caller utterances for OpenAI REST transcription and clean up playback
+  when a pipeline greeting fails before or during audio.
+- Handle Deepgram Flux v2 final turn messages and reasoning-model Think
+  settings. Complete queued Google Extended Thinking audio at interaction
+  IDLE without ending an interaction on an intermediate utterance.
+
 ## [7.7.4] - 2026-11-22
 
 Prepared from main `15cc1e7e` after v7.7.3, covering 19 merged PRs. Includes

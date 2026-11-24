@@ -1618,6 +1618,8 @@ class AppConfig(BaseModel):
                     )
             stt_options = pipeline.options.get("stt")
             if isinstance(stt_options, dict):
+                if "utterance_buffering" in stt_options and type(stt_options["utterance_buffering"]) is not bool:
+                    raise ValueError(f"pipelines.{pipeline_name}.options.stt.utterance_buffering must be true or false")
                 for option_name, minimum, maximum in (
                     ("segment_energy_threshold", 0, 32767),
                     ("segment_silence_ms", 100, 5000),

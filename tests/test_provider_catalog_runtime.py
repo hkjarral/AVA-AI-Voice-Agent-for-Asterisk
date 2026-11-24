@@ -444,7 +444,9 @@ async def test_think_model_preserves_historical_explicit_override():
     provider.websocket = Socket()
     provider._allowed_tools = []
     await provider._configure_agent()
-    assert provider.websocket.sent[0]["agent"]["think"]["provider"]["model"] == "gpt-4o"
+    expected = {"type": "open_ai", "model": "gpt-4o", "temperature": 0.7}
+    assert provider.websocket.sent[0]["agent"]["think"]["provider"] == expected
+    assert provider._last_settings_minimal["agent"]["think"]["provider"] == expected
 
 
 @pytest.mark.asyncio
@@ -455,4 +457,22 @@ async def test_explicit_think_model_wins_over_historical_override():
     provider.websocket = Socket()
     provider._allowed_tools = []
     await provider._configure_agent()
-    assert provider.websocket.sent[0]["agent"]["think"]["provider"]["model"] == "gpt-5.6-luna"
+    expected = {"type": "open_ai", "model": "gpt-5.6-luna"}
+    assert provider.websocket.sent[0]["agent"]["think"]["provider"] == expected
+    assert provider._last_settings_minimal["agent"]["think"]["provider"] == expected
+
+
+@pytest.mark.parametrize("model", ["gpt-5", "gpt-5.4-mini", "gpt-5.6-luna", "gpt-5.6-terra", "o3-mini"])
+def test_deepgram_reasoning_think_models_do_not_receive_legacy_temperature(model):
+    from src.providers.deepgram import build_think_provider_block
+    assert build_think_provider_block(model) == {"type": "open_ai", "model": model}
+
+
+@pytest.mark.asyncio
+async def test_full_flux_tts_rejects_alaw_before_connecting(monkeypatch):
+    connect = AsyncMock()
+    monkeypatch.setattr("src.providers.deepgram.connect_with_recovery", connect)
+    provider = DeepgramProvider(DeepgramProviderConfig(api_key="synthetic", tts_model="flux-haley-en", tts_version="v2", output_encoding="alaw", output_sample_rate=8000), LLMConfig(), None)
+    with pytest.raises(ValueError, match="A-law output is not supported"):
+        await provider.start_session("alaw-rejected", {"tools": []})
+    connect.assert_not_awaited()

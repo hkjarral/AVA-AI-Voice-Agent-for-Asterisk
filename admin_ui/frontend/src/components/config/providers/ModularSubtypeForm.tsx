@@ -13,6 +13,19 @@ interface ModularSubtypeFormProps {
   onChange: (key: string, value: any, related?: Record<string, any>) => void;
 }
 
+const StringListInput = ({ field, value, onCommit }: {
+  field: SubtypeField;
+  value: unknown;
+  onCommit: (values: string[]) => void;
+}) => {
+  const serialized = Array.isArray(value) ? value.join(', ') : String(value ?? '');
+  const [draft, setDraft] = React.useState(serialized);
+  React.useEffect(() => { setDraft(serialized); }, [serialized]);
+  return <FormInput label={field.label} value={draft} onChange={event => setDraft(event.target.value)}
+    onBlur={() => onCommit(draft.split(',').map(item => item.trim()).filter(Boolean))}
+    onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} tooltip={field.tooltip} />;
+};
+
 /**
  * Renders form fields dynamically from a ProviderSubtype definition.
  * Each field uses the correct YAML key name so the saved config
@@ -23,6 +36,10 @@ const ModularSubtypeForm: React.FC<ModularSubtypeFormProps> = ({ subtype, config
   const model = config.llm_model ?? subtype.fields.find(field => field.key === 'llm_model')?.default;
   const automaticTemperature = subtype.id === 'google' && googleLLMManagesTemperature(String(model ?? ''));
   const handleFieldChange = (field: SubtypeField, value: any) => {
+    if (field.key === 'tts_version' && subtype.id === 'deepgram' && value === 'v1' && config.tts_expressivity != null) {
+      onChange(field.key, value, { tts_expressivity: null });
+      return;
+    }
     if (field.key === 'chat_model' && subtype.id === 'openai' && String(value).startsWith('gpt-6.2-') && config.reasoning_effort === 'none') {
       onChange(field.key, value, { reasoning_effort: null });
       return;
@@ -46,8 +63,7 @@ const ModularSubtypeForm: React.FC<ModularSubtypeFormProps> = ({ subtype, config
       ? providerVoices('deepgram', config.tts_version === 'v2' ? 'flux_tts' : 'tts').map(voice => voice.id) : [];
     const suggestions = voiceSuggestions.length ? voiceSuggestions : deepgramVoices.length ? deepgramVoices : field.suggestions;
     if (field.type === 'string-list') {
-      return <div key={field.key}><FormInput label={field.label} value={Array.isArray(currentValue) ? currentValue.join(', ') : String(currentValue)}
-        onChange={event => onChange(field.key, event.target.value.split(',').map(value => value.trim()).filter(Boolean))} tooltip={field.tooltip} /></div>;
+      return <div key={field.key}><StringListInput field={field} value={currentValue} onCommit={values => onChange(field.key, values)} /></div>;
     }
     if (field.key === 'similarity_boost' && subtype.id === 'elevenlabs' && config.model_id === 'eleven_v3') return null;
     if (field.key === 'tts_expressivity' && config.tts_version !== 'v2') return null;

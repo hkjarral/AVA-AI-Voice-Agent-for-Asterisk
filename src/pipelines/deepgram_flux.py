@@ -73,6 +73,7 @@ class _FluxSessionState:
         self.turn_complete_event = asyncio.Event()
         self.receiver_task: Optional[asyncio.Task] = None
         self.active = True
+        self.last_completed_turn_index: Optional[int] = None
 
 
 class DeepgramFluxSTTAdapter(STTComponent):
@@ -146,6 +147,8 @@ class DeepgramFluxSTTAdapter(STTComponent):
         api_key = merged.get("api_key")
         if not api_key:
             raise RuntimeError("Deepgram Flux STT requires an API key")
+        if call_id in self._sessions:
+            await self.close_call(call_id)
         
         # Build Flux-specific query parameters
         query_params = {
@@ -383,6 +386,10 @@ class DeepgramFluxSTTAdapter(STTComponent):
         
         while True:
             try:
+                # A full queue may have prevented insertion of the close
+                # sentinel. Drain accepted transcripts, then terminate.
+                if not session.active and session.transcript_queue.empty():
+                    break
                 transcript = await session.transcript_queue.get()
                 if transcript is None:
                     break
@@ -394,11 +401,10 @@ class DeepgramFluxSTTAdapter(STTComponent):
         """
         Async receiver loop for Flux results.
         
-        Handles:
-        - Results: Interim and final transcripts
-        - EndOfTurn: Speaker finished, trigger LLM
-        - EagerEndOfTurn: Early signal for faster response
-        - TurnResumed: Cancel speculative LLM processing
+        Flux v2 emits TurnInfo envelopes with event/transcript fields. Only
+        EndOfTurn commits a transcript; interim/eager/resumed events must not
+        trigger an irreversible LLM/tool response. Legacy Results remain
+        accepted for compatible gateways.
         """
         try:
             async for message in session.websocket:
@@ -409,10 +415,28 @@ class DeepgramFluxSTTAdapter(STTComponent):
                     data = json.loads(message) if isinstance(message, str) else message
                 except (json.JSONDecodeError, TypeError):
                     continue
+                if not isinstance(data, dict):
+                    continue
                 
                 msg_type = data.get("type")
                 
-                if msg_type == "Results":
+                if msg_type == "TurnInfo":
+                    event = data.get("event")
+                    if event in {"StartOfTurn", "TurnResumed"}:
+                        session.turn_complete_event.clear()
+                    elif event == "EndOfTurn":
+                        turn_index = data.get("turn_index")
+                        indexed = isinstance(turn_index, int) and not isinstance(turn_index, bool)
+                        if indexed and session.last_completed_turn_index is not None and turn_index <= session.last_completed_turn_index:
+                            continue
+                        if indexed:
+                            session.last_completed_turn_index = turn_index
+                        session.turn_complete_event.set()
+                        transcript = data.get("transcript")
+                        if isinstance(transcript, str) and transcript.strip():
+                            self._queue_transcript(session, transcript.strip())
+                        logger.info("Deepgram Flux end of turn detected", call_id=call_id, turn_index=turn_index)
+                elif msg_type == "Results":
                     # Extract transcript from Results message
                     transcript = self._extract_transcript(data)
                     if transcript:
@@ -427,15 +451,7 @@ class DeepgramFluxSTTAdapter(STTComponent):
                         
                         # Only queue final transcripts
                         if is_final:
-                            try:
-                                session.transcript_queue.put_nowait(transcript)
-                            except asyncio.QueueFull:
-                                # Drop oldest transcript if queue full
-                                try:
-                                    session.transcript_queue.get_nowait()
-                                except asyncio.QueueEmpty:
-                                    pass
-                                await session.transcript_queue.put(transcript)
+                            self._queue_transcript(session, transcript)
                 
                 elif msg_type == "EndOfTurn":
                     # Speaker finished - signal turn complete
@@ -493,6 +509,15 @@ class DeepgramFluxSTTAdapter(STTComponent):
                 session.transcript_queue.put_nowait(None)
             except asyncio.QueueFull:
                 pass
+
+    @staticmethod
+    def _queue_transcript(session: _FluxSessionState, transcript: str) -> None:
+        try:
+            session.transcript_queue.put_nowait(transcript)
+        except asyncio.QueueFull:
+            # Preserve the bounded queue's historical newest-turn policy.
+            session.transcript_queue.get_nowait()
+            session.transcript_queue.put_nowait(transcript)
     
     def _extract_transcript(self, message: Dict[str, Any]) -> Optional[str]:
         """Extract transcript text from Flux Results message."""

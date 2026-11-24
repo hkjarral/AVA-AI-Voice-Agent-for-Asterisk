@@ -1888,7 +1888,7 @@ const EnvPage = () => {
                                 />
                                 <FormSelect
                                     label="Kokoro Language"
-                                    value={env['KOKORO_LANG'] || 'a'}
+                                    value={env['KOKORO_LANG'] || kokoroLanguageForVoice(env['KOKORO_VOICE'] || 'af_heart') || 'a'}
                                     onChange={(e) => updateEnv('KOKORO_LANG', e.target.value)}
                                     options={env['KOKORO_LANG'] && !KOKORO_LANGUAGE_OPTIONS.some(option => option.value === env['KOKORO_LANG'])
                                         ? [{ value: env['KOKORO_LANG'], label: `${env['KOKORO_LANG']} (current)` }, ...KOKORO_LANGUAGE_OPTIONS]
