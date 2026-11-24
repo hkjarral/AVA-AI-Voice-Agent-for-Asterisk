@@ -12,6 +12,8 @@ is not telephone-call acceptance.
 - Admin backend: **1,228 passed**.
 - Admin frontend under Node 22: **873 passed across 100 files**; build and
   typecheck passed, lint had zero errors (802 warnings, below the 817 baseline).
+- CI URL probe regression suite: **32 passed**. Credential-free network checks:
+  **127/127 Admin UI URLs** and **419/419 model artifact URLs** reachable.
 - Generated catalog freshness, deterministic model/voice/default/sample drift
   checker, negative drift cases, source compilation and committed-secrets guard
   passed. Optional upstream local-catalog verification passed for Piper, Vosk

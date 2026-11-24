@@ -73,6 +73,10 @@ def test_classification_and_stable_api_probes() -> None:
     assert probe_url_for("https://generativelanguage.googleapis.com/v1") == (
         "https://generativelanguage.googleapis.com/v1/models"
     )
+    assert classify_url("https://speech.googleapis.com/v1") == "api"
+    assert probe_url_for("https://speech.googleapis.com/v1/#config") == (
+        "https://speech.googleapis.com/v1/speech:recognize"
+    )
     assert probe_url_for("https://docs.example.org/page#section") == (
         "https://docs.example.org/page"
     )
@@ -226,6 +230,19 @@ def test_ui_404_remains_a_failure() -> None:
 
     assert result.ok is False
     assert result.code == 404
+
+
+def test_google_speech_base_uses_post_route_probe_without_credentials() -> None:
+    url = "https://speech.googleapis.com/v1"
+    target = UrlTarget(url, probe_url_for(url), classify_url(url), ("modularProviderSubtypes.ts",))
+    with patch("scripts.check_admin_ui_urls._request", side_effect=[
+        _http_error(target.probe_url, 404),
+        _http_error(target.probe_url, 404),
+        _http_error(target.probe_url, 400),
+    ]) as request:
+        result = check_target(target, max_retries=1)
+    assert result.ok is True
+    assert [call.args[2] for call in request.call_args_list] == ["HEAD", "GET", "POST"]
 
 
 def test_transient_head_error_is_retried() -> None:
