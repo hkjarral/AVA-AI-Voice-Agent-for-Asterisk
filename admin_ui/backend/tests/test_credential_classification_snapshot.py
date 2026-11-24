@@ -1,6 +1,7 @@
 """Inventory every declared configuration-model field, including dynamic provider schemas."""
 import ast
 import inspect
+import json
 from pathlib import Path
 import re
 
@@ -8,7 +9,7 @@ from pydantic import BaseModel
 
 from api import tools
 from services.secret_keys import is_secret_key
-from services.yaml_secrets import field_classification
+from services.yaml_secrets import field_classification, mask_config
 from src.config import _parent_config
 from src.integrations import pushover
 
@@ -50,6 +51,14 @@ def classification_snapshot():
     for path in [("tools", "microsoft_calendar", "accounts", "*", "token_cache_path"),
                  ("tools", "leave_voicemail", "default_mailbox_key")]:
         result[".".join(path)] = field_classification(path)
+    for field in ("base_url", "ws_url"):
+        url = "https://example.invalid/path?region=example"
+        for path, document in [
+            (field, {field: url}),
+            (f"providers.*.{field}", {"providers": {"*": {field: url}}}),
+        ]:
+            visible = json.dumps(mask_config(document))
+            result[path + " (query)"] = "visible query" if "region=example" in visible else "masked query"
     for match in re.finditer(r"^\s*(?:#\s*)?(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", (repo / ".env.example").read_text(), re.M):
         key = match.group(1)
         result[f".env.{key}"] = "credential" if is_secret_key(key) else "ordinary environment setting"

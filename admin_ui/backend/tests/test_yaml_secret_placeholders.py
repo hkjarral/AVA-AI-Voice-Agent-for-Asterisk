@@ -46,12 +46,12 @@ def test_secret_paths_keep_dotted_keys_and_list_positions_distinct():
 def api(tmp_path, monkeypatch):
     path = tmp_path / "base.yaml"
     local = tmp_path / "local.yaml"
-    key = token_hex()
-    cfg = {"providers": {"example": {"api_key": key}},
-           "tools": {"hangup_call": {"smtp_password": key},
-                     "custom_setting": {"service_token": key},
+    tokens = {field: token_hex() for field in ("api_key", "smtp_password", "service_token", "Authorization")}
+    cfg = {"providers": {"example": {"api_key": tokens["api_key"]}},
+           "tools": {"hangup_call": {"smtp_password": tokens["smtp_password"]},
+                     "custom_setting": {"service_token": tokens["service_token"]},
                      "lookup": {"kind": "generic_http_lookup", "phase": "pre_call", "enabled": True,
-                                "url": "https://lookup.invalid", "headers": {"Authorization": key}}}}
+                                "url": "https://lookup.invalid", "headers": {"Authorization": tokens["Authorization"]}}}}
     path.write_text(yaml.safe_dump(cfg, sort_keys=False))
     local.write_text("# operator note\n{}\n")
     monkeypatch.setattr(config.settings, "CONFIG_PATH", str(path))
@@ -63,23 +63,37 @@ def api(tmp_path, monkeypatch):
     app = FastAPI()
     app.include_router(config.router, prefix="/config")
     app.include_router(tools.router, prefix="/tools")
-    return TestClient(app), path, local, key
+    return TestClient(app), path, local, tokens
 
 
-@pytest.mark.parametrize("route", ["/config", "/config/", "/tools/managed", "/tools/managed/lookup",
-                                   "/tools/builtin", "/tools/builtin/hangup_call", "/tools/settings"])
-def test_structured_reads_return_secret_presence(api, route):
-    client, _, _, key = api
+@pytest.mark.parametrize("route, name, field_path", [
+    ("/config", None, ("providers", "example", "api_key")),
+    ("/config/", None, ("providers", "example", "api_key")),
+    ("/tools/managed", "lookup", ("config", "headers", "Authorization")),
+    ("/tools/managed/lookup", None, ("config", "headers", "Authorization")),
+    ("/tools/builtin", "hangup_call", ("config", "smtp_password")),
+    ("/tools/builtin/hangup_call", None, ("config", "smtp_password")),
+    ("/tools/settings", None, ("settings", "custom_setting", "service_token")),
+])
+def test_structured_reads_return_secret_presence(api, route, name, field_path):
+    client, _, _, tokens = api
     response = client.get(route)
-    assert response.status_code == 200 and key not in response.text
-    assert '"set":true' in response.text
+    assert response.status_code == 200
+    assert all(token not in response.text for token in tokens.values())
+    value = response.json()
+    if name:
+        value = next(row for row in value if row["name"] == name)
+    for field in field_path:
+        value = value[field]
+    assert value == {"set": True}
 
 
 def test_raw_yaml_noop_is_byte_identical_and_concurrent_secret_change_is_preserved(api):
-    client, base, local, key = api
+    client, base, local, tokens = api
+    key = tokens["api_key"]
     response = client.get("/config/yaml")
     content = response.json()["content"]
-    assert key not in content and "«secret:providers.example.api_key~" in content
+    assert all(token not in content for token in tokens.values()) and "«secret:providers.example.api_key~" in content
     original = local.read_bytes()
     assert client.post("/config/yaml", json={"content": content}).status_code == 200
     assert local.read_bytes() == original
@@ -90,26 +104,37 @@ def test_raw_yaml_noop_is_byte_identical_and_concurrent_secret_change_is_preserv
     assert config._read_merged_config_dict()["providers"]["example"]["api_key"] == rotated
 
 
-@pytest.mark.parametrize("method,route,payload", [
-    ("patch", "/tools/builtin/hangup_call", {"smtp_password": {"set": True}}),
-    ("put", "/tools/builtin/hangup_call", {"smtp_password": {"set": False}}),
-    ("patch", "/tools/settings", {"custom_setting": {"service_token": {"set": True}}}),
-    ("patch", "/tools/managed/lookup", {"headers": {"Authorization": {"set": True}}}),
+@pytest.mark.parametrize("method,route,payload,field_path", [
+    ("patch", "/tools/builtin/hangup_call", {"smtp_password": {"set": True}}, ("config", "smtp_password")),
+    ("put", "/tools/builtin/hangup_call", {"smtp_password": {"set": False}}, ("config", "smtp_password")),
+    ("patch", "/tools/settings", {"custom_setting": {"service_token": {"set": True}}},
+     ("settings", "custom_setting", "service_token")),
+    ("patch", "/tools/managed/lookup", {"headers": {"Authorization": {"set": True}}},
+     ("config", "headers", "Authorization")),
     ("put", "/tools/managed/lookup", {"phase": "pre_call", "url": "https://lookup.invalid",
-                                      "headers": {"Authorization": {"set": True}}}),
+                                     "headers": {"Authorization": {"set": True}}},
+     ("config", "headers", "Authorization")),
 ])
-def test_structured_write_preserves_and_masks_echoed_secret(api, method, route, payload):
-    client, _, local, key = api
+def test_structured_write_preserves_and_masks_echoed_secret(api, method, route, payload, field_path):
+    client, _, local, tokens = api
     response = client.request(method, route, json=payload)
-    assert response.status_code == 200 and key not in response.text
-    assert '"set":true' in response.text
+    assert response.status_code == 200
+    assert all(token not in response.text for token in tokens.values())
+    value = response.json()
+    for field in field_path:
+        value = value[field]
+    assert value == {"set": True}
     assert "{'set'" not in local.read_text() and "set: true" not in local.read_text()
-    cfg = config._read_merged_config_dict()["tools"]
-    assert cfg["lookup"]["headers"]["Authorization"] == cfg["custom_setting"]["service_token"] == cfg["hangup_call"]["smtp_password"] == key
+    cfg = config._read_merged_config_dict()
+    assert cfg["providers"]["example"]["api_key"] == tokens["api_key"]
+    assert cfg["tools"]["lookup"]["headers"]["Authorization"] == tokens["Authorization"]
+    assert cfg["tools"]["custom_setting"]["service_token"] == tokens["service_token"]
+    assert cfg["tools"]["hangup_call"]["smtp_password"] == tokens["smtp_password"]
 
 
 def test_managed_create_masks_secret_and_cannot_claim_unrelated_stored_value(api):
-    client, _, _, key = api
+    client, _, _, tokens = api
+    key = tokens["api_key"]
     body = {"name": "new_tool", "phase": "pre_call", "url": "https://lookup.invalid", "headers": {"X-API-Key": {"set": True}}}
     assert client.post("/tools/managed", json=body).status_code == 400
     body["headers"]["X-API-Key"] = key
@@ -119,7 +144,8 @@ def test_managed_create_masks_secret_and_cannot_claim_unrelated_stored_value(api
 
 
 def test_invalid_yaml_never_returns_text_or_logs_source(api, caplog):
-    client, base, _, key = api
+    client, base, _, tokens = api
+    key = tokens["api_key"]
     base.write_text(f"api_key: [{key}\n")
     response = client.get("/config/yaml")
     assert response.status_code == 400 and key not in response.text and key not in caplog.text
@@ -128,7 +154,8 @@ def test_invalid_yaml_never_returns_text_or_logs_source(api, caplog):
 
 
 def test_invalid_structured_requests_do_not_reflect_private_input(api):
-    client, _, _, key = api
+    client, _, _, tokens = api
+    key = tokens["api_key"]
     for route, body in [
         ("/config/yaml", {"content": {"api_key": key}}),
         ("/tools/managed", {"phase": "pre_call", "headers": {"Authorization": [key]}}),
@@ -138,14 +165,17 @@ def test_invalid_structured_requests_do_not_reflect_private_input(api):
 
 
 def test_opaque_structured_credentials_and_aliases_are_private(api):
-    client, base, _, key = api
+    client, base, _, tokens = api
+    key = tokens["api_key"]
     base.write_text(f"provider_token: &t {key}\nlegacy_alias: *t\ncredentials: &c {{account: &account {key}}}\naccount_alias: *account\ncopy: *c\n")
     for route in ("/config", "/config/yaml"):
-        assert key not in client.get(route).text
+        result = client.get(route)
+        assert result.status_code == 200 and key not in result.text
 
 
 def test_concurrent_managed_edits_cannot_revert_a_credential_rotation(api, monkeypatch):
-    client, base, _, old = api
+    client, base, _, tokens = api
+    old = tokens["Authorization"]
     rotated = token_hex()
     async def rotate(_doc):
         base.write_text(base.read_text().replace(old, rotated))
@@ -158,7 +188,8 @@ def test_concurrent_managed_edits_cannot_revert_a_credential_rotation(api, monke
 def test_saved_provider_probe_uses_credential_only_for_saved_config(api, monkeypatch):
     import httpx
 
-    client, base, _, key = api
+    client, base, _, tokens = api
+    key = tokens["api_key"]
     provider = {"llm_model": "gemini-test", "api_key": key}
     base.write_text(yaml.safe_dump({"providers": {"google_live": provider}}))
     masked = yaml.safe_load(client.get("/config/yaml").json()["content"])["providers"]["google_live"]
@@ -175,8 +206,8 @@ def test_saved_provider_probe_uses_credential_only_for_saved_config(api, monkeyp
 def test_http_tool_probe_uses_scoped_saved_header_and_masks_receiver_echo(api, monkeypatch):
     import httpx
 
-    client, base, _, key = api
-    key = key * 3
+    client, base, _, tokens = api
+    key = tokens["Authorization"] * 3
     config_doc = yaml.safe_load(base.read_text())
     config_doc["tools"]["lookup"]["headers"]["Authorization"] = key
     base.write_text(yaml.safe_dump(config_doc))
@@ -197,7 +228,8 @@ def test_http_tool_probe_uses_scoped_saved_header_and_masks_receiver_echo(api, m
 
 @pytest.mark.parametrize("stored", ["api_key: [", "- a list\n"])
 def test_valid_raw_save_leaves_unreadable_local_document_untouched(api, stored):
-    client, _, local, key = api
+    client, _, local, tokens = api
+    key = tokens["api_key"]
     body = stored + " # " + key
     local.write_text(body)
     response = client.post("/config/yaml", json={"content": "valid_setting: true\n"})
@@ -206,7 +238,8 @@ def test_valid_raw_save_leaves_unreadable_local_document_untouched(api, stored):
 
 
 def test_blank_raw_save_leaves_existing_document_untouched(api):
-    client, _, local, key = api
+    client, _, local, tokens = api
+    key = tokens["api_key"]
     body = "api_key: " + key + "\n"
     local.write_text(body)
     response = client.post("/config/yaml", json={"content": "   \n"})
@@ -269,7 +302,8 @@ def test_reject_public_presence_markers_and_preserve_plain_selectors(api):
 def test_masked_probe_handles_stored_url_query_body_and_structured_headers(api, monkeypatch):
     import httpx
 
-    client, base, _, secret = api
+    client, base, _, tokens = api
+    secret = tokens["api_key"]
     tool = {"url": f"https://example.invalid/hooks/{secret}?item={secret}", "method": "POST",
             "phase": "pre_call", "kind": "generic_http_lookup", "headers": {"X-Auth": secret},
             "query_params": {"note": secret}, "body_template": '{"msg":"Bearer ' + secret + '"}'}
@@ -370,7 +404,8 @@ def test_a2a_validation_accepts_stored_url_and_binds_retained_auth(api):
 def test_saved_probe_renders_operator_environment_origin(api, monkeypatch):
     import httpx
 
-    client, base, _, secret = api
+    client, base, _, tokens = api
+    secret = tokens["api_key"]
     tool = {"kind": "generic_http_lookup", "url": "${FIXTURE_ORIGIN}/lookup/{call_id}", "phase": "pre_call",
             "headers": {"X-Auth": secret}, "method": "GET"}
     base.write_text(yaml.safe_dump({"tools": {"fixture": tool}}))
@@ -568,3 +603,24 @@ def test_template_scanner_preserves_public_text_between_private_values():
     text = 'Before {"api_key":"first","note":"visible","password":{"value":"second"}} after eyJabc.def.ghi'
     spans = credential_spans(text, template=True)
     assert [text[start:end] for start, end in spans] == ['first', '{"value":"second"}', 'eyJabc.def.ghi']
+
+@pytest.mark.parametrize("change", [None, {"url": "https://lookup.invalid/replacement"}, {"url": "https://lookup.invalid?tenant=other"},
+                                    {"method": "POST"}])
+def test_raw_tool_draft_follows_rotation_only_for_same_definition(api, change):
+    client, base, local, _ = api
+    draft = client.get("/config/yaml").json()["content"]
+    original_override = local.read_bytes()
+    saved = yaml.safe_load(base.read_text())
+    tool = saved["tools"]["lookup"]
+    rotated = token_hex()
+    tool.update(change or {})
+    tool["headers"]["Authorization"] = rotated
+    base.write_text(yaml.safe_dump(saved))
+    result = client.post("/config/yaml", json={"content": draft + "log_level: info\n"})
+    assert rotated not in result.text
+    if change:
+        assert result.status_code == 400
+        assert local.read_bytes() == original_override
+    else:
+        assert result.status_code == 200
+    assert config._read_merged_config_dict()["tools"]["lookup"] == tool

@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 
 import pytest
+from dotenv import dotenv_values
+from fastapi import HTTPException
 
 from api import config
 from services.secret_keys import redact_mapping
@@ -31,7 +33,11 @@ async def test_editor_preserves_stored_connection_and_removes_only_on_null(tmp_p
     assert masked == {"REDIS_URL":{"set":True}}
     await config.update_env(masked)
     assert target.read_text() == original
+    with pytest.raises(HTTPException) as rejected:
+        await config.update_env({"REDIS_URL": "__DELETE__"})
+    assert rejected.value.status_code == 400 and target.read_text() == original
     await config.update_env({"REDIS_URL":None})
+    assert "REDIS_URL" not in dotenv_values(target, interpolate=False)
     assert "fixture-private" not in target.read_text()
 
 

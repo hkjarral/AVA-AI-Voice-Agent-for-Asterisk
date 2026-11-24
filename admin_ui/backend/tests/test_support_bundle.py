@@ -352,4 +352,6 @@ def test_agent_bundle_never_returns_operator_supplied_structure_labels(tmp_path,
     result = _client(tmp_path, monkeypatch, seed).get("/api/support-bundle")
     assert result.status_code == 200
     with zipfile.ZipFile(io.BytesIO(result.content)) as bundle:
-        assert b"CANARY-" not in bundle.read("agents_redacted.json")
+        agents = json.loads(bundle.read("agents_redacted.json"))
+        assert [agent["slug"] for agent in agents] == ["routing"]
+        assert "CANARY-" not in json.dumps(agents)

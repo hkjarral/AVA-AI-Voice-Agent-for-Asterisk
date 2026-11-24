@@ -118,7 +118,7 @@ def test_wizard_uses_saved_provider_only_at_its_provider(env_api, monkeypatch):
 def test_saved_ari_password_is_bound_to_saved_destination(env_api, monkeypatch, route):
     client, path = env_api
     value = secrets.token_hex()
-    path.write_text(f"ASTERISK_HOST=pbx.invalid\nASTERISK_ARI_USERNAME=operator\nASTERISK_ARI_PASSWORD={value}\n")
+    path.write_text(f"ASTERISK_HOST=pbx.invalid\nASTERISK_ARI_USERNAME=operator\nPBX_PORT=08088\nASTERISK_ARI_PORT=${{PBX_PORT}}\nASTERISK_ARI_PASSWORD={value}\n")
     stub = AsyncMock()
     stub.__aenter__.return_value = stub
     stub.get.return_value = httpx.Response(200, json={})
@@ -154,3 +154,21 @@ def test_secret_delete_sentinel_is_rejected_atomically_and_paths_remain_editable
     assert client.get("/config/env").json() == {"OPENAI_API_KEY": {"set": True}, **paths}
     reply = client.post("/config/env", json={"PUBLIC": "changed", "OPENAI_API_KEY": "__DELETE__"})
     assert reply.status_code == 400 and key not in reply.text and path.read_text() == before
+
+
+@pytest.mark.parametrize("saved,mode,port", [("00587", "starttls", 587), ("", "smtps", 465)])
+def test_saved_smtp_password_uses_numeric_port_identity(env_api, monkeypatch, saved, mode, port):
+    from unittest.mock import MagicMock
+
+    client, path = env_api
+    password = secrets.token_hex()
+    path.write_text(f"SMTP_HOST=mail.invalid\nSMTP_USERNAME=operator\nSMTP_PASSWORD={password}\n"
+                    f"SMTP_PORT={saved}\nSMTP_TLS_MODE={mode}\n")
+    smtp = MagicMock()
+    monkeypatch.setattr(config.smtplib, "SMTP_SSL" if mode == "smtps" else "SMTP", smtp)
+    payload = {"to_email": "fixture@example.invalid", "smtp_port": port}
+    result = client.post("/config/env/smtp/test", json=payload)
+    assert result.status_code == 200 and result.json()["port"] == port
+    smtp.return_value.__enter__.return_value.login.assert_called_once_with("operator", password)
+    rejected = client.post("/config/env/smtp/test", json={**payload, "smtp_port": port + 1})
+    assert rejected.status_code == 400 and smtp.call_count == 1

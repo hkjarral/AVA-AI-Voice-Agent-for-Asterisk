@@ -31,8 +31,8 @@ def editor(tmp_path, monkeypatch):
 def test_repair_preserves_unambiguous_secret_lines_and_backs_up_original_bytes(editor):
     client, base, local = editor
     secret = token_hex()
-    original = f"password: {secret}\nlog_level: [ # {secret}\n"
-    local.write_text(original)
+    original = f"password: {secret}\r\nlog_level: [ # {secret}\r\n".encode()
+    local.write_bytes(original)
     result = client.get("/config/yaml")
     assert result.status_code == 400 and secret not in result.text
     repair = result.json()["detail"]["repair"]
@@ -41,7 +41,7 @@ def test_repair_preserves_unambiguous_secret_lines_and_backs_up_original_bytes(e
     result = client.post("/config/yaml", json={"content": updated, "repair_revision": repair["revision"]})
     assert result.status_code == 200 and secret not in result.text
     assert yaml.safe_load(local.read_text()) == {"password": secret, "log_level": "debug"}
-    assert next(local.parent.glob("*.bak.*")).read_text() == original
+    assert next(local.parent.glob("*.bak.*")).read_bytes() == original
     assert base.read_text() == "public_setting: base\n"
 
 

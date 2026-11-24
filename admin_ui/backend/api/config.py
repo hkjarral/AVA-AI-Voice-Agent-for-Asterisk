@@ -22,6 +22,7 @@ import smtplib
 from copy import deepcopy
 from email.message import EmailMessage
 from contextlib import contextmanager
+from urllib.parse import urlsplit
 from pathlib import Path
 from pydantic import BaseModel, StrictBool, SecretStr
 from typing import Dict, Any, Optional, Union
@@ -2542,9 +2543,13 @@ async def test_provider_connection(request: ProviderTestRequest):
                     a Docker bridge network hostname. Fall back to localhost for best compatibility.
                     """
                     try:
-                        if 'local_ai_server' in url:
-                            return url.replace('local_ai_server', '127.0.0.1')
-                    except Exception:
+                        parsed = urlsplit(url)
+                        if parsed.hostname == "local_ai_server":
+                            userinfo, separator, host_port = parsed.netloc.rpartition("@")
+                            _, colon, port = host_port.partition(":")
+                            authority = userinfo + separator + "127.0.0.1" + colon + port
+                            return parsed._replace(netloc=authority).geturl()
+                    except ValueError:
                         pass
                     return url
 
@@ -2570,14 +2575,12 @@ async def test_provider_connection(request: ProviderTestRequest):
 
                 try:
                     data = await _try_connect(ws_url)
-                    effective_url = ws_url
                 except _LocalAIAuthenticationError:
                     raise
                 except Exception as e:
                     alt = _fallback_ws_url(ws_url)
                     if alt != ws_url:
                         data = await _try_connect(alt)
-                        effective_url = alt
                     else:
                         raise e
 
@@ -2586,15 +2589,6 @@ async def test_provider_connection(request: ProviderTestRequest):
                     stt_loaded = models.get("stt", {}).get("loaded", False)
                     llm_loaded = models.get("llm", {}).get("loaded", False)
                     tts_loaded = models.get("tts", {}).get("loaded", False)
-
-                    stt_backend = data.get("stt_backend", "unknown")
-                    tts_backend = data.get("tts_backend", "unknown")
-                    llm_model = models.get("llm", {}).get("path", "").split("/")[-1] if models.get("llm", {}).get("path") else "none"
-
-                    status_parts = []
-                    status_parts.append(f"STT: {stt_backend} ✓" if stt_loaded else "STT: not loaded")
-                    status_parts.append(f"LLM: {llm_model} ✓" if llm_loaded else "LLM: not loaded")
-                    status_parts.append(f"TTS: {tts_backend} ✓" if tts_loaded else "TTS: not loaded")
 
                     declared_capabilities = provider_config.get("capabilities") or []
                     if isinstance(declared_capabilities, str):
@@ -2616,9 +2610,13 @@ async def test_provider_connection(request: ProviderTestRequest):
                         loaded_by_capability[capability]
                         for capability in required_capabilities
                     )
+                    status_parts = [
+                        f"{name.upper()}: {'loaded' if loaded else 'not loaded'}"
+                        for name, loaded in loaded_by_capability.items()
+                    ]
                     return {
                         "success": provider_ready,
-                        "message": f"Local AI Server connected ({effective_url}). {' | '.join(status_parts)}",
+                        "message": f"Local AI Server connected. {' | '.join(status_parts)}",
                     }
                 return {"success": False, "message": "Local AI Server responded but status invalid"}
             except Exception as e:
@@ -3004,11 +3002,14 @@ async def test_smtp_settings(req: SmtpTestRequest):
     if tls_mode not in {"starttls", "smtps", "none"}:
         raise HTTPException(status_code=400, detail="SMTP_TLS_MODE must be starttls, smtps, or none")
 
-    port_raw = str((req.smtp_port if req.smtp_port is not None else (env_map or {}).get("SMTP_PORT")) or "").strip()
-    try:
-        port = int(port_raw) if port_raw else (465 if tls_mode == "smtps" else 587)
-    except Exception:
-        raise HTTPException(status_code=400, detail="SMTP_PORT must be an integer")
+    def smtp_port(value, mode):
+        raw = str(value if value is not None else "").strip()
+        try:
+            return int(raw) if raw else (465 if mode == "smtps" else 587)
+        except ValueError:
+            raise HTTPException(400, "SMTP_PORT must be an integer") from None
+
+    port = smtp_port(req.smtp_port if req.smtp_port is not None else env_map.get("SMTP_PORT"), tls_mode)
 
     username = str((req.smtp_username if req.smtp_username is not None else (env_map or {}).get("SMTP_USERNAME")) or "").strip() or None
     password = str((req.smtp_password if req.smtp_password is not None else (env_map or {}).get("SMTP_PASSWORD")) or "").strip() or None
@@ -3026,11 +3027,11 @@ async def test_smtp_settings(req: SmtpTestRequest):
         tls_verify = str(tls_verify_raw or "true").strip().lower() in {"1", "true", "yes", "on"}
     if req.smtp_password is None and password:
         saved_mode = (env_map.get("SMTP_TLS_MODE") or "starttls").strip().lower()
-        saved_port = (env_map.get("SMTP_PORT") or ("465" if saved_mode == "smtps" else "587")).strip()
+        saved_port = smtp_port(env_map.get("SMTP_PORT"), saved_mode)
         saved_verify = (env_map.get("SMTP_TLS_VERIFY") or "true").strip().lower() in {"1", "true", "yes", "on"}
         if (
             host != (env_map.get("SMTP_HOST") or "").strip()
-            or str(port) != saved_port or tls_mode != saved_mode or tls_verify != saved_verify
+            or port != saved_port or tls_mode != saved_mode or tls_verify != saved_verify
             or username != ((env_map.get("SMTP_USERNAME") or "").strip() or None)
         ):
             raise HTTPException(400, "Enter the SMTP password for the changed connection settings.")

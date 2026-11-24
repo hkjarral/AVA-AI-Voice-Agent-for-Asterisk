@@ -18,8 +18,10 @@ const secretFields = [
 
 type WizardSecret = (typeof secretFields)[number];
 
-function storedWizardSecrets(values: Partial<Record<WizardSecret, EnvValue>>) {
-    return Object.fromEntries(secretFields.map(key => [key, { set: hasEnvValue(values[key]) }]));
+function storedWizardSecrets(values: Partial<Record<WizardSecret, EnvValue>>, submitted = values) {
+    return Object.fromEntries(secretFields
+        .filter(key => values[key] === submitted[key])
+        .map(key => [key, { set: hasEnvValue(values[key]) }]));
 }
 
 const replacementField = (field: string, value: EnvValue | undefined) =>
@@ -999,7 +1001,7 @@ const Wizard = () => {
                 await axios.post('/api/wizard/save', Object.fromEntries(
                     Object.entries(config).filter(([, value]) => !isSecretMarker(value)),
                 ));
-                setConfig(previous => ({ ...previous, ...storedWizardSecrets(previous) }));
+                setConfig(previous => ({ ...previous, ...storedWizardSecrets(previous, config) }));
                 clearWizardDraft();
 
                 // Check engine status for completion step

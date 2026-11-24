@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Local AI connection checks report model readiness without returning the WebSocket URL or provider-supplied text.
+
 - Preserve stored Agent credentials when a malformed JSON edit contains an escaped placeholder. Keep existing call metadata names compatible, mask sensitive names on reads, and record the call even when an enrichment field is rejected.
 
 - Protect stored Agent credentials across reads, edits and support downloads. Editors retain unchanged values and preserve older opaque settings. The recovery YAML command now accepts `--redact` and warns before exporting credentials.
@@ -76,6 +78,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove the unused external-media prototype, retired configuration components, HealthWidget and three superseded Local AI backend classes.
 
 ### Fixed
+
+- The setup wizard resolves environment references in the ARI port and preserves credential edits made while saving. SMTP verification accepts equivalent numeric ports.
 
 - Open call history off the async event loop. If an optional upgrade fails, continue recording in the existing schema while retaining required erasure protections.
 

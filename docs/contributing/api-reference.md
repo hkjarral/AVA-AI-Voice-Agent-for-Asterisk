@@ -64,9 +64,9 @@ curl -H "Authorization: Bearer eyJ..." \
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/config/yaml` | Read the masked merged YAML. A malformed operator override returns HTTP 400 with a safe location and a `detail.repair` object containing `revision`, `partial` and masked `content`. An empty recovery document requires a complete replacement override. |
-| POST | `/api/config/yaml` | Save a merged document using `content`. For a confirmed repair, send the complete local override in `content` and the GET response’s `detail.repair.revision` in `repair_revision`. A stale revision returns HTTP 409. |
+| POST | `/api/config/yaml` | Save a merged document using `content`. A tool draft can retain a rotated credential while its saved definition and receiver URL still match. Reload the draft if the tool was replaced with a different definition. For a confirmed repair, send the complete local override in `content` and the GET response’s `detail.repair.revision` in `repair_revision`. A stale revision returns HTTP 409. |
 | GET | `/api/config/env` | Read ordinary settings and credential presence objects (`{"set": true}` or `{"set": false}`) |
-| POST | `/api/config/env` | Patch supplied settings. Omit a stored credential or echo its presence object to preserve it. Send a string to replace it. |
+| POST | `/api/config/env` | Patch supplied settings. Omit a stored credential or echo its presence object to preserve it. Send a new string to replace it or JSON `null` to delete it. Credential keys reject `__DELETE__`. |
 | GET | `/api/config/env/status` | Check if containers are out-of-sync with .env |
 | POST | `/api/config/providers/test` | Test provider connection |
 | POST | `/api/config/export` | Export a configuration ZIP after verifying the signed-in user’s current password in the JSON body. Use the optional `include_secrets=true` query parameter to include the environment file. |

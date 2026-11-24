@@ -23,7 +23,7 @@ _configured_key = os.getenv("JWT_SECRET", "").strip()
 _SIGNING_KEY = (hmac.digest(_configured_key.encode(), b"admin-yaml-markers-v1", "sha256")
                 if _configured_key and _configured_key not in {"changeme", "change-me-please", "dev-secret-key-change-in-prod"}
                 else secrets.token_bytes(32))
-_MARKER = re.compile(r"«secret:([^«»~]*)~(-?\d+)~([0-9a-f]{24})~([0-9a-f]{24})~([0-9a-f]{24})»")
+_MARKER = re.compile(r"«secret:([^«»~]*)~(-?\d+)~([0-9a-f]{24})~([0-9a-f]{24})(?:~([0-9a-f]{24}))?~([0-9a-f]{24})»")
 _PUBLIC_HEADERS = {"accept", "content-type", "accept-encoding", "accept-language", "user-agent"}
 # These schema fields identify credentials, destinations, or other resources.
 _SELECTORS = {
@@ -84,8 +84,10 @@ def _fingerprint(value):
     return _mac("value:" + json.dumps(value, sort_keys=True, default=str, ensure_ascii=False))
 
 
-def _marker(path, index, value, destination):
+def _marker(path, index, value, destination, tool_revision=None):
     payload = f"{_name(path)}~{index}~{_fingerprint(value)}~{destination}"
+    if tool_revision:
+        payload += "~" + tool_revision
     return f"{_PREFIX}{payload}~{_mac('marker:' + payload)}»"
 
 
@@ -254,11 +256,13 @@ def omit_private_fields(config):
 def mask_config(config, *, raw=False, display_only=False):
     whole, parts = _stored_paths(config)
     destinations = {}
+    revisions = {}
     def marker(path, index, secret):
         owner = _owner(path)
         if owner not in destinations:
             destinations[owner] = _fingerprint(_destination(config, owner))
-        return _marker(path, index, secret, destinations[owner])
+            revisions[owner] = _tool_revision(config, owner, whole, parts)
+        return _marker(path, index, secret, destinations[owner], revisions[owner])
 
     def mask(path, value):
         if path in whole:
@@ -331,6 +335,34 @@ def _origin_identity(location):
         return location
     scheme = urlsplit(origin).scheme
     return origin.removesuffix(":443" if scheme in {"https", "wss"} else ":80")
+
+
+def _tool_revision(document, owner, whole, parts):
+    """Bind a YAML tool's name to its definition, including its complete receiver URL."""
+    if not owner or owner[0] == _AGENT_ROWS or _receiver_kind(owner) != "tool":
+        return None
+    for key in owner:
+        document = document[key]
+    fields = {}
+
+    def record(path, value):
+        name = _name(path[len(owner):])
+        if path in whole:
+            # The endpoint itself identifies the receiver, even on a shared host.
+            # Only its keyed digest leaves the server.
+            fields[name] = ["receiver", value] if _is_tool_url(path, value) else ["credential"]
+            return value
+        if path in parts:
+            for start, end, _ in reversed(parts[path]):
+                value = value[:start] + "<redacted>" + value[end:]
+        if isinstance(value, (dict, list)):
+            fields[name] = ["map" if isinstance(value, dict) else "list"]
+        else:
+            fields[name] = ["value", value]
+        return _MISSING
+
+    _walk(document, record, owner)
+    return _fingerprint(fields)
 
 
 def _destination(document, owner):
@@ -461,6 +493,7 @@ def restore_config(edited, current):
     by_fingerprint = {}
     references = credential_references(current)
     source_destinations = {}
+    source_revisions = {}
 
     def saved_destination(owner):
         if owner not in source_destinations:
@@ -515,9 +548,11 @@ def restore_config(edited, current):
         result = []
         cursor = 0
         for match in _MARKER.finditer(value):
-            origin, number, fingerprint, destination, tag = match.groups()
+            origin, number, fingerprint, destination, revision, tag = match.groups()
             index = int(number)
             payload = f"{origin}~{number}~{fingerprint}~{destination}"
+            if revision:
+                payload += "~" + revision
             entry = entries.get((origin, index))
             if not hmac.compare_digest(tag, _mac("marker:" + payload)) or _PREFIX in value[cursor:match.start()]:
                 raise ValueError("Invalid secret placeholder. Reload the configuration.")
@@ -538,6 +573,12 @@ def restore_config(edited, current):
             source_path, secret = entry
             if path[:1] == (_AGENT_ROWS,) and (origin != _name(path) or _fingerprint(secret) != fingerprint):
                 raise ValueError("The stored agent field changed. Reload the agent.")
+            if (owner and owner[0] != _AGENT_ROWS and _receiver_kind(owner) == "tool"
+                    and origin == _name(path) and _fingerprint(secret) != fingerprint):
+                if owner not in source_revisions:
+                    source_revisions[owner] = _tool_revision(current, owner, whole, parts)
+                if revision != source_revisions[owner]:
+                    raise ValueError("The stored tool changed. Reload the configuration.")
             if owner and secret:
                 bind(path, {destination} & {saved_destination(_owner(source_path))})
             if index == -1:

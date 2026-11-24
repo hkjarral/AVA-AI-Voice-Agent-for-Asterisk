@@ -7,14 +7,17 @@ ARI_PASSWORD_ENV = "ASTERISK_ARI_PASSWORD"
 
 
 def saved_ari_password(values, *, host, port, scheme, username, ssl_verify) -> str:
-    stored_port = values.get("ASTERISK_ARI_PORT") or "8088"
+    try:
+        stored_port = int(values.get("ASTERISK_ARI_PORT") or "8088")
+    except ValueError:
+        stored_port = None
     stored_verify = str(values.get("ASTERISK_ARI_SSL_VERIFY") or "true").lower() not in {"0", "false", "no", "off"}
     stored_scheme = values.get("ASTERISK_ARI_SCHEME") or (
         "https" if values.get("ASTERISK_ARI_WEBSOCKET_SCHEME") == "wss" else "http"
     )
     if (
         host != (values.get("ASTERISK_HOST") or "127.0.0.1")
-        or str(port) != stored_port or scheme != stored_scheme
+        or port != stored_port or scheme != stored_scheme
         or username != (values.get("ASTERISK_ARI_USERNAME") or "")
         or ssl_verify != stored_verify
     ):

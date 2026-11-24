@@ -45,6 +45,30 @@ describe('Fresh setup journey', () => {
         expect(screen.queryByText('Setup Complete!')).toBeNull();
         expect(axios.post).toHaveBeenCalledWith('/api/wizard/save', expect.objectContaining({ deployment_topology: 'remote', media_advertise_host: '192.0.2.20', asterisk_app: 'custom-app' }));
     });
+    it('keeps a password edited while the previous value is being saved', async () => {
+        let completeSave!: () => void;
+        const pending = new Promise<void>(resolve => { completeSave = resolve; });
+        vi.mocked(axios.post).mockImplementation(async url => {
+            if (url === '/api/wizard/save') await pending;
+            return { data: { valid: true, status: 'success' } };
+        });
+        render(<MemoryRouter><Wizard /></MemoryRouter>);
+        await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/wizard/load-config'));
+        fireEvent.click(screen.getByText('Next'));
+        fireEvent.click(screen.getByText('Next'));
+        await screen.findByText('Set');
+        fireEvent.click(screen.getByText('Next'));
+        fireEvent.click(await screen.findByRole('button', { name: 'Replace ARI Password' }));
+        const password = screen.getByLabelText('ARI Password');
+        fireEvent.change(password, { target: { value: 'first-replacement' } });
+        fireEvent.click(screen.getByText('Finish Setup'));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/wizard/save',
+            expect.objectContaining({ asterisk_password: 'first-replacement' })));
+        fireEvent.change(password, { target: { value: 'later-replacement' } });
+        completeSave();
+        fireEvent.click(await screen.findByText('Edit setup settings'));
+        expect(await screen.findByLabelText('ARI Password')).toHaveValue('later-replacement');
+    });
     it('does not validate an unset key and sends only a newly entered replacement', async () => {
         vi.mocked(axios.get).mockResolvedValueOnce({ data: { ...saved, openai_key: { set: false } } });
         render(<MemoryRouter><Wizard /></MemoryRouter>);

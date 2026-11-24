@@ -41,3 +41,39 @@ def test_jwt_secret_custom_not_placeholder(monkeypatch) -> None:
     assert auth.SECRET_KEY == "super-secret-value-123"
     assert auth.USING_PLACEHOLDER_SECRET is False
 
+
+
+def test_save_users_replaces_complete_file_and_preserves_permissions(tmp_path, monkeypatch):
+    import json
+    import stat
+    import pytest
+    import auth
+    from services import fs
+
+    path = tmp_path / "users.json"
+    monkeypatch.setattr(auth, "USERS_PATH", str(path))
+    original = {"operator": {"must_change_password": True}}
+    updated = {"operator": {"must_change_password": False}}
+    auth.save_users(original)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    path.chmod(0o640)
+    replace = fs.os.replace
+    def observe(source, target):
+        assert auth.load_users() == original
+        with open(source) as stream:
+            assert json.load(stream) == updated
+        replace(source, target)
+
+    monkeypatch.setattr(fs.os, "replace", observe)
+    auth.save_users(updated)
+    assert auth.load_users() == updated
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+    def fail_replace(*_args):
+        raise OSError("fixture write failure")
+
+    monkeypatch.setattr(fs.os, "replace", fail_replace)
+    with pytest.raises(OSError):
+        auth.save_users(original)
+    assert auth.load_users() == updated
+    assert list(tmp_path.iterdir()) == [path]

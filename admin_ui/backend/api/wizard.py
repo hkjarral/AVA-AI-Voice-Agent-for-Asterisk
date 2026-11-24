@@ -743,25 +743,54 @@ _WIZARD_CREDENTIALS = {
 }
 
 
+def _wizard_ari_port(bindings, raw):
+    """Resolve the port with dotenv ordering, keeping private sources out of the response."""
+    from dotenv.variables import Variable, parse_variables
+    from api.config import _credential_env_references
+    from services.secret_keys import is_secret_env_value
+
+    if "${" in (raw or ""):
+        private_names = _credential_env_references()
+        values = dict(os.environ)
+        for name, literal in bindings:
+            if literal is None:
+                values[name] = None
+                continue
+            parts = []
+            for atom in parse_variables(literal):
+                if isinstance(atom, Variable) and is_secret_env_value(atom.name, values.get(atom.name), private_names):
+                    parts.append("<private>")
+                else:
+                    parts.append(atom.resolve(values))
+            values[name] = "".join(parts)
+        raw = values.get("ASTERISK_ARI_PORT")
+    try:
+        port = int(raw)
+        if 1 <= port <= 65535:
+            return port
+    except (TypeError, ValueError):
+        pass
+    raise HTTPException(422, "ASTERISK_ARI_PORT must resolve to a port from 1 through 65535.")
+
+
 @router.get("/load-config")
 async def load_existing_config():
     """Load existing configuration from .env file.
     
     Used to pre-populate wizard fields if config already exists.
     """
-    from dotenv import dotenv_values
-    import re
-    
+    from dotenv.main import DotEnv
+
     config = {}
     env_values = {}
-    
-    # Load from .env if it exists
     if os.path.exists(ENV_PATH):
-        env_values = dotenv_values(ENV_PATH, interpolate=False)
+        bindings = list(DotEnv(ENV_PATH, interpolate=False).parse())
+        env_values = dict(bindings)
+        port = _wizard_ari_port(bindings, env_values.get("ASTERISK_ARI_PORT", "8088"))
         config = {
             "asterisk_host": env_values.get("ASTERISK_HOST", "127.0.0.1"),
             "asterisk_username": env_values.get("ASTERISK_ARI_USERNAME", ""),
-            "asterisk_port": int(env_values.get("ASTERISK_ARI_PORT", "8088")),
+            "asterisk_port": port,
             "asterisk_scheme": env_values.get("ASTERISK_ARI_SCHEME", "http"),
             # App name is YAML-owned (asterisk.app_name). Keep env fallbacks for legacy setups only.
             "asterisk_app": (

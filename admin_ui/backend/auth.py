@@ -12,6 +12,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from passlib.context import CryptContext
 from jose import JWTError, jwt
+from services.fs import atomic_write_text
 from services.proxy_peer import raw_http_peer
 from services.login_throttle import LoginThrottle, client_address, login_label, known_login_origin, remember_login_origin
 from settings import USERS_PATH
@@ -189,8 +190,7 @@ def load_users():
 
 def save_users(users):
     os.makedirs(os.path.dirname(USERS_PATH), exist_ok=True)
-    with open(USERS_PATH, "w") as f:
-        json.dump(users, f, indent=2)
+    atomic_write_text(os.path.realpath(USERS_PATH), json.dumps(users, indent=2), preserve_owner=True)
 
 def get_user(username: str):
     users = load_users()
