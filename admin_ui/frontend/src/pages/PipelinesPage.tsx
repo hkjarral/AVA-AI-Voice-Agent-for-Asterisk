@@ -1,3 +1,4 @@
+import { providerDefault } from '../config/providerCatalog';
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -196,7 +197,7 @@ const PipelinesPage = () => {
             tts: 'local_tts',
             options: {
                 stt: { streaming: true, chunk_ms: 160, stream_format: 'pcm16_16k' },
-                llm: { model: 'gpt-4o-mini', temperature: 0.7, max_tokens: 150 },
+                llm: { model: providerDefault('openai', 'chat_model'), reasoning_effort: 'none', max_tokens: 150 },
                 tts: { format: { encoding: 'mulaw', sample_rate: 8000 } }
             }
         });

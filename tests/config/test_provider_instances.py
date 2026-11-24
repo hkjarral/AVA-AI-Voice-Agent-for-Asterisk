@@ -31,6 +31,11 @@ def test_credential_provider_kind_accepts_fish_audio_tts():
     assert credential_provider_kind("fishaudio_tts", {}) == "fishaudio"
 
 
+def test_explicit_deepgram_flux_type_uses_deepgram_managed_credentials():
+    assert credential_provider_kind("customer_stt", {"type": "deepgram_flux"}) == "deepgram"
+    assert credential_provider_kind("deepgram_flux_stt", {"type": "deepgram_flux"}) == "deepgram"
+
+
 def test_secret_file_failure_falls_back_to_configured_environment(tmp_path, monkeypatch):
     missing = tmp_path / "missing-api-key"
     monkeypatch.setenv("FALLBACK_PROVIDER_KEY", "from-environment")

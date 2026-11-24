@@ -256,6 +256,7 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
                 "tts_backend": {"type": "string"},
                 "tts_model_path": {"type": "string"},
                 "kokoro_voice": {"type": "string"},
+                "kokoro_lang": {"type": "string", "enum": ["a", "b", "e", "f", "h", "i", "j", "p", "z"]},
                 "kokoro_mode": {"type": "string"},
                 "kokoro_model_path": {"type": "string"},
                 "kokoro_api_base_url": {"type": "string"},

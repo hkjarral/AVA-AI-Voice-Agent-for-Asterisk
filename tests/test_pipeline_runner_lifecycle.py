@@ -245,6 +245,243 @@ class _HangingTTS(TTSComponent):
             yield b""
 
 
+class _FailingGreetingTTS(TTSComponent):
+    async def synthesize(self, call_id, text, options):
+        raise ValueError("provider model unavailable")
+        yield b""
+
+
+class _PartiallyFailingGreetingTTS(TTSComponent):
+    async def synthesize(self, call_id, text, options):
+        yield b"first-audio"
+        raise ValueError("provider stopped mid-greeting")
+
+
+def _failure_test_engine(monkeypatch, tts):
+    engine = Engine(AppConfig(
+        default_provider="local", providers={"local": {"enabled": True}},
+        asterisk={"host": "127.0.0.1", "username": "u", "password": "p"},
+        llm={"initial_greeting": "Hello", "prompt": "Help"},
+        pipelines={"test": {}}, active_pipeline="test", audio_transport="audiosocket",
+    ))
+    resolution = _StubResolution(tts_adapter=tts)
+    monkeypatch.setattr(engine.pipeline_orchestrator, "get_pipeline", lambda *args: resolution)
+    engine._handle_provider_start_failure = AsyncMock()
+    engine._no_input_mark_ready = AsyncMock()
+    manager = SimpleNamespace(active=False, queue=None)
+
+    async def start(call_id, queue, **kwargs):
+        manager.active = True
+        manager.queue = queue
+        return "greeting-stream"
+
+    async def stop(call_id):
+        manager.active = False
+
+    manager.start_streaming_playback = start
+    manager.stop_streaming_playback = AsyncMock(side_effect=stop)
+    manager.is_stream_active = lambda *args: manager.active
+    engine.streaming_playback_manager = manager
+    return engine
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tts", [_FailingGreetingTTS, _HangingTTS, _SilentTTS])
+async def test_failed_greeting_closes_stream_before_failure_policy(monkeypatch, tts):
+    from src.core.models import CallSession
+    engine = _failure_test_engine(monkeypatch, tts())
+    engine._connection_audio_handoff_timeout_seconds = 0.02
+    session = CallSession(call_id="failed-greeting", caller_channel_id="failed-greeting")
+    session.pipeline_name = "test"
+    await engine.session_store.upsert_call(session)
+    await asyncio.wait_for(engine._pipeline_runner(session.call_id), timeout=1)
+    manager = engine.streaming_playback_manager
+    assert manager.active is False
+    assert manager.queue is None  # Rejected synthesis never creates playback.
+    engine._handle_provider_start_failure.assert_awaited_once_with(session)
+    engine._no_input_mark_ready.assert_not_awaited()
+    assert session.call_id not in engine._pipeline_transcript_queues
+
+
+@pytest.mark.asyncio
+async def test_partial_greeting_failure_aborts_playback_before_failure_policy(monkeypatch):
+    from src.core.models import CallSession
+    engine = _failure_test_engine(monkeypatch, _PartiallyFailingGreetingTTS())
+    session = CallSession(call_id="partial-greeting", caller_channel_id="partial-greeting")
+    session.pipeline_name = "test"
+    await engine.session_store.upsert_call(session)
+    await asyncio.wait_for(engine._pipeline_runner(session.call_id), timeout=1)
+    manager = engine.streaming_playback_manager
+    assert manager.active is False
+    assert list(manager.queue._queue) == [b"first-audio", None]
+    engine._handle_provider_start_failure.assert_awaited_once_with(session)
+    engine._no_input_mark_ready.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_greeting_leave_open_still_dispatches_caller_audio(monkeypatch):
+    from src.core.models import CallSession
+
+    engine = _failure_test_engine(monkeypatch, _FailingGreetingTTS())
+    engine.config.on_provider_failure = "leave_open"
+    llm = _RecordingLLM()
+    resolution = _StubResolution(tts_adapter=_FailingGreetingTTS(), llm_adapter=llm)
+    resolution.llm_options["aggregation_min_words"] = 1
+    engine.ari_client.set_channel_var = AsyncMock()
+    monkeypatch.setattr(engine.pipeline_orchestrator, "get_pipeline", lambda *args: resolution)
+    engine.pipeline_orchestrator._started = True
+    session = CallSession(call_id="greeting-leave-open", caller_channel_id="greeting-leave-open")
+    session.pipeline_name = "test"
+    await engine.session_store.upsert_call(session)
+    await engine._ensure_pipeline_runner(session, forced=True)
+    queue = engine._pipeline_queues[session.call_id]
+    task = engine._pipeline_tasks[session.call_id]
+    try:
+        await queue.put(b"\x10\x10" * 2560)
+        await asyncio.wait_for(llm.called.wait(), timeout=1)
+        assert llm.transcripts == ["hi"]
+        engine._no_input_mark_ready.assert_awaited_once_with(session.call_id)
+        engine._handle_provider_start_failure.assert_not_awaited()
+    finally:
+        await queue.put(None)
+        await asyncio.wait_for(task, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_failed_greeting_leave_open_preserves_vicidial_ownership(monkeypatch):
+    from src.core.models import CallSession
+
+    engine = _failure_test_engine(monkeypatch, _FailingGreetingTTS())
+    engine.config.on_provider_failure = "leave_open"
+    session = CallSession(call_id="greeting-vicidial", caller_channel_id="greeting-vicidial")
+    session.pipeline_name = "test"
+    session.external_platform = "vicidial"
+    await engine.session_store.upsert_call(session)
+    await asyncio.wait_for(engine._pipeline_runner(session.call_id), timeout=1)
+    engine._handle_provider_start_failure.assert_awaited_once_with(session)
+    engine._no_input_mark_ready.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_greeting_during_stream_start_aborts_ownership(monkeypatch):
+    from src.core.models import CallSession
+    engine = _failure_test_engine(monkeypatch, _StubTTS())
+    manager = engine.streaming_playback_manager
+    entered = asyncio.Event()
+
+    async def start(call_id, queue, **kwargs):
+        assert queue.qsize() == 1  # Real synthesized bytes precede media setup.
+        manager.queue, manager.active = queue, True
+        entered.set()
+        await asyncio.Event().wait()
+
+    manager.start_streaming_playback = start
+    session = CallSession(call_id="starting-greeting", caller_channel_id="starting-greeting")
+    session.pipeline_name = "test"
+    await engine.session_store.upsert_call(session)
+    task = asyncio.create_task(engine._pipeline_runner(session.call_id))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+    await asyncio.wait_for(task, timeout=1)
+    assert manager.active is False
+    manager.stop_streaming_playback.assert_awaited_once_with(session.call_id)
+    engine._handle_provider_start_failure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_greeting_closes_stream_without_failure_policy(monkeypatch):
+    from src.core.models import CallSession
+    tts = _HangingTTS()
+    engine = _failure_test_engine(monkeypatch, tts)
+    session = CallSession(call_id="cancelled-greeting", caller_channel_id="cancelled-greeting")
+    session.pipeline_name = "test"
+    await engine.session_store.upsert_call(session)
+    task = asyncio.create_task(engine._pipeline_runner(session.call_id))
+    await asyncio.wait_for(tts.started.wait(), timeout=1)
+    task.cancel()
+    await asyncio.wait_for(task, timeout=1)
+    assert engine.streaming_playback_manager.active is False
+    assert engine.streaming_playback_manager.queue is None
+    engine._handle_provider_start_failure.assert_not_awaited()
+    engine._no_input_mark_ready.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_backpressured_greeting_closes_generator_and_queue(monkeypatch):
+    from src.core.models import CallSession
+
+    class FastTTS(TTSComponent):
+        closed = False
+
+        async def synthesize(self, *args):
+            try:
+                for _ in range(400):
+                    yield b"audio"
+            finally:
+                self.closed = True
+
+    tts = FastTTS()
+    engine = _failure_test_engine(monkeypatch, tts)
+    session = CallSession(call_id="full-greeting", caller_channel_id="full-greeting")
+    session.pipeline_name = "test"
+    await engine.session_store.upsert_call(session)
+    task = asyncio.create_task(engine._pipeline_runner(session.call_id))
+    for _ in range(100):
+        queue = engine.streaming_playback_manager.queue
+        if queue is not None and queue.full():
+            break
+        await asyncio.sleep(0.01)
+    assert queue.full()
+    task.cancel()
+    await asyncio.wait_for(task, timeout=1)
+    assert tts.closed
+    assert not engine.streaming_playback_manager.active
+    assert None in list(queue._queue)
+    engine._handle_provider_start_failure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("options,segmented", [
+    ({}, True), ({"chunk_ms": 160}, False),
+    ({"chunk_ms": 160, "utterance_buffering": True}, True),
+    ({"utterance_buffering": False}, False),
+])
+async def test_rest_stt_utterance_buffering_preserves_explicit_chunk_contract(monkeypatch, options, segmented):
+    import struct
+    from src.core.models import CallSession
+
+    class RESTSTT(_StubSTT):
+        requires_utterance_buffer = True
+
+        def __init__(self):
+            self.uploads = asyncio.Queue()
+
+        async def transcribe(self, call_id, audio, sample_rate, options):
+            await self.uploads.put(audio)
+            return ""
+
+    engine = _failure_test_engine(monkeypatch, _SilentTTS())
+    engine.config.llm.initial_greeting = ""
+    stt = RESTSTT()
+    resolution = _StubResolution(stt_adapter=stt, stt_options=options)
+    monkeypatch.setattr(engine.pipeline_orchestrator, "get_pipeline", lambda *args: resolution)
+    engine.pipeline_orchestrator._started = True
+    session = CallSession(call_id="rest-turn", caller_channel_id="rest-turn")
+    session.pipeline_name = "test"
+    await engine.session_store.upsert_call(session)
+    await engine._ensure_pipeline_runner(session, forced=True)
+    queue = engine._pipeline_queues[session.call_id]
+    speech = struct.pack("<h", 2000) * 16000
+    silence = b"\0\0" * 9600
+    for offset in range(0, len(speech + silence), 640):
+        await queue.put((speech + silence)[offset:offset + 640])
+    upload = await asyncio.wait_for(stt.uploads.get(), timeout=1)
+    assert len(upload) == (len(speech + silence) if segmented else 5120)
+    assert engine._no_input_mark_ready.await_count == 1
+    await queue.put(None)
+    await asyncio.wait_for(engine._pipeline_tasks[session.call_id], timeout=1)
+
+
 class _StreamingSentenceLLM(LLMComponent):
     supports_streaming = True
 

@@ -1,3 +1,4 @@
+import { providerVoices } from '../../../config/providerCatalog';
 import ConnectionRecoveryFields from './ConnectionRecoveryFields';
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import axios from 'axios';
@@ -17,38 +18,7 @@ import {
     preferredGoogleLiveVertexRegion,
 } from '../../../utils/googleLiveModels';
 
-const GOOGLE_LIVE_VOICE_OPTIONS = [
-    { value: 'Achernar', tone: 'Soft' },
-    { value: 'Achird', tone: 'Friendly' },
-    { value: 'Algenib', tone: 'Gravelly' },
-    { value: 'Algieba', tone: 'Smooth' },
-    { value: 'Alnilam', tone: 'Firm' },
-    { value: 'Aoede', tone: 'Breezy' },
-    { value: 'Autonoe', tone: 'Bright' },
-    { value: 'Callirrhoe', tone: 'Easy-going' },
-    { value: 'Charon', tone: 'Informative' },
-    { value: 'Despina', tone: 'Smooth' },
-    { value: 'Enceladus', tone: 'Breathy' },
-    { value: 'Erinome', tone: 'Clear' },
-    { value: 'Fenrir', tone: 'Excitable' },
-    { value: 'Gacrux', tone: 'Mature' },
-    { value: 'Iapetus', tone: 'Clear' },
-    { value: 'Kore', tone: 'Firm' },
-    { value: 'Laomedeia', tone: 'Upbeat' },
-    { value: 'Leda', tone: 'Youthful' },
-    { value: 'Orus', tone: 'Firm' },
-    { value: 'Puck', tone: 'Upbeat' },
-    { value: 'Pulcherrima', tone: 'Forward' },
-    { value: 'Rasalgethi', tone: 'Informative' },
-    { value: 'Sadachbia', tone: 'Lively' },
-    { value: 'Sadaltager', tone: 'Knowledgeable' },
-    { value: 'Schedar', tone: 'Even' },
-    { value: 'Sulafat', tone: 'Warm' },
-    { value: 'Umbriel', tone: 'Easy-going' },
-    { value: 'Vindemiatrix', tone: 'Gentle' },
-    { value: 'Zephyr', tone: 'Bright' },
-    { value: 'Zubenelgenubi', tone: 'Casual' },
-] as const;
+const GOOGLE_LIVE_VOICE_OPTIONS = providerVoices('google_live', 'live').map(voice => ({ value: voice.id, tone: voice.label.split(' — ')[1] ?? '' }));
 
 const GOOGLE_LIVE_SUPPORTED_VOICE_NAMES = GOOGLE_LIVE_VOICE_OPTIONS.map((v) => v.value);
 
@@ -135,7 +105,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
     // Match the saved form value to the AUDIO-only setup sent for Gemini 3.8.
     // This also corrects older configurations opened directly on that model.
     useEffect(() => {
-        if (normalizeGoogleLiveModelForUi(config.llm_model) === 'gemini-3.8-live'
+        if (normalizeGoogleLiveModelForUi(config.llm_model).startsWith('gemini-3.8-live')
             && config.response_modalities !== 'audio') {
             onChange({ ...config, response_modalities: 'audio' });
         }
@@ -175,14 +145,15 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
         ...GOOGLE_LIVE_VERTEX_REGIONS,
         ...regions.filter(region => !GOOGLE_LIVE_VERTEX_REGIONS.some(known => known.value === region.value)),
     ];
-    const regionDocsUrl = selectedModel === 'gemini-3.8-live'
+    const regionDocsUrl = selectedModel.startsWith('gemini-3.8-live')
         ? 'https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-8-live'
         : 'https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/2-5-flash-live-api';
     const handleModelChange = (model: string) => {
         onChange({
             ...config,
             llm_model: model,
-            ...(model === 'gemini-3.8-live' ? { response_modalities: 'audio' } : {}),
+            ...(model !== 'gemini-3.8-live-extended-thinking' ? { thinking_level: null } : {}),
+            ...(model.startsWith('gemini-3.8-live') ? { response_modalities: 'audio' } : {}),
             ...(config.use_vertex_ai
                 ? { vertex_location: preferredGoogleLiveVertexRegion(model, config.vertex_location) }
                 : {}),
@@ -681,6 +652,16 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                 : 'Showing Developer API models. Vertex AI models are disabled.'}
                             <a href="https://ai.google.dev/gemini-api/docs/live-guide" target="_blank" rel="noopener noreferrer" className="ml-1 text-blue-500 hover:underline">API Docs ↗</a>
                         </p>
+                        {selectedModel === 'gemini-3.8-live-extended-thinking' && (
+                            <div className="space-y-2">
+                                <p className="text-xs text-amber-600" role="alert">Extended Thinking is opt-in. Use a tool-free agent or approved non-blocking read-only tools. Agents with blocking telephony or write tools are rejected before session setup. Test a real call before rollout.</p>
+                                <label htmlFor="google-live-thinking-level" className="text-sm font-medium">Thinking Level</label>
+                                <select id="google-live-thinking-level" className="w-full p-2 rounded border border-input bg-background" value={config.thinking_level ?? ''} onChange={event => handleChange('thinking_level', event.target.value || null)}>
+                                    <option value="">Provider default</option>
+                                    {['low', 'medium', 'high'].map(value => <option key={value} value={value}>{value}</option>)}
+                                </select>
+                            </div>
+                        )}
                     </div>
                     <div className="space-y-2">
                         <div className="flex items-center gap-1.5">
@@ -1110,15 +1091,15 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             <select
                                 id="google_live_response_modalities"
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={selectedModel === 'gemini-3.8-live' ? 'audio' : (config.response_modalities || 'audio')}
+                                value={selectedModel.startsWith('gemini-3.8-live') ? 'audio' : (config.response_modalities || 'audio')}
                                 onChange={(e) => handleChange('response_modalities', e.target.value)}
-                                disabled={selectedModel === 'gemini-3.8-live'}
+                                disabled={selectedModel.startsWith('gemini-3.8-live')}
                             >
                                 <option value="audio">Audio Only</option>
                                 <option value="text">Text Only</option>
                                 <option value="audio_text">Audio & Text</option>
                             </select>
-                            {selectedModel === 'gemini-3.8-live' && (
+                            {selectedModel.startsWith('gemini-3.8-live') && (
                                 <p className="text-xs text-muted-foreground">
                                     Gemini 3.8 Live requires Audio Only. Enable output transcription below for text.
                                 </p>

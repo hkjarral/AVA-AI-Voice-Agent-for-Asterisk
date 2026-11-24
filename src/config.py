@@ -16,14 +16,16 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from typing import Annotated, Dict, Any, Literal, Optional, List
+from typing import Annotated, Dict, Any, Literal, Optional, List, get_args
 import ipaddress
 import re
 import structlog
+from urllib.parse import urlparse
 
 from src.utils.diagnostic_paths import DEFAULT_DIAGNOSTIC_TAP_DIR
 from src.media_transport_capabilities import supports_media_websocket, resolve_media_websocket_control
 from src.fish_audio_url import validate_fish_audio_base_url, validate_fish_audio_ws_url
+from src.utils.provider_catalog import provider_default, provider_voice_ids
 
 # Import configuration helpers (AAVA-40 refactor)
 from src.config.loaders import resolve_config_path, load_yaml_with_env_expansion, load_yaml_with_local_override
@@ -250,7 +252,40 @@ class WebSocketMediaConfig(BaseModel):
         return self
 
 
-class LocalProviderConfig(BaseModel):
+def provider_settings_payload(cls: type[BaseModel], payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize omitted defaulted strings without changing credential selectors."""
+    selectors = {"api_key", "api_key_file", "api_key_env", "credentials_path", "enabled"}
+    result = dict(payload)
+    for name, field in cls.model_fields.items():
+        if name in selectors or name not in result:
+            continue
+        if isinstance(field.default, str) and field.default and (
+            result[name] is None and type(None) not in get_args(field.annotation)
+            or isinstance(result[name], str) and not result[name].strip()
+        ):
+            result.pop(name)
+    return result
+
+
+def resolve_openai_tts_transport(model: str, transport: str = "auto") -> str:
+    """Shared schema/runtime routing rule, including dated Speech snapshots."""
+    if transport not in {"auto", "speech", "realtime"}:
+        raise ValueError("OpenAI TTS transport must be auto, speech, or realtime")
+    realtime = str(model).strip().lower().startswith("gpt-realtime")
+    effective = ("realtime" if realtime else "speech") if transport == "auto" else transport
+    if (effective == "realtime") != realtime:
+        raise ValueError("OpenAI TTS transport and model are incompatible")
+    return effective
+
+
+class ProviderSettingsModel(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_defaulted_settings(cls, value):
+        return provider_settings_payload(cls, value) if isinstance(value, dict) else value
+
+
+class LocalProviderConfig(ProviderSettingsModel):
     enabled: bool = Field(default=True)
     # base_url is preferred for full agent mode (consistent with other providers)
     # ws_url is kept for backward compatibility with modular providers
@@ -328,7 +363,7 @@ class LocalProviderConfig(BaseModel):
         return self.base_url or self.ws_url or "ws://127.0.0.1:8765"
 
 
-class DeepgramProviderConfig(CloudConnectionConfig):
+class DeepgramProviderConfig(CloudConnectionConfig, ProviderSettingsModel):
     api_key: Optional[str] = None
     api_key_file: Optional[str] = None
     api_key_env: Optional[str] = None
@@ -345,8 +380,13 @@ class DeepgramProviderConfig(CloudConnectionConfig):
     # "flux-general-en" (English) or "flux-general-multi" via the Admin UI
     # dropdown; the provider will add `version: "v2"` and Flux-specific
     # tuning fields automatically.
-    model: str = Field(default="nova-3")
-    tts_model: str = Field(default="aura-asteria-en")
+    model: str = Field(default=provider_default("deepgram", "model"))
+    tts_model: str = Field(default=provider_default("deepgram", "tts_model"))
+    think_model: str = Field(default=provider_default("deepgram", "think_model"))
+    tts_version: Literal["v1", "v2"] = Field(default=provider_default("deepgram", "tts_version"))
+    tts_speed: Optional[float] = Field(default=None, ge=0.5, le=1.5)
+    tts_expressivity: Optional[int] = Field(default=None, ge=-2, le=2, strict=True)
+    language_hints: Optional[List[str]] = Field(default=None, max_length=100)
     # Flux-specific tuning. Only sent in the Settings JSON when the chosen
     # `model` starts with "flux". Defaults match Deepgram's recommendations
     # (eot_threshold=0.7, eager_eot_threshold disabled by default).
@@ -418,8 +458,26 @@ class DeepgramProviderConfig(CloudConnectionConfig):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _validate_tts_family(self) -> "DeepgramProviderConfig":
+        is_flux = self.tts_model.strip().lower().startswith("flux-")
+        if is_flux != (self.tts_version == "v2"):
+            raise ValueError("Deepgram Flux TTS requires tts_version=v2; Aura voices require v1")
+        if self.tts_version == "v1":
+            if self.tts_expressivity is not None:
+                raise ValueError("Deepgram tts_expressivity requires Flux TTS (v2)")
+            if self.tts_speed is not None and self.tts_speed < 0.7:
+                raise ValueError("Deepgram Aura tts_speed must be between 0.7 and 1.5")
+        elif self.tts_speed is not None and abs(self.tts_speed * 20 - round(self.tts_speed * 20)) > 1e-8:
+            raise ValueError("Deepgram Flux tts_speed must use 0.05 increments")
+        if self.language_hints is not None:
+            if not self.language_hints or any(not isinstance(v, str) or not v.strip() for v in self.language_hints):
+                raise ValueError("Deepgram language_hints must contain non-empty language codes")
+            self.language_hints = list(dict.fromkeys(v.strip() for v in self.language_hints))
+        return self
 
-class OpenAIProviderConfig(BaseModel):
+
+class OpenAIProviderConfig(ProviderSettingsModel):
     """# Milestone7: Canonical defaults for OpenAI pipeline adapters."""
     api_key: Optional[str] = None
     api_key_file: Optional[str] = None
@@ -439,18 +497,22 @@ class OpenAIProviderConfig(BaseModel):
     chat_base_url: str = Field(default="https://api.openai.com/v1")
     stt_base_url: str = Field(default="https://api.openai.com/v1/audio/transcriptions")
     tts_base_url: str = Field(default="https://api.openai.com/v1/audio/speech")
-    # Current GA Realtime models (verified against OpenAI's official docs):
-    #   gpt-realtime        — stable conversational (default; what v6.5.3 hotfix flipped to)
-    #   gpt-realtime-1.5    — best audio-in/audio-out quality
-    #   gpt-realtime-2      — reasoning voice model with configurable effort
-    #   gpt-realtime-mini   — cost-optimized
-    realtime_model: str = Field(default="gpt-realtime")
-    chat_model: str = Field(default="gpt-4o-mini")
-    stt_model: str = Field(default="whisper-1")
-    # NOTE: Default to widely-available TTS model to avoid silent-call failures when
-    # accounts don't have access to newer/limited models.
-    tts_model: str = Field(default="tts-1")
-    voice: str = Field(default="alloy")
+    # Model defaults and lifecycle metadata come from the shared provider catalog.
+    realtime_model: str = Field(default=provider_default("openai_realtime", "model"))
+    chat_model: str = Field(default=provider_default("openai", "chat_model"))
+    stt_model: str = Field(default=provider_default("openai", "stt_model"))
+    # Auto preserves the Speech API for explicitly configured legacy/custom
+    # models; selecting a Realtime model opts into the replacement workflow.
+    tts_model: str = Field(default=provider_default("openai", "tts_model"))
+    tts_transport: Literal["auto", "speech", "realtime"] = Field(default=provider_default("openai", "tts_transport"))
+    tts_realtime_base_url: str = Field(default="wss://api.openai.com/v1/realtime")
+    tts_realtime_timeout_sec: float = Field(default=provider_default("openai", "tts_realtime_timeout_sec"), ge=1.0, le=120.0)
+    tts_instructions: Optional[str] = Field(default=None, max_length=16000)
+    reasoning_effort: Optional[Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]] = Field(default=provider_default("openai", "reasoning_effort"))
+    max_completion_tokens: Optional[int] = Field(default=None, ge=1)
+    temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: Optional[int] = Field(default=200, ge=1)
+    voice: str = Field(default=provider_default("openai", "voice"))
     tts_response_format: str = Field(default="wav")
     default_modalities: List[str] = Field(default_factory=lambda: ["text"])
     input_encoding: str = Field(default="linear16")
@@ -467,8 +529,34 @@ class OpenAIProviderConfig(BaseModel):
         deprecated=True,
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _preserve_configured_speech_endpoint(cls, value):
+        if not isinstance(value, dict):
+            return value
+        result = provider_settings_payload(cls, value)
+        endpoint = result.get("tts_base_url")
+        custom_speech = isinstance(endpoint, str) and endpoint.rstrip("/") != cls.model_fields["tts_base_url"].default.rstrip("/")
+        if "tts_model" not in result and (result.get("tts_transport") == "speech" or custom_speech and result.get("tts_transport", "auto") != "realtime"):
+            # Existing compatible Speech endpoints must never acquire a remote
+            # Realtime endpoint merely because their model was omitted.
+            result["tts_model"] = "tts-1"
+        return result
 
-class TelnyxLLMProviderConfig(BaseModel):
+    @model_validator(mode="after")
+    def _validate_tts_transport(self) -> "OpenAIProviderConfig":
+        resolve_openai_tts_transport(self.tts_model, self.tts_transport)
+        if "reasoning_effort" not in self.model_fields_set and (
+            urlparse(self.chat_base_url).hostname != "api.openai.com"
+            or self.chat_model != provider_default("openai", "chat_model")
+        ):
+            # Compatibility APIs own their parameter contract. Only an explicit
+            # operator choice may project OpenAI-specific reasoning controls.
+            object.__setattr__(self, "reasoning_effort", None)
+        return self
+
+
+class TelnyxLLMProviderConfig(ProviderSettingsModel):
     """
     Canonical defaults for the Telnyx AI Inference LLM adapter.
 
@@ -487,7 +575,7 @@ class TelnyxLLMProviderConfig(BaseModel):
 
     chat_base_url: str = Field(default="https://api.telnyx.com/v2/ai")
     # Default to a model that supports tool calling reliably on Telnyx.
-    chat_model: str = Field(default="Qwen/Qwen3-235B-A22B")
+    chat_model: str = Field(default=provider_default("telnyx", "chat_model"))
 
     temperature: float = Field(default=0.7)
     max_tokens: Optional[int] = None
@@ -495,7 +583,7 @@ class TelnyxLLMProviderConfig(BaseModel):
     response_timeout_sec: float = Field(default=30.0)
 
 
-class MiniMaxLLMProviderConfig(BaseModel):
+class MiniMaxLLMProviderConfig(ProviderSettingsModel):
     """
     Canonical defaults for the MiniMax LLM pipeline adapter.
 
@@ -515,14 +603,14 @@ class MiniMaxLLMProviderConfig(BaseModel):
     api_key_env: Optional[str] = None
 
     chat_base_url: str = Field(default="https://api.minimax.io/v1")
-    chat_model: str = Field(default="MiniMax-M3")
+    chat_model: str = Field(default=provider_default("minimax", "chat_model"))
 
     temperature: float = Field(default=1.0)
     max_tokens: Optional[int] = None
     response_timeout_sec: float = Field(default=30.0)
 
 
-class GoogleProviderConfig(CloudConnectionConfig):
+class GoogleProviderConfig(CloudConnectionConfig, ProviderSettingsModel):
     api_key: Optional[str] = None
     api_key_file: Optional[str] = None
     api_key_env: Optional[str] = None
@@ -536,10 +624,10 @@ class GoogleProviderConfig(CloudConnectionConfig):
     tts_base_url: str = Field(default="https://texttospeech.googleapis.com/v1")
     llm_base_url: str = Field(default="https://generativelanguage.googleapis.com/v1")
     stt_language_code: str = Field(default="en-US")
-    tts_voice_name: str = Field(default="en-US-Neural2-C")
+    tts_voice_name: str = Field(default=provider_default("google", "tts_voice_name"))
     tts_audio_encoding: str = Field(default="MULAW")
     tts_sample_rate_hz: int = Field(default=8000)
-    llm_model: str = Field(default="models/gemini-3.8-flash")
+    llm_model: str = Field(default=provider_default("google", "llm_model"))
     greeting: Optional[str] = None  # For Google Live API initial greeting
     instructions: Optional[str] = None  # System prompt/instructions for Google Live API
     enabled: bool = Field(default=True)  # Provider enabled flag
@@ -549,6 +637,7 @@ class GoogleProviderConfig(CloudConnectionConfig):
     llm_max_output_tokens: int = Field(default=8192, ge=1, le=8192)  # Max output tokens (Gemini supports up to 8192)
     llm_top_p: float = Field(default=0.95, ge=0.0, le=1.0)  # Nucleus sampling parameter
     llm_top_k: int = Field(default=40, ge=1, le=100)  # Top-k sampling parameter
+    thinking_level: Optional[Literal["low", "medium", "high"]] = None
 
     # Google Live VAD / turn-taking tuning (MED-P3). Previously read via getattr with
     # these same defaults but absent from the model, so they were untunable; declare
@@ -625,14 +714,14 @@ class GoogleProviderConfig(CloudConnectionConfig):
     vertex_location: str = Field(default="us-central1")  # GCP region (GOOGLE_CLOUD_LOCATION)
 
 
-class GroqSTTProviderConfig(BaseModel):
+class GroqSTTProviderConfig(ProviderSettingsModel):
     """Groq Speech-to-Text (OpenAI-compatible audio/transcriptions + audio/translations)."""
 
     enabled: bool = Field(default=True)
     api_key: Optional[str] = None
     stt_base_url: str = Field(default="https://api.groq.com/openai/v1/audio/transcriptions")
     # Groq STT supported models: whisper-large-v3-turbo, whisper-large-v3
-    stt_model: str = Field(default="whisper-large-v3-turbo")
+    stt_model: str = Field(default=provider_default("groq", "stt_model"))
     language: Optional[str] = None  # ISO-639-1 (e.g., en, tr)
     prompt: Optional[str] = None
     response_format: str = Field(default="json")  # json | verbose_json | text
@@ -641,15 +730,15 @@ class GroqSTTProviderConfig(BaseModel):
     request_timeout_sec: float = Field(default=15.0)
 
 
-class GroqTTSProviderConfig(BaseModel):
+class GroqTTSProviderConfig(ProviderSettingsModel):
     """Groq Text-to-Speech (OpenAI-compatible audio/speech; Orpheus models)."""
 
     enabled: bool = Field(default=True)
     api_key: Optional[str] = None
     tts_base_url: str = Field(default="https://api.groq.com/openai/v1/audio/speech")
     # Groq TTS supported models: canopylabs/orpheus-v1-english, canopylabs/orpheus-arabic-saudi
-    tts_model: str = Field(default="canopylabs/orpheus-v1-english")
-    voice: str = Field(default="hannah")
+    tts_model: str = Field(default=provider_default("groq", "tts_model"))
+    voice: str = Field(default=provider_default("groq", "voice"))
     response_format: str = Field(default="wav")  # Orpheus docs: only supported response_format is wav.
     # Orpheus docs: input max 200 characters; adapter should chunk longer strings.
     max_input_chars: int = Field(default=200, ge=1)
@@ -660,8 +749,19 @@ class GroqTTSProviderConfig(BaseModel):
     chunk_size_ms: int = Field(default=20)
     request_timeout_sec: float = Field(default=15.0)
 
+    @model_validator(mode="after")
+    def _validate_model_voice(self) -> "GroqTTSProviderConfig":
+        voices = provider_voice_ids("groq", self.tts_model)
+        if voices and "voice" not in self.model_fields_set:
+            # A model-only Arabic configuration must not inherit English Hannah.
+            if self.voice not in voices:
+                self.voice = voices[0]
+        if voices and self.voice not in voices:
+            raise ValueError("Groq voice must belong to the selected Orpheus model")
+        return self
 
-class ElevenLabsProviderConfig(BaseModel):
+
+class ElevenLabsProviderConfig(ProviderSettingsModel):
     """ElevenLabs TTS provider configuration.
 
     API Reference: https://elevenlabs.io/docs/api-reference/text-to-speech
@@ -669,16 +769,16 @@ class ElevenLabsProviderConfig(BaseModel):
     enabled: bool = Field(default=True)
     api_key: Optional[str] = None
     # Default voice: Rachel (warm, professional)
-    voice_id: str = Field(default="21m00Tcm4TlvDq8ikWAM")
-    model_id: str = Field(default="eleven_turbo_v2_5")  # Fast, high-quality
+    voice_id: str = Field(default=provider_default("elevenlabs", "voice_id"))
+    model_id: str = Field(default=provider_default("elevenlabs", "model_id"))
     base_url: str = Field(default="https://api.elevenlabs.io/v1")
     # Audio settings
-    output_format: str = Field(default="ulaw_8000")  # ulaw_8000, mp3_44100, pcm_16000, etc.
+    output_format: str = Field(default=provider_default("elevenlabs", "output_format"))  # ulaw_8000, mp3_44100, pcm_16000, etc.
     output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
     # Voice settings
-    stability: float = Field(default=0.5)
-    similarity_boost: float = Field(default=0.75)
-    style: float = Field(default=0.0)
+    stability: float = Field(default=0.5, ge=0.0, le=1.0)
+    similarity_boost: float = Field(default=0.75, ge=0.0, le=1.0)
+    style: float = Field(default=0.0, ge=0.0, le=1.0)
     use_speaker_boost: bool = Field(default=True)
     # Deprecated compatibility field; ignored by terminal audio drain.
     farewell_hangup_delay_sec: Optional[float] = Field(
@@ -687,8 +787,14 @@ class ElevenLabsProviderConfig(BaseModel):
         deprecated=True,
     )
 
+    @model_validator(mode="after")
+    def _validate_model_settings(self) -> "ElevenLabsProviderConfig":
+        if self.model_id == "eleven_v3" and self.stability not in {0.0, 0.5, 1.0}:
+            raise ValueError("ElevenLabs v3 stability must be 0, 0.5 or 1")
+        return self
 
-class CambAiProviderConfig(BaseModel):
+
+class CambAiProviderConfig(ProviderSettingsModel):
     """CAMB AI TTS provider configuration.
 
     Supports MARS speech models: mars-flash (~150ms latency),
@@ -698,8 +804,8 @@ class CambAiProviderConfig(BaseModel):
     """
     enabled: bool = Field(default=True)
     api_key: Optional[str] = None
-    voice_id: int = Field(default=147320)  # Default CAMB AI voice
-    speech_model: str = Field(default="mars-flash")  # mars-flash, mars-pro, mars-instruct
+    voice_id: int = Field(default=provider_default("cambai", "voice_id"))  # Default CAMB AI voice
+    speech_model: str = Field(default=provider_default("cambai", "speech_model"))  # mars-flash, mars-pro, mars-instruct
     language: str = Field(default="en-us")  # BCP-47 language code
     base_url: str = Field(default="https://client.camb.ai/apis")
     # Output format for streaming TTS
@@ -713,7 +819,7 @@ class CambAiProviderConfig(BaseModel):
     )
 
 
-class FishAudioProviderConfig(BaseModel):
+class FishAudioProviderConfig(ProviderSettingsModel):
     """Fish Audio TTS provider configuration.
 
     Fish Audio streams raw PCM at a requested sample rate, so a telephone call
@@ -732,7 +838,7 @@ class FishAudioProviderConfig(BaseModel):
     # Defaults to base_url with a ws/wss scheme; override to reach a local mock.
     ws_base_url: Optional[str] = None
     # Speech model, sent as the `model` request header.
-    model: str = Field(default="s2.1-pro")  # also: s1, s2-pro, s2.1-pro-free, drama-3-preview
+    model: str = Field(default=provider_default("fishaudio", "model"))  # also: s2.1-pro-free, s2-pro, drama-3, s3-pro; s1 is deprecated
     # Voice model id from the Fish Audio library. The adapter supports the
     # reference_id request form, so a value is required before synthesis.
     reference_id: Optional[str] = None
@@ -803,7 +909,7 @@ def validate_azure_region(region: str) -> str:
     return cleaned
 
 
-class AzureSTTProviderConfig(BaseModel):
+class AzureSTTProviderConfig(ProviderSettingsModel):
     """Microsoft Azure Speech Service - Speech-to-Text provider configuration.
 
     Supports two variants:
@@ -833,7 +939,7 @@ class AzureSTTProviderConfig(BaseModel):
     def _validate_region(cls, v: str) -> str:
         return validate_azure_region(v)
     # API version for Fast Transcription
-    api_version: str = Field(default="2024-11-15")
+    api_version: str = Field(default=provider_default("azure", "api_version"))
     request_timeout_sec: float = Field(default=15.0)
     # VAD end silence timeout for Realtime streaming in milliseconds
     vad_silence_timeout_ms: int = Field(default=300)
@@ -841,7 +947,7 @@ class AzureSTTProviderConfig(BaseModel):
     vad_initial_silence_timeout_ms: int = Field(default=5000)
 
 
-class AzureTTSProviderConfig(BaseModel):
+class AzureTTSProviderConfig(ProviderSettingsModel):
     """Microsoft Azure Speech Service - Text-to-Speech provider configuration.
 
     Uses SSML POST to the Azure TTS REST endpoint.
@@ -857,7 +963,7 @@ class AzureTTSProviderConfig(BaseModel):
     # Override the TTS endpoint URL (defaults to region-derived URL)
     tts_base_url: Optional[str] = Field(default=None)
     # Neural voice name, e.g. "en-US-JennyNeural", "es-ES-AlvaroNeural"
-    voice_name: str = Field(default="en-US-JennyNeural")
+    voice_name: str = Field(default=provider_default("azure", "voice_name"))
     # Base language for xml:lang on <speak> element.
     # If None, auto-derived from voice name (e.g. "en-US-JennyNeural" → "en-US").
     language: Optional[str] = Field(default=None)
@@ -949,7 +1055,7 @@ class MCPConfig(BaseModel):
     servers: Dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
-class OpenAIRealtimeProviderConfig(CloudConnectionConfig):
+class OpenAIRealtimeProviderConfig(CloudConnectionConfig, ProviderSettingsModel):
     enabled: bool = Field(default=True)
     api_key: Optional[str] = None
     api_key_file: Optional[str] = None
@@ -970,8 +1076,10 @@ class OpenAIRealtimeProviderConfig(CloudConnectionConfig):
     #   gpt-realtime-1.5    — best audio-in/audio-out quality
     #   gpt-realtime-2      — reasoning voice model with configurable effort
     #   gpt-realtime-mini   — cost-optimized
-    model: str = Field(default="gpt-realtime")
-    voice: str = Field(default="alloy")
+    model: str = Field(default=provider_default("openai_realtime", "model"))
+    voice: str = Field(default=provider_default("openai_realtime", "voice"))
+    input_transcription_model: str = Field(default=provider_default("openai", "stt_model"))
+    reasoning_effort: Optional[Literal["minimal", "low", "medium", "high", "xhigh"]] = None
     base_url: str = Field(default="wss://api.openai.com/v1/realtime")
     instructions: Optional[str] = None
     organization: Optional[str] = None
@@ -1004,7 +1112,7 @@ class OpenAIRealtimeProviderConfig(CloudConnectionConfig):
     turn_detection: Optional[TurnDetectionConfig] = None
 
 
-class GrokSessionSettings(BaseModel):
+class GrokSessionSettings(ProviderSettingsModel):
     """Optional speech controls shared by YAML validation and the realtime provider."""
 
     speed: Optional[float] = Field(default=None, ge=0.7, le=1.5, strict=True)
@@ -1042,8 +1150,8 @@ class GrokProviderConfig(CloudConnectionConfig, GrokSessionSettings):
     api_key_env: Optional[str] = None
     # Connection
     base_url: str = Field(default="wss://api.x.ai/v1/realtime")
-    model: str = Field(default="grok-voice-latest")
-    voice: str = Field(default="eve")  # any xAI built-in voice or a custom voice ID
+    model: str = Field(default=provider_default("grok", "model"))
+    voice: str = Field(default=provider_default("grok", "voice"))  # any xAI built-in voice or a custom voice ID
     instructions: Optional[str] = None
     greeting: Optional[str] = None
     # Audio defaults:
@@ -1553,6 +1661,8 @@ class AppConfig(BaseModel):
                     )
             stt_options = pipeline.options.get("stt")
             if isinstance(stt_options, dict):
+                if "utterance_buffering" in stt_options and type(stt_options["utterance_buffering"]) is not bool:
+                    raise ValueError(f"pipelines.{pipeline_name}.options.stt.utterance_buffering must be true or false")
                 for option_name, minimum, maximum in (
                     ("segment_energy_threshold", 0, 32767),
                     ("segment_silence_ms", 100, 5000),
@@ -1675,6 +1785,65 @@ def _generate_default_pipeline(config_data: Dict[str, Any]) -> None:
     config_data.setdefault("active_pipeline", pipeline_name)
 
 
+def validate_provider_settings(providers: Any, provider_names=None) -> None:
+    """Validate effective settings without resolving keys or contacting vendors.
+
+    Keep the saved dictionaries intact: defaults and model-only voice inference
+    belong to runtime hydration. Disabled entries may stage future migrations.
+    Canonical OpenAI roles retain their historical shared configuration merge.
+    """
+    from src.config.normalization import ConfigValidationError
+
+    if not isinstance(providers, dict):
+        return
+    common = {
+        "deepgram": DeepgramProviderConfig,
+        "openai": OpenAIProviderConfig, "google": GoogleProviderConfig,
+        "telnyx": TelnyxLLMProviderConfig, "telenyx": TelnyxLLMProviderConfig,
+        "minimax": MiniMaxLLMProviderConfig, "elevenlabs": ElevenLabsProviderConfig,
+        "cambai": CambAiProviderConfig, "fishaudio": FishAudioProviderConfig,
+        "openai_realtime": OpenAIRealtimeProviderConfig, "google_live": GoogleProviderConfig,
+    }
+    role_classes = {
+        ("groq", "stt"): GroqSTTProviderConfig, ("groq", "tts"): GroqTTSProviderConfig,
+        ("azure", "stt"): AzureSTTProviderConfig, ("azure", "tts"): AzureTTSProviderConfig,
+    }
+    for name, raw in providers.items():
+        if provider_names is not None and name not in provider_names:
+            continue
+        if isinstance(raw, BaseModel):
+            raw = raw.model_dump(exclude_unset=True)
+        if not isinstance(raw, dict) or raw.get("enabled") is False:
+            continue
+        key = str(name)
+        role = next((role for role in ("stt", "llm", "tts") if key.endswith(f"_{role}")), None)
+        prefix = key.rsplit(f"_{role}", 1)[0] if role else key
+        kind = str(raw.get("type") or prefix).strip().lower()
+        if kind in {"full", "modular", "stt", "llm", "tts"}:
+            kind = prefix
+        if kind == "deepgram_flux":
+            kind = "deepgram"
+        cls = role_classes.get((kind, role)) or common.get(kind)
+        if cls is None:
+            continue  # Grok uses its dedicated session validator below.
+        payload = dict(raw)
+        if key in {"openai_stt", "openai_llm", "openai_tts"} and kind == "openai":
+            base = providers.get("openai")
+            if isinstance(base, dict) and base.get("enabled") is not False:
+                payload = {**base, **payload}
+        # Credential readiness is a separate operation. Never open a file or
+        # expose credential input through Pydantic errors during an Admin save.
+        payload.pop("api_key", None)
+        try:
+            cls.model_validate(provider_settings_payload(cls, payload))
+        except ValidationError as exc:
+            error = exc.errors(include_input=False)[0]
+            field = str(error["loc"][0]) if error["loc"] else "settings"
+            raise ConfigValidationError(
+                f"providers.{name}.{field}: invalid provider settings ({error['type']})"
+            ) from None
+
+
 def _validate_grok_session_settings(providers: Any) -> None:
     from src.config.normalization import ConfigValidationError
 
@@ -1789,6 +1958,8 @@ def load_config(path: str = "config/ai-agent.yaml") -> AppConfig:
     
     # Phase 5: Validate and return
     config = AppConfig(**config_data)
+    # Preserve established AppConfig diagnostics (notably audio reset links)
+    # before checking model-dependent provider settings.
     config._legacy_contexts_for_hash = raw_legacy_contexts
     return config
 

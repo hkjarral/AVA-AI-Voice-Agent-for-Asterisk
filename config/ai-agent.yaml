@@ -130,9 +130,9 @@ pipelines:
         stream_format: pcm16_16k
       llm:
         base_url: https://api.openai.com/v1
-        model: gpt-4o-mini
-        temperature: 0.7
-        max_tokens: 200
+        model: gpt-6-luna
+        reasoning_effort: none
+        max_completion_tokens: 200
       tts:
         format:
           encoding: mulaw
@@ -151,9 +151,9 @@ pipelines:
         stream_format: pcm16_16k
       llm:
         base_url: https://api.openai.com/v1
-        model: gpt-4o-mini
-        temperature: 0.7
-        max_tokens: 200
+        model: gpt-6-luna
+        reasoning_effort: none
+        max_completion_tokens: 200
       tts:
         format:
           encoding: mulaw
@@ -254,6 +254,8 @@ providers:
     output_encoding: mulaw
     output_sample_rate_hz: 8000
     tts_model: aura-2-thalia-en
+    think_model: gpt-5.6-luna
+    tts_version: v1       # Flux voices require v2; existing Aura stays v1.
     type: full
   google_live:
     # Cloud full-agent startup recovery is opt-in (Google/Vertex, OpenAI Realtime,
@@ -285,7 +287,7 @@ providers:
     # Set `use_vertex_ai: true` and change this to `gemini-live-2.5-flash-native-audio` for production.
     # The shipped Developer API alias below is preview-tier — fine for evaluation, unreliable for
     # mid-utterance interruption. See docs/Provider-Google-Setup.md "Barge-In (Interruption)".
-    llm_model: gemini-2.5-flash-native-audio-latest
+    llm_model: gemini-3.8-live
     llm_temperature: 0.4
     llm_top_k: 20
     llm_top_p: 0.9
@@ -386,7 +388,9 @@ providers:
       - llm
     api_key: ${OPENAI_API_KEY}
     chat_base_url: https://api.openai.com/v1
-    chat_model: gpt-4o-mini
+    chat_model: gpt-6-luna
+    reasoning_effort: none
+    max_completion_tokens: 200
     enabled: false
     response_timeout_sec: 5
     temperature: 0.7
@@ -443,6 +447,7 @@ providers:
     language: en-US
     # 'realtime' = one-shot STT REST | 'fast' = Fast Transcription API
     variant: realtime
+    api_version: "2025-10-15"  # Used only by the fast transcription variant.
     request_timeout_sec: 15.0
   azure_tts:
     type: azure
@@ -464,7 +469,7 @@ providers:
     chat_base_url: https://api.minimax.io/v1
     # Domestic (China) URL: https://api.minimaxi.com/v1
     chat_model: MiniMax-M3
-    # Alternatives: MiniMax-M2.7, MiniMax-M2.7-highspeed
+    # Alternative: MiniMax-M3.1-Flash (thinking model; qualify latency before calls)
     enabled: false
     # API key comes from MINIMAX_API_KEY env var
     temperature: 1.0
@@ -499,7 +504,8 @@ providers:
     instructions: You are a voice assistant. Always speak your responses out loud.
     max_response_output_tokens: 4096
     api_version: ga
-    model: gpt-realtime
+    model: gpt-realtime-2.1
+    input_transcription_model: gpt-transcribe
     organization: ''
     output_encoding: linear16
     output_sample_rate_hz: 24000
@@ -555,7 +561,7 @@ providers:
     capabilities:
       - tts
     voice_id: "21m00Tcm4TlvDq8ikWAM"   # Rachel (warm, professional)
-    model_id: "eleven_turbo_v2_5"        # Fast, high-quality
+    model_id: eleven_flash_v2_5
     output_format: "ulaw_8000"           # Telephony-optimized
     stability: 0.5
     similarity_boost: 0.75
@@ -585,7 +591,7 @@ providers:
     input_encoding: linear16
     input_sample_rate_hz: 16000
     stt_base_url: https://api.openai.com/v1/audio/transcriptions
-    stt_model: whisper-1
+    stt_model: gpt-transcribe
     response_format: json
     temperature: 0
     request_timeout_sec: 15
@@ -598,9 +604,88 @@ providers:
     target_encoding: mulaw
     target_sample_rate_hz: 8000
     tts_base_url: https://api.openai.com/v1/audio/speech
-    tts_model: tts-1
+    tts_model: gpt-realtime-2.1-mini
+    # auto selects Realtime for this model; explicit legacy models keep Speech API.
+    tts_transport: auto
+    tts_realtime_base_url: wss://api.openai.com/v1/realtime
+    tts_realtime_timeout_sec: 30
     type: openai
     voice: alloy
+  # Additional modular providers are disabled until credentials and a pipeline
+  # are selected. These entries do not change an existing installation's routing.
+  deepseek_llm:
+    type: openai
+    capabilities: [llm]
+    enabled: false
+    api_key: ${DEEPSEEK_API_KEY}
+    chat_base_url: https://api.deepseek.com
+    chat_model: deepseek-flash
+    response_timeout_sec: 30
+  telnyx_llm:
+    type: telnyx
+    capabilities: [llm]
+    enabled: false
+    api_key: ${TELNYX_API_KEY}
+    chat_base_url: https://api.telnyx.com/v2/ai
+    chat_model: zai-org/GLM-5.3-Flash
+    response_timeout_sec: 30
+  google_llm:
+    type: google
+    capabilities: [llm]
+    enabled: false
+    api_key: ${GOOGLE_API_KEY}
+    llm_model: gemini-3.8-flash
+  google_stt:
+    type: google
+    capabilities: [stt]
+    enabled: false
+    api_key: ${GOOGLE_API_KEY}
+    stt_base_url: https://speech.googleapis.com/v1
+    stt_language_code: en-US
+  google_tts:
+    type: google
+    capabilities: [tts]
+    enabled: false
+    api_key: ${GOOGLE_API_KEY}
+    tts_voice_name: en-US-Neural2-C
+    tts_audio_encoding: MULAW
+    tts_sample_rate_hz: 8000
+  deepgram_stt:
+    type: deepgram
+    capabilities: [stt]
+    enabled: false
+    api_key: ${DEEPGRAM_API_KEY}
+    model: nova-3
+  deepgram_flux_stt:
+    type: deepgram
+    capabilities: [stt]
+    enabled: false
+    api_key: ${DEEPGRAM_API_KEY}
+    model: flux-general-multi
+    language_hints: [en, es]
+  deepgram_tts:
+    type: deepgram
+    capabilities: [tts]
+    enabled: false
+    api_key: ${DEEPGRAM_API_KEY}
+    tts_model: aura-2-thalia-en
+    tts_version: v1
+  deepgram_flux_tts:
+    type: deepgram
+    capabilities: [tts]
+    enabled: false
+    api_key: ${DEEPGRAM_API_KEY}
+    tts_model: flux-kit-en
+    tts_version: v2
+  cambai_tts:
+    type: cambai
+    capabilities: [tts]
+    enabled: false
+    api_key: ${CAMB_API_KEY}
+    speech_model: mars-flash
+    voice_id: 147320
+    language: en-us
+    output_format: pcm_s16le
 streaming:
   chunk_size_ms: 20
   connection_timeout_ms: 120000

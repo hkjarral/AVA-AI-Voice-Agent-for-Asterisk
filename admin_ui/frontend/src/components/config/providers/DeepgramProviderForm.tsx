@@ -1,3 +1,4 @@
+import { modelOptions, modelIds, providerDefault, providerVoices, providerModels } from '../../../config/providerCatalog';
 import ConnectionRecoveryFields from './ConnectionRecoveryFields';
 import React, { useEffect, useState } from 'react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
@@ -20,52 +21,15 @@ const DEEPGRAM_AGENT_LANGUAGES = [
     { value: 'ja', label: 'Japanese (ja)' },
 ] as const;
 
-const DEEPGRAM_AGENT_LANGUAGE_IDS = new Set<string>(
-    DEEPGRAM_AGENT_LANGUAGES.map(({ value }) => value)
-);
-const DEEPGRAM_RECOMMENDED_MODELS = new Set<string>([
-    'flux-general-en',
-    'flux-general-multi',
-    'nova-3',
-    'nova-2-phonecall',
-]);
+const DEEPGRAM_RECOMMENDED_MODELS = new Set([...modelIds('deepgram', 'stt'), ...modelIds('deepgram', 'flux_stt')]);
 const DEEPGRAM_ENGLISH_ONLY_MODELS = new Set<string>(['flux-general-en', 'nova-2-phonecall']);
-const DEEPGRAM_AURA_2_NAMES: Record<string, ReadonlySet<string>> = {
-    en: new Set(
-        'thalia asteria luna athena hera andromeda aurora callista cora cordelia delia electra harmonia helena iris juno minerva ophelia pandora phoebe selene theia vesta amalthea orion arcas orpheus zeus apollo aries atlas draco hermes hyperion janus jupiter mars neptune odysseus pluto saturn'.split(
-            ' '
-        )
-    ),
-    es: new Set(
-        'celeste estrella nestor diana javier selena aquila carina agustina antonia gloria olivia silvia sirio alvaro luciano valerio'.split(
-            ' '
-        )
-    ),
-    de: new Set('julius viktoria elara aurelia lara fabian kara'.split(' ')),
-    fr: new Set('agathe hector'.split(' ')),
-    it: new Set('livia dionisio melia elio flavio maia cinzia cesare perseo demetra'.split(' ')),
-    nl: new Set('rhea sander beatrix daphne cornelia hestia lars roman leda'.split(' ')),
-    ja: new Set('fujin izanami uzume ebisu ama'.split(' ')),
-};
-const DEEPGRAM_AURA_LEGACY_EN_NAMES = new Set(
-    'asteria luna stella athena hera orion arcas perseus angus orpheus helios zeus'.split(' ')
-);
-
-const normalizeAgentLanguage = (value: unknown): string =>
-    String(value || 'en')
-        .trim()
-        .toLowerCase()
-        .replace('_', '-')
-        .split('-', 1)[0] || 'en';
-
+const listenLanguagesForModel = (model: string): string[] | undefined => providerModels('deepgram', 'flux_stt').find(item => item.id === model)?.languages
+    ?? (DEEPGRAM_ENGLISH_ONLY_MODELS.has(model) ? ['en'] : undefined);
+const normalizeAgentLanguage = (value: unknown): string => String(value || 'en').trim().toLowerCase().replace('_', '-').split('-', 1)[0] || 'en';
+const allDeepgramVoices = [...providerVoices('deepgram', 'tts'), ...providerVoices('deepgram', 'flux_tts')];
 const auraVoiceLanguage = (value: unknown): string | null => {
-    const model = String(value || '')
-        .trim()
-        .toLowerCase();
-    const aura2 = model.match(/^aura-2-([a-z0-9]+)-([a-z]{2})$/);
-    if (aura2 && DEEPGRAM_AURA_2_NAMES[aura2[2]]?.has(aura2[1])) return aura2[2];
-    const legacy = model.match(/^aura-([a-z0-9]+)-en$/);
-    return legacy && DEEPGRAM_AURA_LEGACY_EN_NAMES.has(legacy[1]) ? 'en' : null;
+    const voice = allDeepgramVoices.find(item => item.id === String(value || '').toLowerCase());
+    return voice ? voice.language ?? voice.id.split('-').slice(-1)[0] ?? null : null;
 };
 
 const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
@@ -89,13 +53,19 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
     const selectedModel = String(config.model || 'nova-3');
     const configuredAgentLanguage = String(config.agent_language || 'en');
     const agentLanguage = normalizeAgentLanguage(configuredAgentLanguage);
-    const configuredVoice = String(config.tts_model || 'aura-asteria-en');
+    const selectedVersion = config.tts_version ?? providerDefault('deepgram', 'tts_version');
+    const familyVoices = providerVoices('deepgram', selectedVersion === 'v2' ? 'flux_tts' : 'tts');
+    const listenLanguages = listenLanguagesForModel(selectedModel);
+    const ttsLanguages = selectedVersion === 'v2'
+        ? [...new Set(familyVoices.map(voice => voice.language ?? voice.id.split('-').slice(-1)[0] ?? 'en'))].map(value => ({ value, label: value.toUpperCase() }))
+        : DEEPGRAM_AGENT_LANGUAGES;
+    const agentLanguages = ttsLanguages.filter(language => !listenLanguages || listenLanguages.includes(language.value));
+    const configuredVoice = String(config.tts_model || providerDefault('deepgram', 'tts_model'));
     const configuredVoiceLanguage = auraVoiceLanguage(configuredVoice);
     const legacyModel = !DEEPGRAM_RECOMMENDED_MODELS.has(selectedModel);
-    const legacyLanguage = !DEEPGRAM_AGENT_LANGUAGE_IDS.has(agentLanguage);
-    const modelLanguageMismatch =
-        DEEPGRAM_ENGLISH_ONLY_MODELS.has(selectedModel) && agentLanguage !== 'en';
-    const voiceLanguageMismatch = configuredVoiceLanguage !== agentLanguage;
+    const legacyLanguage = !agentLanguages.some(language => language.value === agentLanguage);
+    const modelLanguageMismatch = listenLanguages !== undefined && !listenLanguages.includes(agentLanguage);
+    const voiceLanguageMismatch = configuredVoiceLanguage !== agentLanguage || !familyVoices.some(voice => voice.id === configuredVoice);
 
     return (
         <div className="space-y-6">
@@ -280,20 +250,10 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                             }}
                         >
                             <optgroup label="Flux — Conversational (built-in turn detection)">
-                                <option value="flux-general-en" disabled={agentLanguage !== 'en'}>
-                                    Flux General — English (recommended for English)
-                                </option>
-                                <option value="flux-general-multi">
-                                    Flux General — Multilingual
-                                </option>
+                                {modelOptions('deepgram', 'flux_stt').map(model => <option key={model.value} value={model.value} disabled={listenLanguagesForModel(model.value)?.includes(agentLanguage) === false}>{model.label}</option>)}
                             </optgroup>
-                            <optgroup label="Nova — General">
-                                <option value="nova-3">Nova-3 General</option>
-                            </optgroup>
-                            <optgroup label="Legacy telephony compatibility">
-                                <option value="nova-2-phonecall" disabled={agentLanguage !== 'en'}>
-                                    Nova-2 Phone Call — English
-                                </option>
+                            <optgroup label="Nova — Streaming Recognition">
+                                {modelOptions('deepgram', 'stt').map(model => <option key={model.value} value={model.value} disabled={DEEPGRAM_ENGLISH_ONLY_MODELS.has(model.value) && agentLanguage !== 'en'}>{model.label}</option>)}
                             </optgroup>
                             {legacyModel && (
                                 <option value={selectedModel}>
@@ -321,8 +281,7 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                         )}
                         {modelLanguageMismatch && (
                             <p className="text-xs text-red-600" role="alert">
-                                {selectedModel} is English-only. Select English or use Flux
-                                Multilingual/Nova-3 before placing a call.
+                                {selectedModel} does not support the selected listen language ({agentLanguage}). Select a language supported by both recognition and synthesis, or change the listen model before placing a call.
                             </p>
                         )}
                     </div>
@@ -400,19 +359,15 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                             value={configuredAgentLanguage}
                             onChange={e => handleChange('agent_language', e.target.value)}
                         >
-                            {DEEPGRAM_AGENT_LANGUAGES.map(({ value, label }) => (
+                            {agentLanguages.map(({ value, label }) => (
                                 <option
                                     key={value}
                                     value={value}
-                                    disabled={
-                                        DEEPGRAM_ENGLISH_ONLY_MODELS.has(selectedModel) &&
-                                        value !== 'en'
-                                    }
                                 >
                                     {label}
                                 </option>
                             ))}
-                            {!DEEPGRAM_AGENT_LANGUAGES.some(
+                            {!agentLanguages.some(
                                 ({ value }) => value === configuredAgentLanguage
                             ) && (
                                 <option value={configuredAgentLanguage}>
@@ -421,7 +376,7 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                             )}
                         </select>
                         <p className="text-xs text-muted-foreground">
-                            Supported end-to-end Aura languages. Locale variants are preserved and
+                            Supported languages shared by the selected listen model and TTS family. Locale variants are preserved and
                             normalized to their base language at runtime.
                         </p>
                         {legacyLanguage && (
@@ -432,6 +387,25 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                         )}
                     </div>
 
+                    <div className="space-y-2">
+                        <label htmlFor="deepgram-think-model" className="text-sm font-medium">Managed Reasoning Model</label>
+                        <select id="deepgram-think-model" className="w-full p-2 rounded border border-input bg-background" value={config.think_model ?? providerDefault('deepgram', 'think_model')} onChange={event => handleChange('think_model', event.target.value)}>
+                            {config.think_model && !modelIds('deepgram', 'llm').includes(config.think_model) && <option value={config.think_model}>{config.think_model} (configured)</option>}
+                            {modelOptions('deepgram', 'llm').map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
+                        </select>
+                        <p className="text-xs text-muted-foreground">Deepgram-managed OpenAI models only. New calls use this setting; test tool calls before rollout.</p>
+                    </div>
+                    <div className="space-y-2">
+                        <label htmlFor="deepgram-tts-version" className="text-sm font-medium">TTS API Version</label>
+                        <select id="deepgram-tts-version" className="w-full p-2 rounded border border-input bg-background" value={selectedVersion} onChange={event => onChange({ ...config, tts_version: event.target.value,
+                            ...(event.target.value === 'v1' && config.tts_expressivity != null ? { tts_expressivity: null } : {}) })}>
+                            <option value="v1">Aura (v1)</option><option value="v2">Flux (v2, opt-in)</option>
+                        </select>
+                        <p className="text-xs text-muted-foreground">Select a matching voice and language after changing versions. Flux supports raw audio and requires a real-call acceptance test. Early Access languages need numbers and dates written out; non-English voices are unavailable on the Australia endpoint.</p>
+                        <label htmlFor="deepgram-tts-speed" className="text-sm font-medium">Speaking Rate</label>
+                        <input id="deepgram-tts-speed" type="number" min={selectedVersion === 'v2' ? 0.5 : 0.7} max={1.5} step={0.05} value={config.tts_speed ?? ''} onChange={event => handleChange('tts_speed', event.target.value === '' ? null : Number(event.target.value))} className="w-full p-2 rounded border border-input bg-background" />
+                        {selectedVersion === 'v2' && <><label htmlFor="deepgram-tts-expressivity" className="text-sm font-medium">Flux Expressivity (-2 to 2)</label><input id="deepgram-tts-expressivity" type="number" min={-2} max={2} step={1} value={config.tts_expressivity ?? ''} onChange={event => handleChange('tts_expressivity', event.target.value === '' ? null : Number(event.target.value))} className="w-full p-2 rounded border border-input bg-background" /></>}
+                    </div>
                     <div className="space-y-2">
                         <div className="flex items-center gap-1.5">
                             <label className="text-sm font-medium">
@@ -480,163 +454,11 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                                     — {configuredVoice}
                                 </option>
                             )}
-                            <optgroup
-                                label="🇺🇸 English - Aura-2 Female"
-                                hidden={agentLanguage !== 'en'}
-                                disabled={agentLanguage !== 'en'}
-                            >
-                                <option value="aura-2-thalia-en">Thalia (EN)</option>
-                                <option value="aura-2-asteria-en">Asteria (EN)</option>
-                                <option value="aura-2-luna-en">Luna (EN)</option>
-                                <option value="aura-2-athena-en">Athena (EN)</option>
-                                <option value="aura-2-hera-en">Hera (EN)</option>
-                                <option value="aura-2-andromeda-en">Andromeda (EN)</option>
-                                <option value="aura-2-aurora-en">Aurora (EN)</option>
-                                <option value="aura-2-callista-en">Callista (EN)</option>
-                                <option value="aura-2-cora-en">Cora (EN)</option>
-                                <option value="aura-2-cordelia-en">Cordelia (EN)</option>
-                                <option value="aura-2-delia-en">Delia (EN)</option>
-                                <option value="aura-2-electra-en">Electra (EN)</option>
-                                <option value="aura-2-harmonia-en">Harmonia (EN)</option>
-                                <option value="aura-2-helena-en">Helena (EN)</option>
-                                <option value="aura-2-iris-en">Iris (EN)</option>
-                                <option value="aura-2-juno-en">Juno (EN)</option>
-                                <option value="aura-2-minerva-en">Minerva (EN)</option>
-                                <option value="aura-2-ophelia-en">Ophelia (EN)</option>
-                                <option value="aura-2-pandora-en">Pandora (EN)</option>
-                                <option value="aura-2-phoebe-en">Phoebe (EN)</option>
-                                <option value="aura-2-selene-en">Selene (EN)</option>
-                                <option value="aura-2-theia-en">Theia (EN)</option>
-                                <option value="aura-2-vesta-en">Vesta (EN)</option>
-                                <option value="aura-2-amalthea-en">Amalthea (EN)</option>
-                            </optgroup>
-                            <optgroup
-                                label="🇺🇸 English - Aura-2 Male"
-                                hidden={agentLanguage !== 'en'}
-                                disabled={agentLanguage !== 'en'}
-                            >
-                                <option value="aura-2-orion-en">Orion (EN)</option>
-                                <option value="aura-2-arcas-en">Arcas (EN)</option>
-                                <option value="aura-2-orpheus-en">Orpheus (EN)</option>
-                                <option value="aura-2-zeus-en">Zeus (EN)</option>
-                                <option value="aura-2-apollo-en">Apollo (EN)</option>
-                                <option value="aura-2-aries-en">Aries (EN)</option>
-                                <option value="aura-2-atlas-en">Atlas (EN)</option>
-                                <option value="aura-2-draco-en">Draco (EN)</option>
-                                <option value="aura-2-hermes-en">Hermes (EN)</option>
-                                <option value="aura-2-hyperion-en">Hyperion (EN)</option>
-                                <option value="aura-2-janus-en">Janus (EN)</option>
-                                <option value="aura-2-jupiter-en">Jupiter (EN)</option>
-                                <option value="aura-2-mars-en">Mars (EN)</option>
-                                <option value="aura-2-neptune-en">Neptune (EN)</option>
-                                <option value="aura-2-odysseus-en">Odysseus (EN)</option>
-                                <option value="aura-2-pluto-en">Pluto (EN)</option>
-                                <option value="aura-2-saturn-en">Saturn (EN)</option>
-                            </optgroup>
-                            <optgroup
-                                label="🇪🇸 Spanish - Aura-2 (17 voices)"
-                                hidden={agentLanguage !== 'es'}
-                                disabled={agentLanguage !== 'es'}
-                            >
-                                <option value="aura-2-celeste-es">Celeste (ES) ⭐</option>
-                                <option value="aura-2-estrella-es">Estrella (ES) ⭐</option>
-                                <option value="aura-2-nestor-es">Nestor (ES) ⭐</option>
-                                <option value="aura-2-diana-es">Diana (ES) 🔄</option>
-                                <option value="aura-2-javier-es">Javier (ES) 🔄</option>
-                                <option value="aura-2-selena-es">Selena (ES) 🔄</option>
-                                <option value="aura-2-aquila-es">Aquila (ES) 🔄</option>
-                                <option value="aura-2-carina-es">Carina (ES) 🔄</option>
-                                <option value="aura-2-agustina-es">Agustina (ES)</option>
-                                <option value="aura-2-antonia-es">Antonia (ES)</option>
-                                <option value="aura-2-gloria-es">Gloria (ES)</option>
-                                <option value="aura-2-olivia-es">Olivia (ES)</option>
-                                <option value="aura-2-silvia-es">Silvia (ES)</option>
-                                <option value="aura-2-sirio-es">Sirio (ES)</option>
-                                <option value="aura-2-alvaro-es">Alvaro (ES)</option>
-                                <option value="aura-2-luciano-es">Luciano (ES)</option>
-                                <option value="aura-2-valerio-es">Valerio (ES)</option>
-                            </optgroup>
-                            <optgroup
-                                label="🇩🇪 German - Aura-2 (7 voices)"
-                                hidden={agentLanguage !== 'de'}
-                                disabled={agentLanguage !== 'de'}
-                            >
-                                <option value="aura-2-julius-de">Julius (DE) ⭐</option>
-                                <option value="aura-2-viktoria-de">Viktoria (DE) ⭐</option>
-                                <option value="aura-2-elara-de">Elara (DE)</option>
-                                <option value="aura-2-aurelia-de">Aurelia (DE)</option>
-                                <option value="aura-2-lara-de">Lara (DE)</option>
-                                <option value="aura-2-fabian-de">Fabian (DE)</option>
-                                <option value="aura-2-kara-de">Kara (DE)</option>
-                            </optgroup>
-                            <optgroup
-                                label="🇫🇷 French - Aura-2 (2 voices)"
-                                hidden={agentLanguage !== 'fr'}
-                                disabled={agentLanguage !== 'fr'}
-                            >
-                                <option value="aura-2-agathe-fr">Agathe (FR) ⭐</option>
-                                <option value="aura-2-hector-fr">Hector (FR) ⭐</option>
-                            </optgroup>
-                            <optgroup
-                                label="🇮🇹 Italian - Aura-2 (10 voices)"
-                                hidden={agentLanguage !== 'it'}
-                                disabled={agentLanguage !== 'it'}
-                            >
-                                <option value="aura-2-livia-it">Livia (IT) ⭐</option>
-                                <option value="aura-2-dionisio-it">Dionisio (IT) ⭐</option>
-                                <option value="aura-2-melia-it">Melia (IT)</option>
-                                <option value="aura-2-elio-it">Elio (IT)</option>
-                                <option value="aura-2-flavio-it">Flavio (IT)</option>
-                                <option value="aura-2-maia-it">Maia (IT)</option>
-                                <option value="aura-2-cinzia-it">Cinzia (IT)</option>
-                                <option value="aura-2-cesare-it">Cesare (IT)</option>
-                                <option value="aura-2-perseo-it">Perseo (IT)</option>
-                                <option value="aura-2-demetra-it">Demetra (IT)</option>
-                            </optgroup>
-                            <optgroup
-                                label="🇳🇱 Dutch - Aura-2 (9 voices)"
-                                hidden={agentLanguage !== 'nl'}
-                                disabled={agentLanguage !== 'nl'}
-                            >
-                                <option value="aura-2-rhea-nl">Rhea (NL) ⭐</option>
-                                <option value="aura-2-sander-nl">Sander (NL) ⭐</option>
-                                <option value="aura-2-beatrix-nl">Beatrix (NL) ⭐</option>
-                                <option value="aura-2-daphne-nl">Daphne (NL)</option>
-                                <option value="aura-2-cornelia-nl">Cornelia (NL)</option>
-                                <option value="aura-2-hestia-nl">Hestia (NL)</option>
-                                <option value="aura-2-lars-nl">Lars (NL)</option>
-                                <option value="aura-2-roman-nl">Roman (NL)</option>
-                                <option value="aura-2-leda-nl">Leda (NL)</option>
-                            </optgroup>
-                            <optgroup
-                                label="🇯🇵 Japanese - Aura-2 (5 voices)"
-                                hidden={agentLanguage !== 'ja'}
-                                disabled={agentLanguage !== 'ja'}
-                            >
-                                <option value="aura-2-fujin-ja">Fujin (JA) ⭐</option>
-                                <option value="aura-2-izanami-ja">Izanami (JA) ⭐</option>
-                                <option value="aura-2-uzume-ja">Uzume (JA)</option>
-                                <option value="aura-2-ebisu-ja">Ebisu (JA)</option>
-                                <option value="aura-2-ama-ja">Ama (JA)</option>
-                            </optgroup>
-                            <optgroup
-                                label="🇺🇸 English - Aura Legacy"
-                                hidden={agentLanguage !== 'en'}
-                                disabled={agentLanguage !== 'en'}
-                            >
-                                <option value="aura-asteria-en">Asteria (EN Legacy)</option>
-                                <option value="aura-luna-en">Luna (EN Legacy)</option>
-                                <option value="aura-stella-en">Stella (EN Legacy)</option>
-                                <option value="aura-athena-en">Athena (EN Legacy)</option>
-                                <option value="aura-hera-en">Hera (EN Legacy)</option>
-                                <option value="aura-orion-en">Orion (EN Legacy)</option>
-                                <option value="aura-arcas-en">Arcas (EN Legacy)</option>
-                                <option value="aura-perseus-en">Perseus (EN Legacy)</option>
-                                <option value="aura-angus-en">Angus (EN Legacy)</option>
-                                <option value="aura-orpheus-en">Orpheus (EN Legacy)</option>
-                                <option value="aura-helios-en">Helios (EN Legacy)</option>
-                                <option value="aura-zeus-en">Zeus (EN Legacy)</option>
-                            </optgroup>
+                            {agentLanguages.map(language => (
+                                <optgroup key={language.value} label={language.label} hidden={agentLanguage !== language.value} disabled={agentLanguage !== language.value}>
+                                    {familyVoices.filter(voice => (voice.language ?? voice.id.split('-').slice(-1)[0]) === language.value).map(voice => <option key={voice.id} value={voice.id}>{voice.label}</option>)}
+                                </optgroup>
+                            ))}
                         </select>
                         <p className="text-xs text-muted-foreground">
                             ⭐ = Featured, 🔄 = Codeswitching (ES↔EN). EN (53), ES (17), DE (7), FR
@@ -653,7 +475,7 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({
                         {voiceLanguageMismatch && (
                             <p className="text-xs text-red-600" role="alert">
                                 Voice {configuredVoice} does not match agent language{' '}
-                                {configuredAgentLanguage}. Select a matching Aura voice before
+                                {configuredAgentLanguage}. Select a matching voice before
                                 placing a call; AAVA will not silently replace it.
                             </p>
                         )}

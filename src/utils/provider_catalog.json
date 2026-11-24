@@ -1,0 +1,3375 @@
+{
+  "schema_version": 1,
+  "verified_at": "2026-11-23",
+  "providers": {
+    "openai_realtime": {
+      "sources": [
+        "https://developers.openai.com/api/docs/models/all",
+        "https://developers.openai.com/api/docs/guides/realtime-conversations",
+        "https://developers.openai.com/api/docs/guides/speech-to-text",
+        "https://developers.openai.com/api/docs/deprecations"
+      ],
+      "defaults": {
+        "model": "gpt-realtime-2.1",
+        "voice": "alloy",
+        "input_transcription_model": "gpt-transcribe"
+      },
+      "models": {
+        "realtime": [
+          {
+            "id": "gpt-realtime-2.1",
+            "label": "gpt-realtime-2.1"
+          },
+          {
+            "id": "gpt-realtime-2.1-mini",
+            "label": "gpt-realtime-2.1-mini"
+          },
+          {
+            "id": "gpt-realtime-2",
+            "label": "gpt-realtime-2"
+          },
+          {
+            "id": "gpt-realtime-1.5",
+            "label": "gpt-realtime-1.5"
+          },
+          {
+            "id": "gpt-realtime",
+            "label": "gpt-realtime (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-01-20"
+          },
+          {
+            "id": "gpt-realtime-mini",
+            "label": "gpt-realtime-mini (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-01-20"
+          }
+        ],
+        "stt": [
+          {
+            "id": "gpt-transcribe",
+            "label": "gpt-transcribe"
+          },
+          {
+            "id": "whisper-1",
+            "label": "whisper-1 (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-02-26"
+          },
+          {
+            "id": "gpt-4o-mini-transcribe",
+            "label": "gpt-4o-mini-transcribe (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-02-26"
+          },
+          {
+            "id": "gpt-4o-transcribe",
+            "label": "gpt-4o-transcribe (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-02-26"
+          },
+          {
+            "id": "gpt-4o-mini-transcribe-2025-12-15",
+            "label": "gpt-4o-mini-transcribe-2025-12-15 (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-02-26"
+          }
+        ]
+      },
+      "voices": {
+        "realtime": [
+          {
+            "id": "alloy",
+            "label": "Alloy \u2014 neutral, balanced"
+          },
+          {
+            "id": "ash",
+            "label": "Ash \u2014 clear, direct"
+          },
+          {
+            "id": "ballad",
+            "label": "Ballad \u2014 warm, storytelling"
+          },
+          {
+            "id": "cedar",
+            "label": "Cedar \u2014 warm, natural"
+          },
+          {
+            "id": "coral",
+            "label": "Coral \u2014 friendly, conversational"
+          },
+          {
+            "id": "echo",
+            "label": "Echo \u2014 soft, calm"
+          },
+          {
+            "id": "marin",
+            "label": "Marin \u2014 clear, professional"
+          },
+          {
+            "id": "sage",
+            "label": "Sage \u2014 wise, authoritative"
+          },
+          {
+            "id": "shimmer",
+            "label": "Shimmer \u2014 bright, optimistic"
+          },
+          {
+            "id": "verse",
+            "label": "Verse \u2014 expressive, dynamic"
+          }
+        ]
+      }
+    },
+    "openai": {
+      "sources": [
+        "https://developers.openai.com/api/docs/models/gpt-6-luna",
+        "https://developers.openai.com/api/docs/guides/text-to-speech",
+        "https://developers.openai.com/api/docs/deprecations",
+        "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
+        "https://developers.openai.com/api/docs/models/gpt-6.2-astra"
+      ],
+      "defaults": {
+        "chat_model": "gpt-6-luna",
+        "reasoning_effort": "none",
+        "stt_model": "gpt-transcribe",
+        "tts_model": "gpt-realtime-2.1-mini",
+        "tts_transport": "auto",
+        "voice": "alloy",
+        "tts_realtime_timeout_sec": 30
+      },
+      "models": {
+        "llm": [
+          {
+            "id": "gpt-6-luna",
+            "label": "gpt-6-luna"
+          },
+          {
+            "id": "gpt-6.2-astra",
+            "label": "gpt-6.2-astra (Chat Completions: no tools)",
+            "chat_tools": false
+          },
+          {
+            "id": "gpt-6.2-sol",
+            "label": "gpt-6.2-sol (Chat Completions: no tools)",
+            "chat_tools": false
+          },
+          {
+            "id": "gpt-4o-mini",
+            "label": "gpt-4o-mini (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-01-14"
+          },
+          {
+            "id": "gpt-4o",
+            "label": "gpt-4o (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-01-14"
+          },
+          {
+            "id": "gpt-4o-2024-08-06",
+            "label": "gpt-4o-2024-08-06 (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-01-14"
+          }
+        ],
+        "stt": [
+          {
+            "id": "gpt-transcribe",
+            "label": "gpt-transcribe"
+          },
+          {
+            "id": "whisper-1",
+            "label": "whisper-1 (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-02-26"
+          },
+          {
+            "id": "gpt-4o-mini-transcribe",
+            "label": "gpt-4o-mini-transcribe (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-02-26"
+          },
+          {
+            "id": "gpt-4o-transcribe",
+            "label": "gpt-4o-transcribe (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-02-26"
+          },
+          {
+            "id": "gpt-4o-transcribe-diarize",
+            "label": "gpt-4o-transcribe-diarize (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-02-26"
+          },
+          {
+            "id": "gpt-4o-mini-transcribe-2025-12-15",
+            "label": "gpt-4o-mini-transcribe-2025-12-15 (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-02-26"
+          }
+        ],
+        "tts": [
+          {
+            "id": "gpt-realtime-2.1-mini",
+            "label": "gpt-realtime-2.1-mini"
+          },
+          {
+            "id": "gpt-realtime-2.1",
+            "label": "gpt-realtime-2.1"
+          },
+          {
+            "id": "gpt-4o-mini-tts",
+            "label": "gpt-4o-mini-tts (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-01-06"
+          },
+          {
+            "id": "tts-1",
+            "label": "tts-1 (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-01-06"
+          },
+          {
+            "id": "tts-1-hd",
+            "label": "tts-1-hd (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-01-06"
+          },
+          {
+            "id": "gpt-4o-mini-tts-2025-12-15",
+            "label": "gpt-4o-mini-tts-2025-12-15 (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2027-01-06"
+          }
+        ]
+      },
+      "voices": {
+        "tts": [
+          {
+            "id": "alloy",
+            "label": "Alloy"
+          },
+          {
+            "id": "ash",
+            "label": "Ash"
+          },
+          {
+            "id": "ballad",
+            "label": "Ballad"
+          },
+          {
+            "id": "coral",
+            "label": "Coral"
+          },
+          {
+            "id": "echo",
+            "label": "Echo"
+          },
+          {
+            "id": "fable",
+            "label": "Fable"
+          },
+          {
+            "id": "nova",
+            "label": "Nova"
+          },
+          {
+            "id": "onyx",
+            "label": "Onyx"
+          },
+          {
+            "id": "sage",
+            "label": "Sage"
+          },
+          {
+            "id": "shimmer",
+            "label": "Shimmer"
+          },
+          {
+            "id": "verse",
+            "label": "Verse"
+          },
+          {
+            "id": "marin",
+            "label": "Marin"
+          },
+          {
+            "id": "cedar",
+            "label": "Cedar"
+          }
+        ]
+      },
+      "voice_models": {
+        "gpt-realtime-2.1-mini": [
+          "alloy",
+          "ash",
+          "ballad",
+          "cedar",
+          "coral",
+          "echo",
+          "marin",
+          "sage",
+          "shimmer",
+          "verse"
+        ],
+        "gpt-realtime-2.1": [
+          "alloy",
+          "ash",
+          "ballad",
+          "cedar",
+          "coral",
+          "echo",
+          "marin",
+          "sage",
+          "shimmer",
+          "verse"
+        ],
+        "tts-1": [
+          "alloy",
+          "ash",
+          "coral",
+          "echo",
+          "fable",
+          "nova",
+          "onyx",
+          "sage",
+          "shimmer"
+        ],
+        "tts-1-hd": [
+          "alloy",
+          "ash",
+          "coral",
+          "echo",
+          "fable",
+          "nova",
+          "onyx",
+          "sage",
+          "shimmer"
+        ],
+        "gpt-4o-mini-tts": [
+          "alloy",
+          "ash",
+          "ballad",
+          "coral",
+          "echo",
+          "fable",
+          "nova",
+          "onyx",
+          "sage",
+          "shimmer",
+          "verse",
+          "marin",
+          "cedar"
+        ],
+        "gpt-4o-mini-tts-2025-12-15": [
+          "alloy",
+          "ash",
+          "ballad",
+          "coral",
+          "echo",
+          "fable",
+          "nova",
+          "onyx",
+          "sage",
+          "shimmer",
+          "verse",
+          "marin",
+          "cedar"
+        ]
+      }
+    },
+    "google_live": {
+      "sources": [
+        "https://aistudio.google.com/docs/live-api/capabilities",
+        "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-8-live",
+        "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/2-5-flash-live-api"
+      ],
+      "defaults": {
+        "llm_model": "gemini-3.8-live",
+        "tts_voice_name": "Aoede"
+      },
+      "models": {
+        "live": [
+          {
+            "id": "gemini-3.8-live",
+            "label": "Gemini 3.8 Live (GA)",
+            "api": "both"
+          },
+          {
+            "id": "gemini-3.8-live-extended-thinking",
+            "label": "Gemini 3.8 Live Extended Thinking (opt-in, restricted tools)",
+            "api": "developer"
+          },
+          {
+            "id": "gemini-3.1-flash-live-preview",
+            "label": "gemini-3.1-flash-live-preview",
+            "api": "developer"
+          },
+          {
+            "id": "gemini-2.5-flash-native-audio-latest",
+            "label": "gemini-2.5-flash-native-audio-latest",
+            "api": "developer"
+          },
+          {
+            "id": "gemini-2.5-flash-native-audio-preview-12-2025",
+            "label": "gemini-2.5-flash-native-audio-preview-12-2025",
+            "api": "developer",
+            "status": "deprecated",
+            "shutdown_date": "2027-03-31"
+          },
+          {
+            "id": "gemini-2.5-flash-native-audio-preview-09-2025",
+            "label": "gemini-2.5-flash-native-audio-preview-09-2025",
+            "api": "developer"
+          },
+          {
+            "id": "gemini-live-2.5-flash-native-audio",
+            "label": "gemini-live-2.5-flash-native-audio (deprecated; use gemini-3.8-live)",
+            "api": "vertex",
+            "status": "deprecated",
+            "shutdown_date": "2026-12-13",
+            "replacement": "gemini-3.8-live"
+          },
+          {
+            "id": "gemini-live-2.5-flash-preview-native-audio-09-2025",
+            "label": "gemini-live-2.5-flash-preview-native-audio-09-2025",
+            "api": "vertex"
+          }
+        ]
+      },
+      "voices": {
+        "live": [
+          {
+            "id": "Achernar",
+            "label": "Achernar \u2014 Soft"
+          },
+          {
+            "id": "Achird",
+            "label": "Achird \u2014 Friendly"
+          },
+          {
+            "id": "Algenib",
+            "label": "Algenib \u2014 Gravelly"
+          },
+          {
+            "id": "Algieba",
+            "label": "Algieba \u2014 Smooth"
+          },
+          {
+            "id": "Alnilam",
+            "label": "Alnilam \u2014 Firm"
+          },
+          {
+            "id": "Aoede",
+            "label": "Aoede \u2014 Breezy"
+          },
+          {
+            "id": "Autonoe",
+            "label": "Autonoe \u2014 Bright"
+          },
+          {
+            "id": "Callirrhoe",
+            "label": "Callirrhoe \u2014 Easy-going"
+          },
+          {
+            "id": "Charon",
+            "label": "Charon \u2014 Informative"
+          },
+          {
+            "id": "Despina",
+            "label": "Despina \u2014 Smooth"
+          },
+          {
+            "id": "Enceladus",
+            "label": "Enceladus \u2014 Breathy"
+          },
+          {
+            "id": "Erinome",
+            "label": "Erinome \u2014 Clear"
+          },
+          {
+            "id": "Fenrir",
+            "label": "Fenrir \u2014 Excitable"
+          },
+          {
+            "id": "Gacrux",
+            "label": "Gacrux \u2014 Mature"
+          },
+          {
+            "id": "Iapetus",
+            "label": "Iapetus \u2014 Clear"
+          },
+          {
+            "id": "Kore",
+            "label": "Kore \u2014 Firm"
+          },
+          {
+            "id": "Laomedeia",
+            "label": "Laomedeia \u2014 Upbeat"
+          },
+          {
+            "id": "Leda",
+            "label": "Leda \u2014 Youthful"
+          },
+          {
+            "id": "Orus",
+            "label": "Orus \u2014 Firm"
+          },
+          {
+            "id": "Puck",
+            "label": "Puck \u2014 Upbeat"
+          },
+          {
+            "id": "Pulcherrima",
+            "label": "Pulcherrima \u2014 Forward"
+          },
+          {
+            "id": "Rasalgethi",
+            "label": "Rasalgethi \u2014 Informative"
+          },
+          {
+            "id": "Sadachbia",
+            "label": "Sadachbia \u2014 Lively"
+          },
+          {
+            "id": "Sadaltager",
+            "label": "Sadaltager \u2014 Knowledgeable"
+          },
+          {
+            "id": "Schedar",
+            "label": "Schedar \u2014 Even"
+          },
+          {
+            "id": "Sulafat",
+            "label": "Sulafat \u2014 Warm"
+          },
+          {
+            "id": "Umbriel",
+            "label": "Umbriel \u2014 Easy-going"
+          },
+          {
+            "id": "Vindemiatrix",
+            "label": "Vindemiatrix \u2014 Gentle"
+          },
+          {
+            "id": "Zephyr",
+            "label": "Zephyr \u2014 Bright"
+          },
+          {
+            "id": "Zubenelgenubi",
+            "label": "Zubenelgenubi \u2014 Casual"
+          }
+        ]
+      },
+      "vertex_regions": {
+        "gemini-3.8-live": [
+          "us-central1",
+          "us",
+          "eu",
+          "asia-south1"
+        ],
+        "gemini-live-2.5-flash-native-audio": [
+          "us-central1",
+          "us-east1",
+          "us-east4",
+          "us-east5",
+          "us-south1",
+          "us-west1",
+          "us-west4",
+          "europe-central2",
+          "europe-north1",
+          "europe-southwest1",
+          "europe-west1",
+          "europe-west4",
+          "europe-west8"
+        ]
+      }
+    },
+    "grok": {
+      "sources": [
+        "https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech",
+        "https://docs.x.ai/developers/model-capabilities/audio/text-to-speech"
+      ],
+      "defaults": {
+        "model": "grok-voice-latest",
+        "voice": "eve"
+      },
+      "models": {
+        "realtime": [
+          {
+            "id": "grok-voice-latest",
+            "label": "grok-voice-latest"
+          },
+          {
+            "id": "grok-voice-3.0",
+            "label": "grok-voice-3.0"
+          }
+        ]
+      },
+      "voices": {
+        "realtime": [
+          {
+            "id": "eve",
+            "label": "eve \u2014 energetic, upbeat"
+          },
+          {
+            "id": "ara",
+            "label": "ara \u2014 warm, friendly"
+          },
+          {
+            "id": "rex",
+            "label": "rex \u2014 confident, clear"
+          },
+          {
+            "id": "sal",
+            "label": "sal \u2014 smooth, balanced"
+          },
+          {
+            "id": "leo",
+            "label": "leo \u2014 authoritative, strong"
+          },
+          {
+            "id": "altair",
+            "label": "Altair"
+          },
+          {
+            "id": "atlas",
+            "label": "Atlas"
+          },
+          {
+            "id": "aurora",
+            "label": "Aurora"
+          },
+          {
+            "id": "carina",
+            "label": "Carina"
+          },
+          {
+            "id": "castor",
+            "label": "Castor"
+          },
+          {
+            "id": "celeste",
+            "label": "Celeste"
+          },
+          {
+            "id": "cosmo",
+            "label": "Cosmo"
+          },
+          {
+            "id": "helios",
+            "label": "Helios"
+          },
+          {
+            "id": "helix",
+            "label": "Helix"
+          },
+          {
+            "id": "iris",
+            "label": "Iris"
+          },
+          {
+            "id": "kepler",
+            "label": "Kepler"
+          },
+          {
+            "id": "liora",
+            "label": "Liora"
+          },
+          {
+            "id": "lumen",
+            "label": "Lumen"
+          },
+          {
+            "id": "luna",
+            "label": "Luna"
+          },
+          {
+            "id": "lux",
+            "label": "Lux"
+          },
+          {
+            "id": "naksh",
+            "label": "Naksh"
+          },
+          {
+            "id": "orion",
+            "label": "Orion"
+          },
+          {
+            "id": "perseus",
+            "label": "Perseus"
+          },
+          {
+            "id": "rigel",
+            "label": "Rigel"
+          },
+          {
+            "id": "sirius",
+            "label": "Sirius"
+          },
+          {
+            "id": "ursa",
+            "label": "Ursa"
+          },
+          {
+            "id": "zagan",
+            "label": "Zagan"
+          },
+          {
+            "id": "zenith",
+            "label": "Zenith"
+          }
+        ]
+      }
+    },
+    "deepgram": {
+      "sources": [
+        "https://developers.deepgram.com/docs/voice-agent-stt-models",
+        "https://developers.deepgram.com/docs/models-languages-overview/",
+        "https://developers.deepgram.com/docs/tts-models",
+        "https://developers.deepgram.com/docs/voice-agent-tts-models",
+        "https://developers.deepgram.com/docs/flux-tts/voices",
+        "https://developers.deepgram.com/docs/voice-agent-llm-models"
+      ],
+      "defaults": {
+        "model": "nova-3",
+        "tts_model": "aura-2-thalia-en",
+        "tts_version": "v1",
+        "think_model": "gpt-5.6-luna"
+      },
+      "models": {
+        "stt": [
+          {
+            "id": "nova-3",
+            "label": "nova-3"
+          },
+          {
+            "id": "nova-2-phonecall",
+            "label": "nova-2-phonecall"
+          }
+        ],
+        "flux_stt": [
+          {
+            "id": "flux-general-en",
+            "label": "flux-general-en",
+            "languages": ["en"]
+          },
+          {
+            "id": "flux-general-multi",
+            "label": "flux-general-multi",
+            "languages": ["en", "es", "fr", "de", "hi", "ru", "pt", "ja", "it", "nl"]
+          }
+        ],
+        "llm": [
+          {
+            "id": "gpt-5.6-luna",
+            "label": "gpt-5.6-luna"
+          },
+          {
+            "id": "gpt-5.6-terra",
+            "label": "gpt-5.6-terra"
+          },
+          {
+            "id": "gpt-5.4-mini",
+            "label": "gpt-5.4-mini"
+          },
+          {
+            "id": "gpt-4o-mini",
+            "label": "gpt-4o-mini"
+          }
+        ]
+      },
+      "voices": {
+        "tts": [
+          {
+            "id": "aura-2-thalia-en",
+            "label": "Thalia (EN)"
+          },
+          {
+            "id": "aura-2-asteria-en",
+            "label": "Asteria (EN)"
+          },
+          {
+            "id": "aura-2-luna-en",
+            "label": "Luna (EN)"
+          },
+          {
+            "id": "aura-2-athena-en",
+            "label": "Athena (EN)"
+          },
+          {
+            "id": "aura-2-hera-en",
+            "label": "Hera (EN)"
+          },
+          {
+            "id": "aura-2-andromeda-en",
+            "label": "Andromeda (EN)"
+          },
+          {
+            "id": "aura-2-aurora-en",
+            "label": "Aurora (EN)"
+          },
+          {
+            "id": "aura-2-callista-en",
+            "label": "Callista (EN)"
+          },
+          {
+            "id": "aura-2-cora-en",
+            "label": "Cora (EN)"
+          },
+          {
+            "id": "aura-2-cordelia-en",
+            "label": "Cordelia (EN)"
+          },
+          {
+            "id": "aura-2-delia-en",
+            "label": "Delia (EN)"
+          },
+          {
+            "id": "aura-2-electra-en",
+            "label": "Electra (EN)"
+          },
+          {
+            "id": "aura-2-harmonia-en",
+            "label": "Harmonia (EN)"
+          },
+          {
+            "id": "aura-2-helena-en",
+            "label": "Helena (EN)"
+          },
+          {
+            "id": "aura-2-iris-en",
+            "label": "Iris (EN)"
+          },
+          {
+            "id": "aura-2-juno-en",
+            "label": "Juno (EN)"
+          },
+          {
+            "id": "aura-2-minerva-en",
+            "label": "Minerva (EN)"
+          },
+          {
+            "id": "aura-2-ophelia-en",
+            "label": "Ophelia (EN)"
+          },
+          {
+            "id": "aura-2-pandora-en",
+            "label": "Pandora (EN)"
+          },
+          {
+            "id": "aura-2-phoebe-en",
+            "label": "Phoebe (EN)"
+          },
+          {
+            "id": "aura-2-selene-en",
+            "label": "Selene (EN)"
+          },
+          {
+            "id": "aura-2-theia-en",
+            "label": "Theia (EN)"
+          },
+          {
+            "id": "aura-2-vesta-en",
+            "label": "Vesta (EN)"
+          },
+          {
+            "id": "aura-2-amalthea-en",
+            "label": "Amalthea (EN)"
+          },
+          {
+            "id": "aura-2-orion-en",
+            "label": "Orion (EN)"
+          },
+          {
+            "id": "aura-2-arcas-en",
+            "label": "Arcas (EN)"
+          },
+          {
+            "id": "aura-2-orpheus-en",
+            "label": "Orpheus (EN)"
+          },
+          {
+            "id": "aura-2-zeus-en",
+            "label": "Zeus (EN)"
+          },
+          {
+            "id": "aura-2-apollo-en",
+            "label": "Apollo (EN)"
+          },
+          {
+            "id": "aura-2-aries-en",
+            "label": "Aries (EN)"
+          },
+          {
+            "id": "aura-2-atlas-en",
+            "label": "Atlas (EN)"
+          },
+          {
+            "id": "aura-2-draco-en",
+            "label": "Draco (EN)"
+          },
+          {
+            "id": "aura-2-hermes-en",
+            "label": "Hermes (EN)"
+          },
+          {
+            "id": "aura-2-hyperion-en",
+            "label": "Hyperion (EN)"
+          },
+          {
+            "id": "aura-2-janus-en",
+            "label": "Janus (EN)"
+          },
+          {
+            "id": "aura-2-jupiter-en",
+            "label": "Jupiter (EN)"
+          },
+          {
+            "id": "aura-2-mars-en",
+            "label": "Mars (EN)"
+          },
+          {
+            "id": "aura-2-neptune-en",
+            "label": "Neptune (EN)"
+          },
+          {
+            "id": "aura-2-odysseus-en",
+            "label": "Odysseus (EN)"
+          },
+          {
+            "id": "aura-2-pluto-en",
+            "label": "Pluto (EN)"
+          },
+          {
+            "id": "aura-2-saturn-en",
+            "label": "Saturn (EN)"
+          },
+          {
+            "id": "aura-2-celeste-es",
+            "label": "Celeste (ES) \u2b50"
+          },
+          {
+            "id": "aura-2-estrella-es",
+            "label": "Estrella (ES) \u2b50"
+          },
+          {
+            "id": "aura-2-nestor-es",
+            "label": "Nestor (ES) \u2b50"
+          },
+          {
+            "id": "aura-2-diana-es",
+            "label": "Diana (ES) \ud83d\udd04"
+          },
+          {
+            "id": "aura-2-javier-es",
+            "label": "Javier (ES) \ud83d\udd04"
+          },
+          {
+            "id": "aura-2-selena-es",
+            "label": "Selena (ES) \ud83d\udd04"
+          },
+          {
+            "id": "aura-2-aquila-es",
+            "label": "Aquila (ES) \ud83d\udd04"
+          },
+          {
+            "id": "aura-2-carina-es",
+            "label": "Carina (ES) \ud83d\udd04"
+          },
+          {
+            "id": "aura-2-agustina-es",
+            "label": "Agustina (ES)"
+          },
+          {
+            "id": "aura-2-antonia-es",
+            "label": "Antonia (ES)"
+          },
+          {
+            "id": "aura-2-gloria-es",
+            "label": "Gloria (ES)"
+          },
+          {
+            "id": "aura-2-olivia-es",
+            "label": "Olivia (ES)"
+          },
+          {
+            "id": "aura-2-silvia-es",
+            "label": "Silvia (ES)"
+          },
+          {
+            "id": "aura-2-sirio-es",
+            "label": "Sirio (ES)"
+          },
+          {
+            "id": "aura-2-alvaro-es",
+            "label": "Alvaro (ES)"
+          },
+          {
+            "id": "aura-2-luciano-es",
+            "label": "Luciano (ES)"
+          },
+          {
+            "id": "aura-2-valerio-es",
+            "label": "Valerio (ES)"
+          },
+          {
+            "id": "aura-2-julius-de",
+            "label": "Julius (DE) \u2b50"
+          },
+          {
+            "id": "aura-2-viktoria-de",
+            "label": "Viktoria (DE) \u2b50"
+          },
+          {
+            "id": "aura-2-elara-de",
+            "label": "Elara (DE)"
+          },
+          {
+            "id": "aura-2-aurelia-de",
+            "label": "Aurelia (DE)"
+          },
+          {
+            "id": "aura-2-lara-de",
+            "label": "Lara (DE)"
+          },
+          {
+            "id": "aura-2-fabian-de",
+            "label": "Fabian (DE)"
+          },
+          {
+            "id": "aura-2-kara-de",
+            "label": "Kara (DE)"
+          },
+          {
+            "id": "aura-2-agathe-fr",
+            "label": "Agathe (FR) \u2b50"
+          },
+          {
+            "id": "aura-2-hector-fr",
+            "label": "Hector (FR) \u2b50"
+          },
+          {
+            "id": "aura-2-livia-it",
+            "label": "Livia (IT) \u2b50"
+          },
+          {
+            "id": "aura-2-dionisio-it",
+            "label": "Dionisio (IT) \u2b50"
+          },
+          {
+            "id": "aura-2-melia-it",
+            "label": "Melia (IT)"
+          },
+          {
+            "id": "aura-2-elio-it",
+            "label": "Elio (IT)"
+          },
+          {
+            "id": "aura-2-flavio-it",
+            "label": "Flavio (IT)"
+          },
+          {
+            "id": "aura-2-maia-it",
+            "label": "Maia (IT)"
+          },
+          {
+            "id": "aura-2-cinzia-it",
+            "label": "Cinzia (IT)"
+          },
+          {
+            "id": "aura-2-cesare-it",
+            "label": "Cesare (IT)"
+          },
+          {
+            "id": "aura-2-perseo-it",
+            "label": "Perseo (IT)"
+          },
+          {
+            "id": "aura-2-demetra-it",
+            "label": "Demetra (IT)"
+          },
+          {
+            "id": "aura-2-rhea-nl",
+            "label": "Rhea (NL) \u2b50"
+          },
+          {
+            "id": "aura-2-sander-nl",
+            "label": "Sander (NL) \u2b50"
+          },
+          {
+            "id": "aura-2-beatrix-nl",
+            "label": "Beatrix (NL) \u2b50"
+          },
+          {
+            "id": "aura-2-daphne-nl",
+            "label": "Daphne (NL)"
+          },
+          {
+            "id": "aura-2-cornelia-nl",
+            "label": "Cornelia (NL)"
+          },
+          {
+            "id": "aura-2-hestia-nl",
+            "label": "Hestia (NL)"
+          },
+          {
+            "id": "aura-2-lars-nl",
+            "label": "Lars (NL)"
+          },
+          {
+            "id": "aura-2-roman-nl",
+            "label": "Roman (NL)"
+          },
+          {
+            "id": "aura-2-leda-nl",
+            "label": "Leda (NL)"
+          },
+          {
+            "id": "aura-2-fujin-ja",
+            "label": "Fujin (JA) \u2b50"
+          },
+          {
+            "id": "aura-2-izanami-ja",
+            "label": "Izanami (JA) \u2b50"
+          },
+          {
+            "id": "aura-2-uzume-ja",
+            "label": "Uzume (JA)"
+          },
+          {
+            "id": "aura-2-ebisu-ja",
+            "label": "Ebisu (JA)"
+          },
+          {
+            "id": "aura-2-ama-ja",
+            "label": "Ama (JA)"
+          },
+          {
+            "id": "aura-asteria-en",
+            "label": "Asteria (EN Legacy)"
+          },
+          {
+            "id": "aura-luna-en",
+            "label": "Luna (EN Legacy)"
+          },
+          {
+            "id": "aura-stella-en",
+            "label": "Stella (EN Legacy)"
+          },
+          {
+            "id": "aura-athena-en",
+            "label": "Athena (EN Legacy)"
+          },
+          {
+            "id": "aura-hera-en",
+            "label": "Hera (EN Legacy)"
+          },
+          {
+            "id": "aura-orion-en",
+            "label": "Orion (EN Legacy)"
+          },
+          {
+            "id": "aura-arcas-en",
+            "label": "Arcas (EN Legacy)"
+          },
+          {
+            "id": "aura-perseus-en",
+            "label": "Perseus (EN Legacy)"
+          },
+          {
+            "id": "aura-angus-en",
+            "label": "Angus (EN Legacy)"
+          },
+          {
+            "id": "aura-orpheus-en",
+            "label": "Orpheus (EN Legacy)"
+          },
+          {
+            "id": "aura-helios-en",
+            "label": "Helios (EN Legacy)"
+          },
+          {
+            "id": "aura-zeus-en",
+            "label": "Zeus (EN Legacy)"
+          }
+        ],
+        "flux_tts": [
+          {
+            "id": "flux-hannah-en",
+            "label": "Hannah (Featured voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-kit-en",
+            "label": "Kit (Featured voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-alexis-en",
+            "label": "Alexis (Featured voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-cliff-en",
+            "label": "Cliff (Featured voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-sienna-en",
+            "label": "Sienna (Featured voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-cole-en",
+            "label": "Cole (Featured voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-brooke-en",
+            "label": "Brooke (Featured voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-colin-en",
+            "label": "Colin (Featured voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-gemma-en",
+            "label": "Gemma (Featured voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-haley-en",
+            "label": "Haley (Featured voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-heather-en",
+            "label": "Heather (Featured voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-miles-en",
+            "label": "Miles (Featured voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-sean-en",
+            "label": "Sean (Featured voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-bree-en",
+            "label": "Bree (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-brittany-en",
+            "label": "Brittany (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-bruce-en",
+            "label": "Bruce (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-conor-en",
+            "label": "Conor (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-donovan-en",
+            "label": "Donovan (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-drew-en",
+            "label": "Drew (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-elise-en",
+            "label": "Elise (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-jack-en",
+            "label": "Jack (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-kai-en",
+            "label": "Kai (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-kelsey-en",
+            "label": "Kelsey (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-maeve-en",
+            "label": "Maeve (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-marcelo-en",
+            "label": "Marcelo (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-marcus-en",
+            "label": "Marcus (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-meena-en",
+            "label": "Meena (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-meghan-en",
+            "label": "Meghan (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-naveen-en",
+            "label": "Naveen (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-paige-en",
+            "label": "Paige (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-priya-en",
+            "label": "Priya (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-rufus-en",
+            "label": "Rufus (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-sharon-en",
+            "label": "Sharon (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-tanner-en",
+            "label": "Tanner (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-wade-en",
+            "label": "Wade (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-wes-en",
+            "label": "Wes (More voices)",
+            "language": "en",
+            "version": "v2"
+          },
+          {
+            "id": "flux-anouk-nl",
+            "label": "Anouk (Dutch)",
+            "language": "nl",
+            "version": "v2"
+          },
+          {
+            "id": "flux-bram-nl",
+            "label": "Bram (Dutch)",
+            "language": "nl",
+            "version": "v2"
+          },
+          {
+            "id": "flux-fleur-nl",
+            "label": "Fleur (Dutch)",
+            "language": "nl",
+            "version": "v2"
+          },
+          {
+            "id": "flux-irene-nl",
+            "label": "Irene (Dutch)",
+            "language": "nl",
+            "version": "v2"
+          },
+          {
+            "id": "flux-luuk-nl",
+            "label": "Luuk (Dutch)",
+            "language": "nl",
+            "version": "v2"
+          },
+          {
+            "id": "flux-monique-nl",
+            "label": "Monique (Dutch)",
+            "language": "nl",
+            "version": "v2"
+          },
+          {
+            "id": "flux-ruben-nl",
+            "label": "Ruben (Dutch)",
+            "language": "nl",
+            "version": "v2"
+          },
+          {
+            "id": "flux-sanne-nl",
+            "label": "Sanne (Dutch)",
+            "language": "nl",
+            "version": "v2"
+          },
+          {
+            "id": "flux-yvonne-nl",
+            "label": "Yvonne (Dutch)",
+            "language": "nl",
+            "version": "v2"
+          },
+          {
+            "id": "flux-dirk-nl",
+            "label": "Dirk (Dutch (Flemish))",
+            "language": "nl",
+            "version": "v2"
+          },
+          {
+            "id": "flux-lotte-nl",
+            "label": "Lotte (Dutch (Flemish))",
+            "language": "nl",
+            "version": "v2"
+          },
+          {
+            "id": "flux-niels-nl",
+            "label": "Niels (Dutch (Flemish))",
+            "language": "nl",
+            "version": "v2"
+          },
+          {
+            "id": "flux-veerle-nl",
+            "label": "Veerle (Dutch (Flemish))",
+            "language": "nl",
+            "version": "v2"
+          },
+          {
+            "id": "flux-arnaud-fr",
+            "label": "Arnaud (French)",
+            "language": "fr",
+            "version": "v2"
+          },
+          {
+            "id": "flux-benoit-fr",
+            "label": "Benoit (French)",
+            "language": "fr",
+            "version": "v2"
+          },
+          {
+            "id": "flux-brigitte-fr",
+            "label": "Brigitte (French)",
+            "language": "fr",
+            "version": "v2"
+          },
+          {
+            "id": "flux-camille-fr",
+            "label": "Camille (French)",
+            "language": "fr",
+            "version": "v2"
+          },
+          {
+            "id": "flux-chloe-fr",
+            "label": "Chloe (French)",
+            "language": "fr",
+            "version": "v2"
+          },
+          {
+            "id": "flux-florian-fr",
+            "label": "Florian (French)",
+            "language": "fr",
+            "version": "v2"
+          },
+          {
+            "id": "flux-julien-fr",
+            "label": "Julien (French)",
+            "language": "fr",
+            "version": "v2"
+          },
+          {
+            "id": "flux-mathieu-fr",
+            "label": "Mathieu (French)",
+            "language": "fr",
+            "version": "v2"
+          },
+          {
+            "id": "flux-pierre-fr",
+            "label": "Pierre (French)",
+            "language": "fr",
+            "version": "v2"
+          },
+          {
+            "id": "flux-thierry-fr",
+            "label": "Thierry (French)",
+            "language": "fr",
+            "version": "v2"
+          },
+          {
+            "id": "flux-veronique-fr",
+            "label": "Veronique (French)",
+            "language": "fr",
+            "version": "v2"
+          },
+          {
+            "id": "flux-yasmine-fr",
+            "label": "Yasmine (French)",
+            "language": "fr",
+            "version": "v2"
+          },
+          {
+            "id": "flux-benjamin-de",
+            "label": "Benjamin (German)",
+            "language": "de",
+            "version": "v2"
+          },
+          {
+            "id": "flux-christian-de",
+            "label": "Christian (German)",
+            "language": "de",
+            "version": "v2"
+          },
+          {
+            "id": "flux-janine-de",
+            "label": "Janine (German)",
+            "language": "de",
+            "version": "v2"
+          },
+          {
+            "id": "flux-magdalena-de",
+            "label": "Magdalena (German)",
+            "language": "de",
+            "version": "v2"
+          },
+          {
+            "id": "flux-moritz-de",
+            "label": "Moritz (German)",
+            "language": "de",
+            "version": "v2"
+          },
+          {
+            "id": "flux-nadine-de",
+            "label": "Nadine (German)",
+            "language": "de",
+            "version": "v2"
+          },
+          {
+            "id": "flux-rolf-de",
+            "label": "Rolf (German)",
+            "language": "de",
+            "version": "v2"
+          },
+          {
+            "id": "flux-sonja-de",
+            "label": "Sonja (German)",
+            "language": "de",
+            "version": "v2"
+          },
+          {
+            "id": "flux-sven-de",
+            "label": "Sven (German)",
+            "language": "de",
+            "version": "v2"
+          },
+          {
+            "id": "flux-tobias-de",
+            "label": "Tobias (German)",
+            "language": "de",
+            "version": "v2"
+          },
+          {
+            "id": "flux-verena-de",
+            "label": "Verena (German)",
+            "language": "de",
+            "version": "v2"
+          },
+          {
+            "id": "flux-leonie-de",
+            "label": "Leonie (German (Swiss))",
+            "language": "de",
+            "version": "v2"
+          },
+          {
+            "id": "flux-yannick-de",
+            "label": "Yannick (German (Swiss))",
+            "language": "de",
+            "version": "v2"
+          },
+          {
+            "id": "flux-ajay-hi",
+            "label": "Ajay (Hindi)",
+            "language": "hi",
+            "version": "v2"
+          },
+          {
+            "id": "flux-anjali-hi",
+            "label": "Anjali (Hindi)",
+            "language": "hi",
+            "version": "v2"
+          },
+          {
+            "id": "flux-arjun-hi",
+            "label": "Arjun (Hindi)",
+            "language": "hi",
+            "version": "v2"
+          },
+          {
+            "id": "flux-divya-hi",
+            "label": "Divya (Hindi)",
+            "language": "hi",
+            "version": "v2"
+          },
+          {
+            "id": "flux-jyoti-hi",
+            "label": "Jyoti (Hindi)",
+            "language": "hi",
+            "version": "v2"
+          },
+          {
+            "id": "flux-nikhil-hi",
+            "label": "Nikhil (Hindi)",
+            "language": "hi",
+            "version": "v2"
+          },
+          {
+            "id": "flux-pallavi-hi",
+            "label": "Pallavi (Hindi)",
+            "language": "hi",
+            "version": "v2"
+          },
+          {
+            "id": "flux-prachi-hi",
+            "label": "Prachi (Hindi)",
+            "language": "hi",
+            "version": "v2"
+          },
+          {
+            "id": "flux-rahul-hi",
+            "label": "Rahul (Hindi)",
+            "language": "hi",
+            "version": "v2"
+          },
+          {
+            "id": "flux-rajesh-hi",
+            "label": "Rajesh (Hindi)",
+            "language": "hi",
+            "version": "v2"
+          },
+          {
+            "id": "flux-ritu-hi",
+            "label": "Ritu (Hindi)",
+            "language": "hi",
+            "version": "v2"
+          },
+          {
+            "id": "flux-shreya-hi",
+            "label": "Shreya (Hindi)",
+            "language": "hi",
+            "version": "v2"
+          },
+          {
+            "id": "flux-sunita-hi",
+            "label": "Sunita (Hindi)",
+            "language": "hi",
+            "version": "v2"
+          },
+          {
+            "id": "flux-vikram-hi",
+            "label": "Vikram (Hindi)",
+            "language": "hi",
+            "version": "v2"
+          },
+          {
+            "id": "flux-angela-it",
+            "label": "Angela (Italian)",
+            "language": "it",
+            "version": "v2"
+          },
+          {
+            "id": "flux-chiara-it",
+            "label": "Chiara (Italian)",
+            "language": "it",
+            "version": "v2"
+          },
+          {
+            "id": "flux-federico-it",
+            "label": "Federico (Italian)",
+            "language": "it",
+            "version": "v2"
+          },
+          {
+            "id": "flux-giorgio-it",
+            "label": "Giorgio (Italian)",
+            "language": "it",
+            "version": "v2"
+          },
+          {
+            "id": "flux-matteo-it",
+            "label": "Matteo (Italian)",
+            "language": "it",
+            "version": "v2"
+          },
+          {
+            "id": "flux-paola-it",
+            "label": "Paola (Italian)",
+            "language": "it",
+            "version": "v2"
+          },
+          {
+            "id": "flux-rocco-it",
+            "label": "Rocco (Italian)",
+            "language": "it",
+            "version": "v2"
+          },
+          {
+            "id": "flux-sofia-it",
+            "label": "Sofia (Italian)",
+            "language": "it",
+            "version": "v2"
+          },
+          {
+            "id": "flux-stefano-it",
+            "label": "Stefano (Italian)",
+            "language": "it",
+            "version": "v2"
+          },
+          {
+            "id": "flux-vincenzo-it",
+            "label": "Vincenzo (Italian)",
+            "language": "it",
+            "version": "v2"
+          },
+          {
+            "id": "flux-vito-it",
+            "label": "Vito (Italian)",
+            "language": "it",
+            "version": "v2"
+          },
+          {
+            "id": "flux-ayumi-ja",
+            "label": "Ayumi (Japanese)",
+            "language": "ja",
+            "version": "v2"
+          },
+          {
+            "id": "flux-hayato-ja",
+            "label": "Hayato (Japanese)",
+            "language": "ja",
+            "version": "v2"
+          },
+          {
+            "id": "flux-nozomi-ja",
+            "label": "Nozomi (Japanese)",
+            "language": "ja",
+            "version": "v2"
+          },
+          {
+            "id": "flux-sayaka-ja",
+            "label": "Sayaka (Japanese)",
+            "language": "ja",
+            "version": "v2"
+          },
+          {
+            "id": "flux-bianca-pt",
+            "label": "Bianca (Portuguese (Brazil))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-bruno-pt",
+            "label": "Bruno (Portuguese (Brazil))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-claudia-pt",
+            "label": "Claudia (Portuguese (Brazil))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-leandro-pt",
+            "label": "Leandro (Portuguese (Brazil))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-marcia-pt",
+            "label": "Marcia (Portuguese (Brazil))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-mariana-pt",
+            "label": "Mariana (Portuguese (Brazil))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-marta-pt",
+            "label": "Marta (Portuguese (Brazil))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-mateus-pt",
+            "label": "Mateus (Portuguese (Brazil))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-miguel-pt",
+            "label": "Miguel (Portuguese (Brazil))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-renato-pt",
+            "label": "Renato (Portuguese (Brazil))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-roberto-pt",
+            "label": "Roberto (Portuguese (Brazil))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-rodrigo-pt",
+            "label": "Rodrigo (Portuguese (Brazil))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-artur-pt",
+            "label": "Artur (Portuguese (Portugal))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-benedita-pt",
+            "label": "Benedita (Portuguese (Portugal))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-catarina-pt",
+            "label": "Catarina (Portuguese (Portugal))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-hugo-pt",
+            "label": "Hugo (Portuguese (Portugal))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-pedro-pt",
+            "label": "Pedro (Portuguese (Portugal))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-ricardo-pt",
+            "label": "Ricardo (Portuguese (Portugal))",
+            "language": "pt",
+            "version": "v2"
+          },
+          {
+            "id": "flux-andrei-ru",
+            "label": "Andrei (Russian)",
+            "language": "ru",
+            "version": "v2"
+          },
+          {
+            "id": "flux-kirill-ru",
+            "label": "Kirill (Russian)",
+            "language": "ru",
+            "version": "v2"
+          },
+          {
+            "id": "flux-maxim-ru",
+            "label": "Maxim (Russian)",
+            "language": "ru",
+            "version": "v2"
+          },
+          {
+            "id": "flux-mikhail-ru",
+            "label": "Mikhail (Russian)",
+            "language": "ru",
+            "version": "v2"
+          },
+          {
+            "id": "flux-natalia-ru",
+            "label": "Natalia (Russian)",
+            "language": "ru",
+            "version": "v2"
+          },
+          {
+            "id": "flux-nikolai-ru",
+            "label": "Nikolai (Russian)",
+            "language": "ru",
+            "version": "v2"
+          },
+          {
+            "id": "flux-olga-ru",
+            "label": "Olga (Russian)",
+            "language": "ru",
+            "version": "v2"
+          },
+          {
+            "id": "flux-polina-ru",
+            "label": "Polina (Russian)",
+            "language": "ru",
+            "version": "v2"
+          },
+          {
+            "id": "flux-vladimir-ru",
+            "label": "Vladimir (Russian)",
+            "language": "ru",
+            "version": "v2"
+          },
+          {
+            "id": "flux-aina-es",
+            "label": "Aina (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-alfredo-es",
+            "label": "Alfredo (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-carmen-es",
+            "label": "Carmen (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-cecilia-es",
+            "label": "Cecilia (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-duvan-es",
+            "label": "Duvan (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-eduardo-es",
+            "label": "Eduardo (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-ernesto-es",
+            "label": "Ernesto (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-fernanda-es",
+            "label": "Fernanda (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-fiorella-es",
+            "label": "Fiorella (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-gustavo-es",
+            "label": "Gustavo (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-jaime-es",
+            "label": "Jaime (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-martin-es",
+            "label": "Martin (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-mauricio-es",
+            "label": "Mauricio (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-patricia-es",
+            "label": "Patricia (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-pilar-es",
+            "label": "Pilar (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-rafael-es",
+            "label": "Rafael (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-tomas-es",
+            "label": "Tomas (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-valentina-es",
+            "label": "Valentina (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-ysabel-es",
+            "label": "Ysabel (Spanish)",
+            "language": "es",
+            "version": "v2"
+          },
+          {
+            "id": "flux-afsana-bn",
+            "label": "Afsana (Bengali) \u2014 Early Access",
+            "language": "bn",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-ishrat-bn",
+            "label": "Ishrat (Bengali) \u2014 Early Access",
+            "language": "bn",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-mamun-bn",
+            "label": "Mamun (Bengali) \u2014 Early Access",
+            "language": "bn",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-sabbir-bn",
+            "label": "Sabbir (Bengali) \u2014 Early Access",
+            "language": "bn",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-shuvo-bn",
+            "label": "Shuvo (Bengali) \u2014 Early Access",
+            "language": "bn",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-sumaiya-bn",
+            "label": "Sumaiya (Bengali) \u2014 Early Access",
+            "language": "bn",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-desislava-bg",
+            "label": "Desislava (Bulgarian) \u2014 Early Access",
+            "language": "bg",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-gergana-bg",
+            "label": "Gergana (Bulgarian) \u2014 Early Access",
+            "language": "bg",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-jordi-ca",
+            "label": "Jordi (Catalan) \u2014 Early Access",
+            "language": "ca",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-judit-ca",
+            "label": "Judit (Catalan) \u2014 Early Access",
+            "language": "ca",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-bo-zh",
+            "label": "Bo (Chinese (Mandarin)) \u2014 Early Access",
+            "language": "zh",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-haoran-zh",
+            "label": "Haoran (Chinese (Mandarin)) \u2014 Early Access",
+            "language": "zh",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-jian-zh",
+            "label": "Jian (Chinese (Mandarin)) \u2014 Early Access",
+            "language": "zh",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-jie-zh",
+            "label": "Jie (Chinese (Mandarin)) \u2014 Early Access",
+            "language": "zh",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-lijuan-zh",
+            "label": "Lijuan (Chinese (Mandarin)) \u2014 Early Access",
+            "language": "zh",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-shufen-zh",
+            "label": "Shufen (Chinese (Mandarin)) \u2014 Early Access",
+            "language": "zh",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-wenbo-zh",
+            "label": "Wenbo (Chinese (Mandarin)) \u2014 Early Access",
+            "language": "zh",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-wenjing-zh",
+            "label": "Wenjing (Chinese (Mandarin)) \u2014 Early Access",
+            "language": "zh",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-zhen-zh",
+            "label": "Zhen (Chinese (Mandarin)) \u2014 Early Access",
+            "language": "zh",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-chiaying-zh",
+            "label": "Chiaying (Chinese (Taiwanese Mandarin)) \u2014 Early Access",
+            "language": "zh",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-kuanyu-zh",
+            "label": "Kuanyu (Chinese (Taiwanese Mandarin)) \u2014 Early Access",
+            "language": "zh",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-yawen-zh",
+            "label": "Yawen (Chinese (Taiwanese Mandarin)) \u2014 Early Access",
+            "language": "zh",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-yuting-zh",
+            "label": "Yuting (Chinese (Taiwanese Mandarin)) \u2014 Early Access",
+            "language": "zh",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-manlok-zh",
+            "label": "Manlok (Chinese (Cantonese)) \u2014 Early Access",
+            "language": "zh",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-dalibor-hr",
+            "label": "Dalibor (Croatian) \u2014 Early Access",
+            "language": "hr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-danijela-hr",
+            "label": "Danijela (Croatian) \u2014 Early Access",
+            "language": "hr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-domagoj-hr",
+            "label": "Domagoj (Croatian) \u2014 Early Access",
+            "language": "hr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-jasna-hr",
+            "label": "Jasna (Croatian) \u2014 Early Access",
+            "language": "hr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-josipa-hr",
+            "label": "Josipa (Croatian) \u2014 Early Access",
+            "language": "hr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-mihaela-hr",
+            "label": "Mihaela (Croatian) \u2014 Early Access",
+            "language": "hr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-vedran-hr",
+            "label": "Vedran (Croatian) \u2014 Early Access",
+            "language": "hr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-jakub-cs",
+            "label": "Jakub (Czech) \u2014 Early Access",
+            "language": "cs",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-pernille-da",
+            "label": "Pernille (Danish) \u2014 Early Access",
+            "language": "da",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-rasmus-da",
+            "label": "Rasmus (Danish) \u2014 Early Access",
+            "language": "da",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-rikke-da",
+            "label": "Rikke (Danish) \u2014 Early Access",
+            "language": "da",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-triin-et",
+            "label": "Triin (Estonian) \u2014 Early Access",
+            "language": "et",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-kirsi-fi",
+            "label": "Kirsi (Finnish) \u2014 Early Access",
+            "language": "fi",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-teemu-fi",
+            "label": "Teemu (Finnish) \u2014 Early Access",
+            "language": "fi",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-kostas-el",
+            "label": "Kostas (Greek) \u2014 Early Access",
+            "language": "el",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-bhavna-gu",
+            "label": "Bhavna (Gujarati) \u2014 Early Access",
+            "language": "gu",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-hetal-gu",
+            "label": "Hetal (Gujarati) \u2014 Early Access",
+            "language": "gu",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-jignesh-gu",
+            "label": "Jignesh (Gujarati) \u2014 Early Access",
+            "language": "gu",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-bence-hu",
+            "label": "Bence (Hungarian) \u2014 Early Access",
+            "language": "hu",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-eszter-hu",
+            "label": "Eszter (Hungarian) \u2014 Early Access",
+            "language": "hu",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-kinga-hu",
+            "label": "Kinga (Hungarian) \u2014 Early Access",
+            "language": "hu",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-tibor-hu",
+            "label": "Tibor (Hungarian) \u2014 Early Access",
+            "language": "hu",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-dewi-id",
+            "label": "Dewi (Indonesian) \u2014 Early Access",
+            "language": "id",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-fajar-id",
+            "label": "Fajar (Indonesian) \u2014 Early Access",
+            "language": "id",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-fitri-id",
+            "label": "Fitri (Indonesian) \u2014 Early Access",
+            "language": "id",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-rizky-id",
+            "label": "Rizky (Indonesian) \u2014 Early Access",
+            "language": "id",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-teguh-id",
+            "label": "Teguh (Indonesian) \u2014 Early Access",
+            "language": "id",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-manjunath-kn",
+            "label": "Manjunath (Kannada) \u2014 Early Access",
+            "language": "kn",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-eunji-ko",
+            "label": "Eunji (Korean) \u2014 Early Access",
+            "language": "ko",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-hyunwoo-ko",
+            "label": "Hyunwoo (Korean) \u2014 Early Access",
+            "language": "ko",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-mikyung-ko",
+            "label": "Mikyung (Korean) \u2014 Early Access",
+            "language": "ko",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-minjun-ko",
+            "label": "Minjun (Korean) \u2014 Early Access",
+            "language": "ko",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-soojin-ko",
+            "label": "Soojin (Korean) \u2014 Early Access",
+            "language": "ko",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-sungmin-ko",
+            "label": "Sungmin (Korean) \u2014 Early Access",
+            "language": "ko",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-agnese-lv",
+            "label": "Agnese (Latvian) \u2014 Early Access",
+            "language": "lv",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-edgars-lv",
+            "label": "Edgars (Latvian) \u2014 Early Access",
+            "language": "lv",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-goda-lt",
+            "label": "Goda (Lithuanian) \u2014 Early Access",
+            "language": "lt",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-neringa-lt",
+            "label": "Neringa (Lithuanian) \u2014 Early Access",
+            "language": "lt",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-haziq-ms",
+            "label": "Haziq (Malay) \u2014 Early Access",
+            "language": "ms",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-izzah-ms",
+            "label": "Izzah (Malay) \u2014 Early Access",
+            "language": "ms",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-pooja-mr",
+            "label": "Pooja (Marathi) \u2014 Early Access",
+            "language": "mr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-pratik-mr",
+            "label": "Pratik (Marathi) \u2014 Early Access",
+            "language": "mr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-sneha-mr",
+            "label": "Sneha (Marathi) \u2014 Early Access",
+            "language": "mr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-erlend-no",
+            "label": "Erlend (Norwegian) \u2014 Early Access",
+            "language": "no",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-espen-no",
+            "label": "Espen (Norwegian) \u2014 Early Access",
+            "language": "no",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-ida-no",
+            "label": "Ida (Norwegian) \u2014 Early Access",
+            "language": "no",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-signe-no",
+            "label": "Signe (Norwegian) \u2014 Early Access",
+            "language": "no",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-silje-no",
+            "label": "Silje (Norwegian) \u2014 Early Access",
+            "language": "no",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-vegard-no",
+            "label": "Vegard (Norwegian) \u2014 Early Access",
+            "language": "no",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-bartosz-pl",
+            "label": "Bartosz (Polish) \u2014 Early Access",
+            "language": "pl",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-ewa-pl",
+            "label": "Ewa (Polish) \u2014 Early Access",
+            "language": "pl",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-justyna-pl",
+            "label": "Justyna (Polish) \u2014 Early Access",
+            "language": "pl",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-kacper-pl",
+            "label": "Kacper (Polish) \u2014 Early Access",
+            "language": "pl",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-konrad-pl",
+            "label": "Konrad (Polish) \u2014 Early Access",
+            "language": "pl",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-zuzanna-pl",
+            "label": "Zuzanna (Polish) \u2014 Early Access",
+            "language": "pl",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-cosmin-ro",
+            "label": "Cosmin (Romanian) \u2014 Early Access",
+            "language": "ro",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-ioana-ro",
+            "label": "Ioana (Romanian) \u2014 Early Access",
+            "language": "ro",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-dominika-sk",
+            "label": "Dominika (Slovak) \u2014 Early Access",
+            "language": "sk",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-juraj-sk",
+            "label": "Juraj (Slovak) \u2014 Early Access",
+            "language": "sk",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-gregor-sl",
+            "label": "Gregor (Slovenian) \u2014 Early Access",
+            "language": "sl",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-katja-sl",
+            "label": "Katja (Slovenian) \u2014 Early Access",
+            "language": "sl",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-axel-sv",
+            "label": "Axel (Swedish) \u2014 Early Access",
+            "language": "sv",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-charlotta-sv",
+            "label": "Charlotta (Swedish) \u2014 Early Access",
+            "language": "sv",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-frida-sv",
+            "label": "Frida (Swedish) \u2014 Early Access",
+            "language": "sv",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-ludvig-sv",
+            "label": "Ludvig (Swedish) \u2014 Early Access",
+            "language": "sv",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-oskar-sv",
+            "label": "Oskar (Swedish) \u2014 Early Access",
+            "language": "sv",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-pontus-sv",
+            "label": "Pontus (Swedish) \u2014 Early Access",
+            "language": "sv",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-wilma-sv",
+            "label": "Wilma (Swedish) \u2014 Early Access",
+            "language": "sv",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-jerome-tl",
+            "label": "Jerome (Tagalog) \u2014 Early Access",
+            "language": "tl",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-jomar-tl",
+            "label": "Jomar (Tagalog) \u2014 Early Access",
+            "language": "tl",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-liezel-tl",
+            "label": "Liezel (Tagalog) \u2014 Early Access",
+            "language": "tl",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-noel-tl",
+            "label": "Noel (Tagalog) \u2014 Early Access",
+            "language": "tl",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-trisha-tl",
+            "label": "Trisha (Tagalog) \u2014 Early Access",
+            "language": "tl",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-gokul-ta",
+            "label": "Gokul (Tamil) \u2014 Early Access",
+            "language": "ta",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-kavya-ta",
+            "label": "Kavya (Tamil) \u2014 Early Access",
+            "language": "ta",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-sowmya-ta",
+            "label": "Sowmya (Tamil) \u2014 Early Access",
+            "language": "ta",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-vinoth-ta",
+            "label": "Vinoth (Tamil) \u2014 Early Access",
+            "language": "ta",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-pavan-te",
+            "label": "Pavan (Telugu) \u2014 Early Access",
+            "language": "te",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-ravi-te",
+            "label": "Ravi (Telugu) \u2014 Early Access",
+            "language": "te",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-sravani-te",
+            "label": "Sravani (Telugu) \u2014 Early Access",
+            "language": "te",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-dilek-tr",
+            "label": "Dilek (Turkish) \u2014 Early Access",
+            "language": "tr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-ecem-tr",
+            "label": "Ecem (Turkish) \u2014 Early Access",
+            "language": "tr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-emre-tr",
+            "label": "Emre (Turkish) \u2014 Early Access",
+            "language": "tr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-gizem-tr",
+            "label": "Gizem (Turkish) \u2014 Early Access",
+            "language": "tr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-mehmet-tr",
+            "label": "Mehmet (Turkish) \u2014 Early Access",
+            "language": "tr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-serkan-tr",
+            "label": "Serkan (Turkish) \u2014 Early Access",
+            "language": "tr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-zeynep-tr",
+            "label": "Zeynep (Turkish) \u2014 Early Access",
+            "language": "tr",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-denys-uk",
+            "label": "Denys (Ukrainian) \u2014 Early Access",
+            "language": "uk",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-solomiya-uk",
+            "label": "Solomiya (Ukrainian) \u2014 Early Access",
+            "language": "uk",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-ambreen-ur",
+            "label": "Ambreen (Urdu) \u2014 Early Access",
+            "language": "ur",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-usman-ur",
+            "label": "Usman (Urdu) \u2014 Early Access",
+            "language": "ur",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-hoa-vi",
+            "label": "Hoa (Vietnamese) \u2014 Early Access",
+            "language": "vi",
+            "version": "v2",
+            "status": "preview"
+          },
+          {
+            "id": "flux-minh-vi",
+            "label": "Minh (Vietnamese) \u2014 Early Access",
+            "language": "vi",
+            "version": "v2",
+            "status": "preview"
+          }
+        ]
+      }
+    },
+    "deepseek": {
+      "sources": [
+        "https://api-docs.deepseek.com/quick_start/pricing/"
+      ],
+      "defaults": {
+        "chat_model": "deepseek-flash"
+      },
+      "models": {
+        "llm": [
+          {
+            "id": "deepseek-flash",
+            "label": "deepseek-flash"
+          },
+          {
+            "id": "deepseek-v4-pro",
+            "label": "deepseek-v4-pro"
+          }
+        ]
+      }
+    },
+    "google": {
+      "sources": [
+        "https://aistudio.google.com/docs/deprecations",
+        "https://docs.cloud.google.com/text-to-speech/docs/list-voices-and-types"
+      ],
+      "defaults": {
+        "llm_model": "gemini-3.8-flash",
+        "tts_voice_name": "en-US-Neural2-C"
+      },
+      "models": {
+        "llm": [
+          {
+            "id": "gemini-3.8-flash",
+            "label": "gemini-3.8-flash"
+          },
+          {
+            "id": "gemini-3.6-flash",
+            "label": "gemini-3.6-flash"
+          },
+          {
+            "id": "gemini-3.5-flash-lite",
+            "label": "gemini-3.5-flash-lite"
+          }
+        ]
+      },
+      "voices": {
+        "tts": [
+          {"id": "en-US-Standard-A", "label": "en-US-Standard-A (US male, Standard)", "language": "en-US"},
+          {"id": "en-US-Standard-B", "label": "en-US-Standard-B (US male, Standard)", "language": "en-US"},
+          {"id": "en-US-Neural2-A", "label": "en-US-Neural2-A (US male, Neural2)", "language": "en-US"},
+          {"id": "en-US-Neural2-C", "label": "en-US-Neural2-C (US female, Neural2)", "language": "en-US"},
+          {"id": "en-US-Studio-O", "label": "en-US-Studio-O (US female, Studio)", "language": "en-US"},
+          {"id": "en-US-Studio-Q", "label": "en-US-Studio-Q (US male, Studio)", "language": "en-US"}
+        ]
+      }
+    },
+    "telnyx": {
+      "sources": [
+        "https://developers.telnyx.com/docs/inference/models"
+      ],
+      "defaults": {
+        "chat_model": "zai-org/GLM-5.3-Flash"
+      },
+      "models": {
+        "llm": [
+          {
+            "id": "zai-org/GLM-5.3-Flash",
+            "label": "zai-org/GLM-5.3-Flash"
+          },
+          {
+            "id": "moonshotai/Kimi-K2.6",
+            "label": "moonshotai/Kimi-K2.6"
+          },
+          {
+            "id": "zai-org/GLM-5.2",
+            "label": "zai-org/GLM-5.2"
+          },
+          {
+            "id": "MiniMaxAI/MiniMax-M3-MXFP8",
+            "label": "MiniMaxAI/MiniMax-M3-MXFP8"
+          },
+          {
+            "id": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+            "label": "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+          },
+          {
+            "id": "Qwen/Qwen3.8-27B",
+            "label": "Qwen/Qwen3.8-27B"
+          },
+          {
+            "id": "google/gemma-4-26B-A4B-it",
+            "label": "google/gemma-4-26B-A4B-it"
+          }
+        ]
+      }
+    },
+    "minimax": {
+      "sources": [
+        "https://platform.minimax.io/docs/api-reference/text-openai-api"
+      ],
+      "defaults": {
+        "chat_model": "MiniMax-M3"
+      },
+      "models": {
+        "llm": [
+          {
+            "id": "MiniMax-M3",
+            "label": "MiniMax-M3"
+          },
+          {
+            "id": "MiniMax-M3.1-Flash",
+            "label": "MiniMax-M3.1-Flash"
+          }
+        ]
+      }
+    },
+    "groq": {
+      "sources": [
+        "https://console.groq.com/docs/speech-to-text",
+        "https://console.groq.com/docs/text-to-speech/orpheus"
+      ],
+      "defaults": {
+        "stt_model": "whisper-large-v3-turbo",
+        "tts_model": "canopylabs/orpheus-v1-english",
+        "voice": "hannah"
+      },
+      "models": {
+        "stt": [
+          {
+            "id": "whisper-large-v3-turbo",
+            "label": "whisper-large-v3-turbo"
+          },
+          {
+            "id": "whisper-large-v3",
+            "label": "whisper-large-v3"
+          }
+        ],
+        "tts": [
+          {
+            "id": "canopylabs/orpheus-v1-english",
+            "label": "canopylabs/orpheus-v1-english"
+          },
+          {
+            "id": "canopylabs/orpheus-arabic-saudi",
+            "label": "canopylabs/orpheus-arabic-saudi"
+          }
+        ]
+      },
+      "voice_models": {
+        "canopylabs/orpheus-v1-english": [
+          "autumn",
+          "diana",
+          "hannah",
+          "austin",
+          "daniel",
+          "troy"
+        ],
+        "canopylabs/orpheus-arabic-saudi": [
+          "abdullah",
+          "fahad",
+          "sultan",
+          "lulwa",
+          "noura",
+          "aisha"
+        ]
+      },
+      "voices": {
+        "tts": [
+          {
+            "id": "autumn",
+            "label": "Autumn"
+          },
+          {
+            "id": "diana",
+            "label": "Diana"
+          },
+          {
+            "id": "hannah",
+            "label": "Hannah"
+          },
+          {
+            "id": "austin",
+            "label": "Austin"
+          },
+          {
+            "id": "daniel",
+            "label": "Daniel"
+          },
+          {
+            "id": "troy",
+            "label": "Troy"
+          },
+          {
+            "id": "abdullah",
+            "label": "Abdullah"
+          },
+          {
+            "id": "fahad",
+            "label": "Fahad"
+          },
+          {
+            "id": "sultan",
+            "label": "Sultan"
+          },
+          {
+            "id": "lulwa",
+            "label": "Lulwa"
+          },
+          {
+            "id": "noura",
+            "label": "Noura"
+          },
+          {
+            "id": "aisha",
+            "label": "Aisha"
+          }
+        ]
+      }
+    },
+    "elevenlabs": {
+      "sources": [
+        "https://elevenlabs.io/docs/overview/models",
+        "https://elevenlabs.io/docs/changelog/2026/6/8",
+        "https://elevenlabs.io/docs/api-reference/text-to-speech/convert",
+        "https://elevenlabs.io/docs/eleven-creative/playground/text-to-speech",
+        "https://elevenlabs.io/docs/eleven-agents/overview"
+      ],
+      "defaults": {
+        "model_id": "eleven_flash_v2_5",
+        "voice_id": "21m00Tcm4TlvDq8ikWAM",
+        "output_format": "ulaw_8000"
+      },
+      "models": {
+        "tts": [
+          {
+            "id": "eleven_flash_v2_5",
+            "label": "eleven_flash_v2_5"
+          },
+          {
+            "id": "eleven_v4_turbo",
+            "label": "eleven_v4_turbo"
+          },
+          {
+            "id": "eleven_v4",
+            "label": "eleven_v4"
+          },
+          {
+            "id": "eleven_multilingual_v2",
+            "label": "eleven_multilingual_v2"
+          },
+          {
+            "id": "eleven_v3",
+            "label": "eleven_v3"
+          },
+          {
+            "id": "eleven_turbo_v2_5",
+            "label": "eleven_turbo_v2_5 (deprecated)",
+            "status": "deprecated",
+            "retirement_date_unknown": true
+          }
+        ]
+      }
+    },
+    "fishaudio": {
+      "sources": [
+        "https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech.md",
+        "https://docs.fish.audio/developer-guide/models-pricing/models-overview"
+      ],
+      "defaults": {
+        "model": "s2.1-pro"
+      },
+      "models": {
+        "tts": [
+          {
+            "id": "s2.1-pro",
+            "label": "s2.1-pro"
+          },
+          {
+            "id": "s2.1-pro-free",
+            "label": "s2.1-pro-free"
+          },
+          {
+            "id": "s2-pro",
+            "label": "s2-pro"
+          },
+          {
+            "id": "drama-3",
+            "label": "drama-3"
+          },
+          {
+            "id": "s3-pro",
+            "label": "s3-pro"
+          },
+          {
+            "id": "s1",
+            "label": "s1 (deprecated)",
+            "status": "deprecated",
+            "shutdown_date": "2026-12-31"
+          }
+        ]
+      }
+    },
+    "cambai": {
+      "sources": [
+        "https://docs.camb.ai/api-reference/endpoint/create-tts-stream"
+      ],
+      "defaults": {
+        "speech_model": "mars-flash",
+        "voice_id": 147320
+      },
+      "models": {
+        "tts": [
+          {
+            "id": "mars-flash",
+            "label": "mars-flash"
+          },
+          {
+            "id": "mars-pro",
+            "label": "mars-pro"
+          },
+          {
+            "id": "mars-instruct",
+            "label": "mars-instruct"
+          },
+          {
+            "id": "mars-8.1-flash-beta",
+            "label": "mars-8.1-flash-beta"
+          },
+          {
+            "id": "mars-8.1-pro-beta",
+            "label": "mars-8.1-pro-beta"
+          }
+        ]
+      }
+    },
+    "azure": {
+      "sources": [
+        "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-support",
+        "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/fast-transcription-create"
+      ],
+      "defaults": {
+        "voice_name": "en-US-JennyNeural",
+        "api_version": "2025-10-15"
+      },
+      "voices": {
+        "tts": [
+          {
+            "id": "en-US-JennyNeural",
+            "label": "en-US-JennyNeural"
+          },
+          {
+            "id": "en-US-GuyNeural",
+            "label": "en-US-GuyNeural"
+          },
+          {
+            "id": "en-GB-SoniaNeural",
+            "label": "en-GB-SoniaNeural"
+          }
+        ]
+      }
+    },
+    "local": {
+      "sources": [
+        "https://k2-fsa.github.io/sherpa/onnx/pretrained_models/index.html",
+        "https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0",
+        "https://huggingface.co/hexgrad/Kokoro-82M/tree/main/voices"
+      ],
+      "defaults": {
+        "stt_backend": "vosk",
+        "tts_backend": "piper"
+      },
+      "models": {
+        "stt_backends": [
+          {
+            "id": "vosk",
+            "label": "vosk"
+          },
+          {
+            "id": "sherpa",
+            "label": "sherpa"
+          },
+          {
+            "id": "kroko",
+            "label": "kroko"
+          },
+          {
+            "id": "tone",
+            "label": "tone"
+          },
+          {
+            "id": "faster_whisper",
+            "label": "faster_whisper"
+          },
+          {
+            "id": "whisper_cpp",
+            "label": "whisper_cpp"
+          }
+        ],
+        "tts_backends": [
+          {
+            "id": "piper",
+            "label": "piper"
+          },
+          {
+            "id": "kokoro",
+            "label": "kokoro"
+          },
+          {
+            "id": "silero",
+            "label": "silero"
+          },
+          {
+            "id": "melotts",
+            "label": "melotts"
+          },
+          {
+            "id": "matcha",
+            "label": "matcha"
+          }
+        ]
+      }
+    },
+    "ollama": {
+      "sources": [
+        "https://docs.ollama.com/api/tags"
+      ],
+      "defaults": {
+        "model": "llama3.2"
+      },
+      "models": {
+        "llm": [
+          {
+            "id": "llama3.2",
+            "label": "llama3.2"
+          },
+          {
+            "id": "qwen3",
+            "label": "qwen3"
+          },
+          {
+            "id": "qwen3:8b",
+            "label": "qwen3:8b"
+          },
+          {
+            "id": "mistral",
+            "label": "mistral"
+          },
+          {
+            "id": "phi3",
+            "label": "phi3"
+          },
+          {
+            "id": "gemma2",
+            "label": "gemma2"
+          }
+        ]
+      }
+    }
+  }
+}

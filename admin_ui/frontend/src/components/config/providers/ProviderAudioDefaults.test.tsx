@@ -27,6 +27,17 @@ const controlBesideLabel = (label: string): HTMLInputElement | HTMLSelectElement
 };
 
 describe('provider audio displayed defaults', () => {
+    it('keeps REST-only transcription models out of full Realtime choices while preserving a saved custom value', () => {
+        const onChange = vi.fn();
+        const { rerender } = render(<OpenAIRealtimeProviderForm config={{}} onChange={onChange} />);
+        const transcription = screen.getByLabelText('Input Transcription Model');
+        expect(transcription.querySelector('option[value="gpt-4o-transcribe-diarize"]')).toBeNull();
+        expect(transcription.querySelector('option[value="gpt-transcribe"]')).toBeInTheDocument();
+        rerender(<OpenAIRealtimeProviderForm config={{ input_transcription_model: 'gpt-4o-transcribe-diarize' }} onChange={onChange} />);
+        expect(screen.getByLabelText('Input Transcription Model')).toHaveValue('gpt-4o-transcribe-diarize');
+        expect(screen.getByRole('option', { name: 'gpt-4o-transcribe-diarize (configured)' })).toBeInTheDocument();
+        expect(onChange).not.toHaveBeenCalled();
+    });
     it('shows Deepgram wire input as μ-law at 8 kHz and omits unsupported provider-input controls', () => {
         render(<DeepgramProviderForm config={{}} onChange={vi.fn()} />);
 
@@ -79,7 +90,7 @@ describe('provider audio displayed defaults', () => {
 
         expect(onChange).toHaveBeenCalledWith({
             api_version: 'ga',
-            model: 'gpt-realtime',
+            model: 'gpt-realtime-2.1',
             output_encoding: 'linear16',
             output_sample_rate_hz: 24000,
             voice: 'alloy',

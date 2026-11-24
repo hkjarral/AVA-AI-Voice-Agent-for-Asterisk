@@ -1,3 +1,4 @@
+import { modelOptions, modelIds, providerDefault } from '../../../config/providerCatalog';
 import ConnectionRecoveryFields from './ConnectionRecoveryFields';
 import React from 'react';
 import { Info, Mic } from 'lucide-react';
@@ -224,9 +225,10 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                                             <strong>Model ID</strong> — which ElevenLabs TTS model synthesizes audio. Latency and quality trade off against each other.
                                             <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                                 <li><code>eleven_flash_v2_5</code> — lowest latency (~75 ms), recommended for realtime telephony.</li>
-                                                <li><code>eleven_turbo_v2_5</code> — balanced quality + latency, English-focused.</li>
+                                                <li><code>eleven_turbo_v2_5</code> — deprecated; prefer Flash v2.5 (32 languages).</li>
                                                 <li><code>eleven_multilingual_v2</code> — 29 languages, highest quality but slower.</li>
-                                                <li><code>eleven_monolingual_v1</code> — legacy; prefer Turbo or Flash.</li>
+                                                <li><code>eleven_v4</code> / <code>eleven_v4_turbo</code> — expressive synthesis with stability and similarity only.</li>
+                                                <li><code>eleven_v3</code> — expressive synthesis with discrete stability only.</li>
                                             </ul>
                                         </>
                                     }
@@ -236,13 +238,11 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                             </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.model_id || 'eleven_flash_v2_5'}
+                                value={config.model_id || providerDefault('elevenlabs', 'model_id')}
                                 onChange={(e) => handleChange('model_id', e.target.value)}
                             >
-                                <option value="eleven_flash_v2_5">Flash v2.5 (Lowest latency, recommended for telephony)</option>
-                                <option value="eleven_turbo_v2_5">Turbo v2.5 (Fastest, English only)</option>
-                                <option value="eleven_multilingual_v2">Multilingual v2 (Better quality)</option>
-                                <option value="eleven_monolingual_v1">Monolingual v1 (Legacy)</option>
+                                {config.model_id && !modelIds('elevenlabs', 'tts').includes(config.model_id) && <option value={config.model_id}>{config.model_id} (configured; verify availability)</option>}
+                                {modelOptions('elevenlabs', 'tts').map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
                             </select>
                         </div>
 
@@ -264,15 +264,13 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                                     linkText="Voice settings reference"
                                 />
                             </div>
-                            <input
-                                type="number"
-                                step="0.1"
-                                min="0"
-                                max="1"
-                                className="w-full p-2 rounded border border-input bg-background"
-                                value={config.stability || 0.5}
-                                onChange={(e) => handleChange('stability', parseFloat(e.target.value))}
-                            />
+                            {(config.model_id ?? providerDefault('elevenlabs', 'model_id')) === 'eleven_v3' ? (
+                                <select aria-label="Stability" className="w-full p-2 rounded border border-input bg-background" value={config.stability ?? 0.5} onChange={event => handleChange('stability', Number(event.target.value))}>
+                                    {config.stability !== undefined && ![0, 0.5, 1].includes(Number(config.stability)) && <option value={config.stability}>{config.stability} (incompatible configured value)</option>}
+                                    <option value={0}>0 — Creative</option><option value={0.5}>0.5 — Natural</option><option value={1}>1 — Robust</option>
+                                </select>
+                            ) : <input type="number" step="0.1" min="0" max="1" className="w-full p-2 rounded border border-input bg-background" value={config.stability ?? 0.5} onChange={event => handleChange('stability', Number(event.target.value))} />}
+                            {(config.model_id ?? '') === 'eleven_v3' && <p className="text-xs text-muted-foreground">Eleven v3 accepts stability 0, 0.5, or 1. Speaker boost does not apply to this model.</p>}
                             <p className="text-xs text-muted-foreground">
                                 Voice consistency. Higher = more stable, lower = more expressive/variable.
                             </p>
@@ -302,7 +300,8 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                                 min="0"
                                 max="1"
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.similarity_boost || 0.75}
+                                disabled={config.model_id === 'eleven_v3'}
+                                value={config.similarity_boost ?? 0.75}
                                 onChange={(e) => handleChange('similarity_boost', parseFloat(e.target.value))}
                             />
                             <p className="text-xs text-muted-foreground">

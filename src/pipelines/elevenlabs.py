@@ -141,6 +141,15 @@ class ElevenLabsTTSAdapter(TTSComponent):
             "style": merged.get("style", self._provider_config.style),
             "use_speaker_boost": merged.get("use_speaker_boost", self._provider_config.use_speaker_boost),
         }
+        if model_id == "eleven_v3":
+            stability = voice_settings["stability"]
+            if isinstance(stability, bool) or stability not in (0.0, 0.5, 1.0):
+                raise ValueError("Eleven v3 stability must be 0, 0.5, or 1")
+            # v3 delivery is controlled by stability and inline audio tags.
+            # Legacy similarity/style/boost controls must not imply support.
+            voice_settings = {"stability": stability}
+        elif model_id in {"eleven_v4", "eleven_v4_turbo"}:
+            voice_settings = {key: voice_settings[key] for key in ("stability", "similarity_boost")}
         
         payload = {
             "text": text,

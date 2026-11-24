@@ -27,7 +27,7 @@ describe('Google Live model API compatibility', () => {
 
 describe('Google Live Vertex model/region compatibility', () => {
     it('includes every officially listed GA model location', () => {
-        expect(GOOGLE_LIVE_VERTEX_MODEL_REGIONS['gemini-3.8-live']).toEqual(['us-central1', 'us', 'eu']);
+        expect(GOOGLE_LIVE_VERTEX_MODEL_REGIONS['gemini-3.8-live']).toEqual(['us-central1', 'us', 'eu', 'asia-south1']);
         expect(GOOGLE_LIVE_VERTEX_MODEL_REGIONS['gemini-live-2.5-flash-native-audio']).toHaveLength(13);
         for (const locations of Object.values(GOOGLE_LIVE_VERTEX_MODEL_REGIONS)) {
             for (const location of locations) {

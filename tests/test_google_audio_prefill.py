@@ -16,6 +16,9 @@ from src.providers.google_live import GoogleLiveProvider
 
 def provider(callback, prefill=2000):
     p = GoogleLiveProvider(GoogleProviderConfig(
+        # Exercise legacy local interruption; 3.8 provider-owned full duplex
+        # has separate lifecycle coverage in test_google_live_3_8.py.
+        llm_model='gemini-2.5-flash-native-audio-preview-09-2025',
         api_key='synthetic', playback_prefill_ms=prefill,
         target_encoding='slin16', target_sample_rate_hz=16000,
         output_sample_rate_hz=16000), callback)

@@ -73,6 +73,7 @@ class _FluxSessionState:
         self.turn_complete_event = asyncio.Event()
         self.receiver_task: Optional[asyncio.Task] = None
         self.active = True
+        self.last_completed_turn_index: Optional[int] = None
 
 
 class DeepgramFluxSTTAdapter(STTComponent):
@@ -122,17 +123,17 @@ class DeepgramFluxSTTAdapter(STTComponent):
         if not base_url or not base_url.startswith("wss://"):
             base_url = "wss://api.deepgram.com/v2/listen"
         query_params = {
-            "model": "flux-general-en",
-            "language": merged.get("language", "en-US"),
+            "model": merged["model"],
             "encoding": merged.get("encoding", "linear16"),
             "sample_rate": merged.get("sample_rate", "16000"),
-            "channels": "1",
         }
         
+        if merged.get("language_hints"):
+            query_params["language_hint"] = merged["language_hints"]
         parsed = urlparse(base_url)
         existing = dict(parse_qsl(parsed.query))
         existing.update(query_params)
-        flux_url = urlunparse(parsed._replace(query=urlencode(existing)))
+        flux_url = urlunparse(parsed._replace(query=urlencode(existing, doseq=True)))
         
         # Create options with Flux URL for base class validation
         flux_options = {**merged, "base_url": flux_url}
@@ -146,25 +147,28 @@ class DeepgramFluxSTTAdapter(STTComponent):
         api_key = merged.get("api_key")
         if not api_key:
             raise RuntimeError("Deepgram Flux STT requires an API key")
+        if call_id in self._sessions:
+            await self.close_call(call_id)
         
         # Build Flux-specific query parameters
         query_params = {
-            "model": "flux-general-en",  # Required for Flux
-            "language": merged.get("language", "en-US"),
+            "model": merged["model"],  # Required for Flux
             "encoding": merged.get("encoding", "linear16"),
             "sample_rate": merged.get("sample_rate", "16000"),
-            "channels": "1",  # Mono audio (required for Flux)
             # Turn detection parameters
             "eot_threshold": merged.get("eot_threshold", "0.7"),
             "eot_timeout_ms": merged.get("eot_timeout_ms", "5000"),
         }
         
+        if merged.get("language_hints"):
+            query_params["language_hint"] = merged["language_hints"]
+
         # Optional: Enable EagerEndOfTurn for faster LLM triggering
         if "eager_eot_threshold" in merged:
             query_params["eager_eot_threshold"] = merged["eager_eot_threshold"]
         
         # Remove None values
-        query_params = {k: str(v) for k, v in query_params.items() if v is not None}
+        query_params = {k: v for k, v in query_params.items() if v is not None}
         
         # Always use WSS for Flux, ignore HTTP(S) from provider config
         base_url = merged.get("base_url", "")
@@ -176,7 +180,7 @@ class DeepgramFluxSTTAdapter(STTComponent):
         parsed = urlparse(ws_url)
         existing = dict(parse_qsl(parsed.query))
         existing.update(query_params)
-        ws_url = urlunparse(parsed._replace(query=urlencode(existing)))
+        ws_url = urlunparse(parsed._replace(query=urlencode(existing, doseq=True)))
         
         logger.info(
             "Deepgram Flux STT opening session",
@@ -382,6 +386,10 @@ class DeepgramFluxSTTAdapter(STTComponent):
         
         while True:
             try:
+                # A full queue may have prevented insertion of the close
+                # sentinel. Drain accepted transcripts, then terminate.
+                if not session.active and session.transcript_queue.empty():
+                    break
                 transcript = await session.transcript_queue.get()
                 if transcript is None:
                     break
@@ -393,11 +401,10 @@ class DeepgramFluxSTTAdapter(STTComponent):
         """
         Async receiver loop for Flux results.
         
-        Handles:
-        - Results: Interim and final transcripts
-        - EndOfTurn: Speaker finished, trigger LLM
-        - EagerEndOfTurn: Early signal for faster response
-        - TurnResumed: Cancel speculative LLM processing
+        Flux v2 emits TurnInfo envelopes with event/transcript fields. Only
+        EndOfTurn commits a transcript; interim/eager/resumed events must not
+        trigger an irreversible LLM/tool response. Legacy Results remain
+        accepted for compatible gateways.
         """
         try:
             async for message in session.websocket:
@@ -408,10 +415,28 @@ class DeepgramFluxSTTAdapter(STTComponent):
                     data = json.loads(message) if isinstance(message, str) else message
                 except (json.JSONDecodeError, TypeError):
                     continue
+                if not isinstance(data, dict):
+                    continue
                 
                 msg_type = data.get("type")
                 
-                if msg_type == "Results":
+                if msg_type == "TurnInfo":
+                    event = data.get("event")
+                    if event in {"StartOfTurn", "TurnResumed"}:
+                        session.turn_complete_event.clear()
+                    elif event == "EndOfTurn":
+                        turn_index = data.get("turn_index")
+                        indexed = isinstance(turn_index, int) and not isinstance(turn_index, bool)
+                        if indexed and session.last_completed_turn_index is not None and turn_index <= session.last_completed_turn_index:
+                            continue
+                        if indexed:
+                            session.last_completed_turn_index = turn_index
+                        session.turn_complete_event.set()
+                        transcript = data.get("transcript")
+                        if isinstance(transcript, str) and transcript.strip():
+                            self._queue_transcript(session, transcript.strip())
+                        logger.info("Deepgram Flux end of turn detected", call_id=call_id, turn_index=turn_index)
+                elif msg_type == "Results":
                     # Extract transcript from Results message
                     transcript = self._extract_transcript(data)
                     if transcript:
@@ -426,15 +451,7 @@ class DeepgramFluxSTTAdapter(STTComponent):
                         
                         # Only queue final transcripts
                         if is_final:
-                            try:
-                                session.transcript_queue.put_nowait(transcript)
-                            except asyncio.QueueFull:
-                                # Drop oldest transcript if queue full
-                                try:
-                                    session.transcript_queue.get_nowait()
-                                except asyncio.QueueEmpty:
-                                    pass
-                                await session.transcript_queue.put(transcript)
+                            self._queue_transcript(session, transcript)
                 
                 elif msg_type == "EndOfTurn":
                     # Speaker finished - signal turn complete
@@ -492,6 +509,15 @@ class DeepgramFluxSTTAdapter(STTComponent):
                 session.transcript_queue.put_nowait(None)
             except asyncio.QueueFull:
                 pass
+
+    @staticmethod
+    def _queue_transcript(session: _FluxSessionState, transcript: str) -> None:
+        try:
+            session.transcript_queue.put_nowait(transcript)
+        except asyncio.QueueFull:
+            # Preserve the bounded queue's historical newest-turn policy.
+            session.transcript_queue.get_nowait()
+            session.transcript_queue.put_nowait(transcript)
     
     def _extract_transcript(self, message: Dict[str, Any]) -> Optional[str]:
         """Extract transcript text from Flux Results message."""
@@ -507,7 +533,20 @@ class DeepgramFluxSTTAdapter(STTComponent):
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Merge runtime options with pipeline and provider defaults."""
         runtime_options = runtime_options or {}
+        model = runtime_options.get("model", self._pipeline_defaults.get("model", self._provider_defaults.model))
+        # A shared Nova provider still seeds the original English Flux adapter.
+        if not str(model).startswith("flux-"):
+            model = "flux-general-en"
+        if model not in {"flux-general-en", "flux-general-multi"}:
+            raise ValueError("Select flux-general-en or flux-general-multi for the Flux STT adapter")
+        hints = runtime_options.get("language_hints", self._pipeline_defaults.get("language_hints", getattr(self._provider_defaults, "language_hints", None)))
+        if hints is not None and (not isinstance(hints, list) or any(not isinstance(x, str) or not x.strip() for x in hints)):
+            raise ValueError("Flux STT language_hints must be a list of language codes")
+        if hints and model != "flux-general-multi":
+            raise ValueError("Flux STT language_hints requires flux-general-multi")
         merged = {
+            "model": model,
+            "language_hints": hints,
             "base_url": runtime_options.get(
                 "base_url",
                 self._pipeline_defaults.get("base_url", self._provider_defaults.base_url),

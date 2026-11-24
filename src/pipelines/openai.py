@@ -28,9 +28,11 @@ from ..audio import (
     resample_audio,
     resolve_output_resampler_policy,
 )
-from ..config import AppConfig, OpenAIProviderConfig
+from ..config import AppConfig, OpenAIProviderConfig, resolve_openai_tts_transport
+from ..utils.provider_catalog import provider_default
 from ..logging_config import get_logger
 from .base import LLMComponent, STTComponent, TTSComponent, LLMResponse
+from .openai_realtime_tts import RealtimeTTSPool
 from ..tools.registry import tool_registry
 
 logger = get_logger(__name__)
@@ -152,6 +154,8 @@ def _decode_audio_payload(raw_bytes: bytes) -> bytes:
 class OpenAISTTAdapter(STTComponent):
     """OpenAI Speech-to-Text adapter using /v1/audio/transcriptions (Whisper-style REST)."""
 
+    requires_utterance_buffer = True
+
     def __init__(
         self,
         component_key: str,
@@ -233,11 +237,11 @@ class OpenAISTTAdapter(STTComponent):
         # Validate response_format per model family (per OpenAI speech-to-text guide).
         model_lower = str(merged.get("model") or "").strip().lower()
         response_format = str(merged.get("response_format") or "json").strip().lower()
-        if model_lower.startswith("gpt-4o-") and "transcribe" in model_lower:
+        if model_lower == "gpt-transcribe" or (model_lower.startswith("gpt-4o-") and "transcribe" in model_lower):
             if model_lower == "gpt-4o-transcribe-diarize":
                 allowed_formats = {"json", "text", "diarized_json"}
             else:
-                allowed_formats = {"json", "text"}
+                allowed_formats = {"json"} if model_lower.startswith("gpt-4o-") else {"json", "text"}
             if response_format not in allowed_formats:
                 logger.warning(
                     "OpenAI STT response_format not supported for selected model; falling back to json",
@@ -796,6 +800,12 @@ class OpenAILLMAdapter(LLMComponent):
 
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         runtime_options = runtime_options or {}
+        token_fields = ("max_completion_tokens", "max_tokens")
+        token_options = next(
+            (options for options in (runtime_options, self._pipeline_defaults)
+             if any(field in options for field in token_fields)),
+            {field: getattr(self._provider_defaults, field, None) for field in token_fields},
+        )
         merged = {
             "api_key": runtime_options.get("api_key", self._pipeline_defaults.get("api_key", self._provider_defaults.api_key)),
             "organization": runtime_options.get("organization", self._pipeline_defaults.get("organization", self._provider_defaults.organization)),
@@ -832,8 +842,10 @@ class OpenAILLMAdapter(LLMComponent):
             ),
             "system_prompt": runtime_options.get("system_prompt", self._pipeline_defaults.get("system_prompt")),
             "instructions": runtime_options.get("instructions", self._pipeline_defaults.get("instructions")),
-            "temperature": runtime_options.get("temperature", self._pipeline_defaults.get("temperature", 0.7)),
-            "max_tokens": runtime_options.get("max_tokens", self._pipeline_defaults.get("max_tokens")),
+            "temperature": runtime_options.get("temperature", self._pipeline_defaults.get("temperature", getattr(self._provider_defaults, "temperature", 0.7))),
+            "max_tokens": token_options.get("max_tokens"),
+            "max_completion_tokens": token_options.get("max_completion_tokens"),
+            "reasoning_effort": runtime_options.get("reasoning_effort", self._pipeline_defaults.get("reasoning_effort", getattr(self._provider_defaults, "reasoning_effort", None))),
             "timeout_sec": float(runtime_options.get("timeout_sec", self._pipeline_defaults.get("timeout_sec", self._default_timeout))),
             "use_realtime": runtime_options.get("use_realtime", self._pipeline_defaults.get("use_realtime", False)),
             "tools": runtime_options.get("tools", self._pipeline_defaults.get("tools", [])),
@@ -858,6 +870,21 @@ class OpenAILLMAdapter(LLMComponent):
             )
             merged["chat_base_url"] = self._provider_defaults.chat_base_url
             merged["chat_model"] = self._provider_defaults.chat_model
+
+        # Defaults belong to the effective model after pipeline/runtime
+        # overrides, while explicit settings (including None) retain priority.
+        explicit_effort = next((options["reasoning_effort"] for options in (runtime_options, self._pipeline_defaults)
+                                if "reasoning_effort" in options), ...)
+        if explicit_effort is ... and "reasoning_effort" in self._provider_defaults.model_fields_set:
+            explicit_effort = self._provider_defaults.reasoning_effort
+        if explicit_effort is ...:
+            merged["reasoning_effort"] = (
+                provider_default("openai", "reasoning_effort")
+                if _url_host(merged["chat_base_url"]) == "api.openai.com" and merged["chat_model"] == provider_default("openai", "chat_model")
+                else None
+            )
+        else:
+            merged["reasoning_effort"] = explicit_effort
 
         # Fallback persona when missing
         try:
@@ -907,10 +934,27 @@ class OpenAILLMAdapter(LLMComponent):
             "model": merged["chat_model"],
             "messages": messages,
         }
-        if merged.get("temperature") is not None:
+        model = str(merged["chat_model"]).lower()
+        official_openai = _url_host(merged.get("chat_base_url", "")) == "api.openai.com"
+        modern_openai = official_openai and model.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
+        effort = merged.get("reasoning_effort")
+        if modern_openai and model.startswith("gpt-6.2-"):
+            if merged.get("tools"):
+                raise ValueError("This OpenAI model requires the Responses API for tools; select gpt-6-luna or another Chat Completions tool-capable model")
+            if effort == "none":
+                raise ValueError("GPT-6.2 does not support reasoning_effort none; omit it or select a supported reasoning effort")
+        # Luna supports function calls on Chat Completions only with reasoning off.
+        if modern_openai and model.startswith("gpt-6-luna") and merged.get("tools"):
+            effort = "none"
+        if effort is not None and (modern_openai or not official_openai):
+            payload["reasoning_effort"] = effort
+        if merged.get("temperature") is not None and not modern_openai:
             payload["temperature"] = merged["temperature"]
-        if merged.get("max_tokens") is not None:
-            payload["max_tokens"] = merged["max_tokens"]
+        limit = merged.get("max_completion_tokens")
+        if limit is None:
+            limit = merged.get("max_tokens")
+        if limit is not None:
+            payload["max_completion_tokens" if modern_openai else "max_tokens"] = limit
         return payload
 
     def _coalesce_messages(self, transcript: str, context: Dict[str, Any], merged: Dict[str, Any]) -> list[Dict[str, str]]:
@@ -935,7 +979,7 @@ class OpenAILLMAdapter(LLMComponent):
 
 
 class OpenAITTSAdapter(TTSComponent):
-    """# Milestone7: OpenAI TTS adapter calling the audio.speech REST API."""
+    """OpenAI TTS with Realtime synthesis and explicit legacy Speech API support."""
 
     wideband_output_format = {
         "encoding": "linear16",
@@ -958,9 +1002,11 @@ class OpenAITTSAdapter(TTSComponent):
         self._pipeline_defaults = options or {}
         self._session_factory = session_factory
         self._session: Optional[aiohttp.ClientSession] = None
+        self._realtime_tts = RealtimeTTSPool()
         self._chunk_size_ms = int(self._pipeline_defaults.get("chunk_size_ms", provider_config.chunk_size_ms))
 
     async def start(self) -> None:
+        self._realtime_tts.start()
         logger.debug(
             "OpenAI TTS adapter initialized",
             component=self.component_key,
@@ -968,6 +1014,7 @@ class OpenAITTSAdapter(TTSComponent):
         )
 
     async def stop(self) -> None:
+        await self._realtime_tts.stop()
         if self._session and not self._session.closed:
             await self._session.close()
         self._session = None
@@ -976,13 +1023,28 @@ class OpenAITTSAdapter(TTSComponent):
         await self._ensure_session()
 
     async def close_call(self, call_id: str) -> None:
-        return
+        await self._realtime_tts.close_call(call_id)
 
     async def validate_connectivity(self, options: Dict[str, Any]) -> Dict[str, Any]:
         # The base validator expects URLs/credentials in the options dict. For OpenAI modular providers
         # those values typically live in provider defaults, so we validate using composed options.
         merged = self._compose_options(options or {})
-        return await super().validate_connectivity(merged)
+        model = str(merged["tts_model"])
+        if resolve_openai_tts_transport(merged["tts_model"], merged["tts_transport"]) != "realtime":
+            return await super().validate_connectivity(merged)
+        if not merged["api_key"]:
+            return {"healthy": False, "error": "No OpenAI Realtime TTS credential configured"}
+        options = {**merged, "timeout_sec": min(merged["tts_realtime_timeout_sec"], 15.0)}
+        try:
+            await self._realtime_tts.validate_session(options)
+        except (TimeoutError, ValueError, RuntimeError, OSError, websockets.exceptions.WebSocketException) as exc:
+            error = (
+                "OpenAI Realtime TTS model unavailable for the configured credential"
+                if "model_not_found" in str(exc)
+                else f"OpenAI Realtime TTS setup failed ({type(exc).__name__})"
+            )
+            return {"healthy": False, "error": error, "details": {"model": model}}
+        return {"healthy": True, "details": {"model": model, "session_acknowledged": True}}
 
     async def synthesize(
         self,
@@ -1001,9 +1063,8 @@ class OpenAITTSAdapter(TTSComponent):
         if not api_key:
             raise RuntimeError("OpenAI TTS requires an API key")
 
-        # OpenAI audio.speech expects a small enum set for model/voice/response_format. We avoid hard-failing
-        # on unknown values (to reduce drift with upstream), but we keep "safe fallbacks" + retries for the
-        # common case where a pipeline TTS provider is swapped and stale options remain (e.g., Groq model/voice).
+        # Normalize known cross-provider remnants before selecting the transport:
+        # the configured fallback itself may now require Realtime.
         model = (merged.get("tts_model") or "").strip()
         if not model or "/" in model:
             fallback_model = (self._provider_defaults.tts_model or "tts-1").strip()
@@ -1036,6 +1097,16 @@ class OpenAITTSAdapter(TTSComponent):
                 fallback_voice=fallback_voice,
             )
             merged["voice"] = fallback_voice
+
+        transport = resolve_openai_tts_transport(merged["tts_model"], merged["tts_transport"])
+        if transport == "realtime":
+            from ..utils.voice_catalog import OPENAI_GA_VOICES
+            if merged["voice"] not in OPENAI_GA_VOICES:
+                raise ValueError("Select a supported OpenAI Realtime voice for Realtime TTS")
+            realtime_options = {**merged, "timeout_sec": merged["tts_realtime_timeout_sec"]}
+            async for chunk in self._realtime_tts.synthesize(call_id, text, realtime_options):
+                yield chunk
+            return
 
         response_format = (merged.get("response_format") or "wav").strip().lower()
         if response_format not in {"wav", "pcm"}:
@@ -1179,10 +1250,11 @@ class OpenAITTSAdapter(TTSComponent):
                 "tts_base_url",
                 runtime_options.get("base_url", self._pipeline_defaults.get("tts_base_url", self._pipeline_defaults.get("base_url", self._provider_defaults.tts_base_url))),
             ),
-            "tts_model": runtime_options.get(
-                "model",
-                self._pipeline_defaults.get("model", self._provider_defaults.tts_model),
-            ),
+            "tts_model": runtime_options.get("model", runtime_options.get("tts_model", self._pipeline_defaults.get("model", self._pipeline_defaults.get("tts_model", self._provider_defaults.tts_model)))),
+            "tts_transport": runtime_options.get("tts_transport", self._pipeline_defaults.get("tts_transport", getattr(self._provider_defaults, "tts_transport", "auto"))),
+            "tts_realtime_base_url": runtime_options.get("tts_realtime_base_url", self._pipeline_defaults.get("tts_realtime_base_url", getattr(self._provider_defaults, "tts_realtime_base_url", "wss://api.openai.com/v1/realtime"))),
+            "tts_realtime_timeout_sec": float(runtime_options.get("tts_realtime_timeout_sec", self._pipeline_defaults.get("tts_realtime_timeout_sec", self._provider_defaults.tts_realtime_timeout_sec))),
+            "tts_instructions": runtime_options.get("tts_instructions", self._pipeline_defaults.get("tts_instructions", getattr(self._provider_defaults, "tts_instructions", None))),
             "voice": runtime_options.get("voice", self._pipeline_defaults.get("voice", self._provider_defaults.voice)),
             "chunk_size_ms": runtime_options.get("chunk_size_ms", self._pipeline_defaults.get("chunk_size_ms", self._provider_defaults.chunk_size_ms)),
             "timeout_sec": float(runtime_options.get("timeout_sec", self._pipeline_defaults.get("timeout_sec", self._provider_defaults.response_timeout_sec))),
@@ -1203,6 +1275,13 @@ class OpenAITTSAdapter(TTSComponent):
                 ),
             ),
         }
+        route = {key: merged[key] for key in ("tts_model", "tts_transport", "tts_base_url")}
+        model_selected = any(key in options for options in (runtime_options, self._pipeline_defaults) for key in ("model", "tts_model")) or "tts_model" in self._provider_defaults.model_fields_set
+        if not model_selected:
+            route.pop("tts_model")
+        route = OpenAIProviderConfig(**route)
+        merged["tts_model"] = route.tts_model
+        merged["tts_transport"] = route.tts_transport
         merged["output_resampler"] = resolve_output_resampler_policy(
             provider_mode=merged.get("output_resampler")
         )[0]

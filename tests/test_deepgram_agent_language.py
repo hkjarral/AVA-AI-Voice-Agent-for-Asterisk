@@ -222,3 +222,31 @@ async def test_invalid_configuration_opens_no_remote_websocket():
     connect.assert_not_awaited()
     assert provider.websocket is None
     assert provider._receive_task is None
+
+
+@pytest.mark.parametrize(("language", "voice", "expected"), [
+    ("en-US", "flux-haley-en", "en"),
+    ("pt-BR", "flux-bianca-pt", "pt"),
+])
+def test_flux_multilingual_listen_accepts_supported_language(language, voice, expected):
+    assert validate_agent_language_configuration(
+        listen_model="flux-general-multi", agent_language=language,
+        speak_model=voice, tts_version="v2",
+    ) == expected
+
+
+@pytest.mark.asyncio
+async def test_flux_multilingual_listen_rejects_tts_only_language_before_connect():
+    provider = DeepgramProvider(
+        DeepgramProviderConfig(
+            api_key="test-key", model="flux-general-multi", agent_language="bg",
+            tts_model="flux-desislava-bg", tts_version="v2",
+        ),
+        LLMConfig(),
+        None,
+    )
+    with patch("src.providers.deepgram.websockets.connect", new=AsyncMock()) as connect:
+        with pytest.raises(ValueError, match="Supported listen languages"):
+            await provider.start_session("deepgram-tts-only-language")
+    connect.assert_not_awaited()
+    assert provider.websocket is None

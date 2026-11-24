@@ -60,6 +60,10 @@ API_KEY_COMPATIBLE_KINDS = frozenset(
         "telenyx",
         "minimax",
         "fishaudio",
+        "groq",
+        "azure",
+        "cambai",
+        "elevenlabs",
     }
 )
 
@@ -67,7 +71,16 @@ MODULAR_LLM_KINDS = frozenset(
     {"openai", "google", "ollama", "local", "telnyx", "telenyx", "minimax"}
 )
 
-MODULAR_TTS_KINDS = frozenset({"fishaudio"})
+MODULAR_STT_KINDS = frozenset({"openai", "google", "deepgram", "groq", "azure"})
+MODULAR_TTS_KINDS = frozenset(
+    {"openai", "google", "deepgram", "groq", "azure", "elevenlabs", "cambai", "fishaudio"}
+)
+
+MODULAR_ROLE_KINDS = {
+    "llm": MODULAR_LLM_KINDS,
+    "stt": MODULAR_STT_KINDS,
+    "tts": MODULAR_TTS_KINDS,
+}
 
 CREDENTIAL_NAME_TO_FIELD = {
     "api-key": "api_key_file",
@@ -111,17 +124,19 @@ def credential_provider_kind(provider_key: str, provider_cfg: Any) -> Optional[s
         return kind
     if not isinstance(provider_cfg, Mapping):
         return None
-    raw_type = str(provider_cfg.get("type") or "").strip().lower()
-    if raw_type:
-        modular_kinds = MODULAR_LLM_KINDS | MODULAR_TTS_KINDS
-        return raw_type if raw_type in modular_kinds else None
     key = str(provider_key).lower()
-    if key.endswith("_llm"):
-        inferred = key.rsplit("_llm", 1)[0]
-        return inferred if inferred in MODULAR_LLM_KINDS else None
-    if key.endswith("_tts"):
-        inferred = key.rsplit("_tts", 1)[0]
-        return inferred if inferred in MODULAR_TTS_KINDS else None
+    role = next((role for role in MODULAR_ROLE_KINDS if key.endswith(f"_{role}")), None)
+    modular_kinds = MODULAR_ROLE_KINDS[role] if role else MODULAR_LLM_KINDS | MODULAR_TTS_KINDS
+    raw_type = str(provider_cfg.get("type") or "").strip().lower()
+    if raw_type == "deepgram_flux":
+        raw_type = "deepgram"
+    if raw_type:
+        return raw_type if raw_type in modular_kinds else None
+    if role:
+        inferred = key.rsplit(f"_{role}", 1)[0]
+        if inferred == "deepgram_flux":
+            inferred = "deepgram"
+        return inferred if inferred in modular_kinds else None
     if key in MODULAR_LLM_KINDS | MODULAR_TTS_KINDS:
         return key
     return None

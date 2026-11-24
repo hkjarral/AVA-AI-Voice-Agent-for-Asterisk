@@ -7,13 +7,14 @@
  */
 
 import fishAudioModels from './fishAudioModels.json';
+import { modelIds, providerDefault, providerVoices } from './providerCatalog';
 
 export const FISH_AUDIO_MODELS = fishAudioModels as string[];
 
 export interface SubtypeField {
   key: string;
   label: string;
-  type: 'text' | 'number' | 'combobox' | 'select' | 'password';
+  type: 'text' | 'number' | 'combobox' | 'select' | 'password' | 'string-list';
   required?: boolean;
   placeholder?: string;
   default?: string | number;
@@ -43,9 +44,10 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'openai',
     fields: [
       { key: 'chat_base_url', label: 'Chat API Base URL', type: 'text', required: true, placeholder: 'http://10.44.0.5:8080/v1', default: 'https://api.openai.com/v1' },
-      { key: 'chat_model', label: 'Model', type: 'combobox', required: true, placeholder: 'mlx-community/Qwen3-8B-4bit', suggestions: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
+      { key: 'chat_model', label: 'Model', type: 'combobox', required: true, placeholder: 'mlx-community/Qwen3-8B-4bit', default: providerDefault('openai', 'chat_model'), suggestions: modelIds('openai', 'llm') },
+      { key: 'reasoning_effort', label: 'Reasoning Effort', type: 'combobox', required: false, suggestions: ['none', 'low', 'medium', 'high'], tooltip: 'Optional. GPT-6 Luna tool calling uses none. Leave empty for compatible endpoints with different parameter support.' },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.7 },
-      { key: 'max_tokens', label: 'Max Tokens', type: 'number', required: false, default: 200 },
+      { key: 'max_tokens', label: 'Max Tokens', type: 'number', required: false, default: 200, tooltip: 'Limits completion tokens, including hidden reasoning. Reasoning models can need a larger budget to produce visible text; test response latency and output before rollout.' },
       { key: 'response_timeout_sec', label: 'Response Timeout (sec)', type: 'number', required: false, default: 15, tooltip: 'Max wait time for LLM response. Increase for complex prompts or slow endpoints.' },
     ],
   },
@@ -56,7 +58,7 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'openai',
     fields: [
       { key: 'chat_base_url', label: 'Chat API Base URL', type: 'text', required: true, placeholder: 'https://api.deepseek.com', default: 'https://api.deepseek.com' },
-      { key: 'chat_model', label: 'Model', type: 'combobox', required: true, default: 'deepseek-v4-flash', suggestions: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
+      { key: 'chat_model', label: 'Model', type: 'combobox', required: true, default: providerDefault('deepseek', 'chat_model'), suggestions: modelIds('deepseek', 'llm') },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.3 },
       { key: 'max_tokens', label: 'Max Tokens', type: 'number', required: false, default: 200 },
       { key: 'response_timeout_sec', label: 'Response Timeout (sec)', type: 'number', required: false, default: 30, tooltip: 'Max wait time for a DeepSeek response.' },
@@ -69,7 +71,7 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'google',
     fields: [
       { key: 'llm_base_url', label: 'Generative Language API URL', type: 'text', required: true, default: 'https://generativelanguage.googleapis.com/v1', placeholder: 'https://generativelanguage.googleapis.com/v1' },
-      { key: 'llm_model', label: 'Model', type: 'combobox', required: true, default: 'gemini-3.8-flash', suggestions: ['gemini-3.8-flash', 'gemini-3.6-flash'] },
+      { key: 'llm_model', label: 'Model', type: 'combobox', required: true, default: providerDefault('google', 'llm_model'), suggestions: modelIds('google', 'llm') },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.7, tooltip: 'Ignored by Gemini 3.6+, Gemini 3.5 Flash (routes to 3.6), and Gemini 3.5 Flash-Lite. Saved values are preserved for models that support it.' },
       { key: 'max_output_tokens', label: 'Max Output Tokens', type: 'number', required: false, default: 200 },
       { key: 'timeout_sec', label: 'Timeout (sec)', type: 'number', required: false, default: 30 },
@@ -82,7 +84,7 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'ollama',
     fields: [
       { key: 'base_url', label: 'Ollama URL', type: 'text', required: true, default: 'http://localhost:11434', placeholder: 'http://localhost:11434' },
-      { key: 'model', label: 'Model', type: 'combobox', required: true, placeholder: 'llama3.2', suggestions: ['llama3.2', 'qwen3', 'qwen3:8b', 'mistral', 'phi3', 'gemma2'] },
+      { key: 'model', label: 'Model', type: 'combobox', required: true, placeholder: 'llama3.2', suggestions: modelIds('ollama', 'llm') },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.7 },
       { key: 'max_tokens', label: 'Max Tokens', type: 'number', required: false, default: 200 },
       { key: 'timeout_sec', label: 'Timeout (sec)', type: 'number', required: false, default: 60 },
@@ -92,11 +94,11 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
   {
     id: 'telnyx',
     label: 'Telnyx AI Inference',
-    description: 'Telnyx cloud LLM inference with Qwen, Llama, and external models',
+    description: 'Telnyx-hosted LLM inference and supported external models',
     yamlType: 'telnyx',
     fields: [
       { key: 'chat_base_url', label: 'API Base URL', type: 'text', required: true, default: 'https://api.telnyx.com/v2/ai', placeholder: 'https://api.telnyx.com/v2/ai' },
-      { key: 'chat_model', label: 'Model', type: 'combobox', required: true, placeholder: 'Qwen/Qwen3-235B-A22B', suggestions: ['Qwen/Qwen3-235B-A22B', 'meta-llama/Meta-Llama-3.1-70B-Instruct', 'meta-llama/Meta-Llama-3.1-8B-Instruct'] },
+      { key: 'chat_model', label: 'Model', type: 'combobox', required: true, default: providerDefault('telnyx', 'chat_model'), suggestions: modelIds('telnyx', 'llm') },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.7 },
       { key: 'max_tokens', label: 'Max Tokens', type: 'number', required: false, default: 200 },
       { key: 'response_timeout_sec', label: 'Response Timeout (sec)', type: 'number', required: false, default: 30 },
@@ -109,7 +111,7 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'minimax',
     fields: [
       { key: 'chat_base_url', label: 'API Base URL', type: 'text', required: true, default: 'https://api.minimax.io/v1', placeholder: 'https://api.minimax.io/v1' },
-      { key: 'chat_model', label: 'Model', type: 'combobox', required: true, suggestions: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'] },
+      { key: 'chat_model', label: 'Model', type: 'combobox', required: true, default: providerDefault('minimax', 'chat_model'), suggestions: modelIds('minimax', 'llm') },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.7 },
       { key: 'response_timeout_sec', label: 'Response Timeout (sec)', type: 'number', required: false, default: 30 },
     ],
@@ -133,13 +135,36 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
 // ---------------------------------------------------------------------------
 const STT_SUBTYPES: ProviderSubtype[] = [
   {
+    id: 'deepgram', label: 'Deepgram Nova', description: 'Streaming Nova recognition', yamlType: 'deepgram',
+    fields: [
+      { key: 'model', label: 'Model', type: 'combobox', default: providerDefault('deepgram', 'model'), suggestions: modelIds('deepgram', 'stt') },
+      { key: 'stt_language', label: 'Language', type: 'text', default: 'en-US' },
+    ],
+  },
+  {
+    id: 'deepgram_flux', label: 'Deepgram Flux', description: 'Conversational recognition with model-owned turn detection', yamlType: 'deepgram',
+    fields: [
+      { key: 'model', label: 'Model', type: 'combobox', default: 'flux-general-en', suggestions: modelIds('deepgram', 'flux_stt') },
+      { key: 'language_hints', label: 'Language Hints', type: 'string-list', tooltip: 'Comma-separated language codes for flux-general-multi. Leave empty for automatic detection.' },
+      { key: 'eot_threshold', label: 'End-of-turn Threshold', type: 'number', default: 0.7 },
+      { key: 'eot_timeout_ms', label: 'End-of-turn Timeout (ms)', type: 'number', default: 5000 },
+    ],
+  },
+  {
+    id: 'google', label: 'Google Cloud STT', description: 'Google Cloud Speech-to-Text v1 recognition', yamlType: 'google',
+    fields: [
+      { key: 'stt_base_url', label: 'STT API URL', type: 'text', default: 'https://speech.googleapis.com/v1' },
+      { key: 'stt_language_code', label: 'Language', type: 'text', default: 'en-US' },
+    ],
+  },
+  {
     id: 'openai',
-    label: 'OpenAI Whisper',
-    description: 'OpenAI Whisper transcription API or compatible endpoint',
+    label: 'OpenAI Transcription',
+    description: 'OpenAI file transcription API or compatible endpoint',
     yamlType: 'openai',
     fields: [
       { key: 'stt_base_url', label: 'STT API Base URL', type: 'text', required: false, default: 'https://api.openai.com/v1/audio/transcriptions' },
-      { key: 'stt_model', label: 'Model', type: 'combobox', required: false, default: 'whisper-1', suggestions: ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe'] },
+      { key: 'stt_model', label: 'Model', type: 'combobox', required: false, default: providerDefault('openai', 'stt_model'), suggestions: modelIds('openai', 'stt') },
       { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${OPENAI_API_KEY}' },
       { key: 'chunk_size_ms', label: 'Chunk Size (ms)', type: 'number', required: false, default: 100 },
     ],
@@ -151,7 +176,7 @@ const STT_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'groq',
     fields: [
       { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${GROQ_API_KEY}' },
-      { key: 'stt_model', label: 'Model', type: 'combobox', required: false, default: 'whisper-large-v3-turbo', suggestions: ['whisper-large-v3-turbo', 'whisper-large-v3'] },
+      { key: 'stt_model', label: 'Model', type: 'combobox', required: false, default: providerDefault('groq', 'stt_model'), suggestions: modelIds('groq', 'stt') },
     ],
   },
   {
@@ -174,7 +199,7 @@ const STT_SUBTYPES: ProviderSubtype[] = [
     fields: [
       { key: 'ws_url', label: 'WebSocket URL', type: 'text', required: true, default: 'ws://127.0.0.1:8765', placeholder: 'ws://127.0.0.1:8765' },
       { key: 'auth_token', label: 'Auth Token', type: 'password', required: false },
-      { key: 'stt_backend', label: 'STT Backend', type: 'combobox', required: false, default: 'vosk', suggestions: ['vosk', 'sherpa', 'kroko', 'faster_whisper', 'whisper_cpp'] },
+      { key: 'stt_backend', label: 'STT Backend', type: 'combobox', required: false, default: 'vosk', suggestions: modelIds('local', 'stt_backends') },
       { key: 'chunk_ms', label: 'Chunk Size (ms)', type: 'number', required: false, default: 320 },
     ],
   },
@@ -202,7 +227,7 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
       { key: 'base_url', label: 'API Base URL', type: 'text', required: true, default: 'https://api.fish.audio/v1', placeholder: 'https://api.fish.audio/v1', tooltip: 'HTTPS is required except for an explicit loopback mock.' },
       { key: 'transport', label: 'Transport', type: 'select', required: false, default: 'http', suggestions: ['http', 'websocket'], tooltip: 'HTTP sends one request per fragment. WebSocket streams the whole response turn over one realtime session.' },
       { key: 'ws_base_url', label: 'Realtime WebSocket URL', type: 'text', required: false, placeholder: 'wss://api.fish.audio/v1', tooltip: 'Optional override for websocket transport. Secure WSS is required except for an explicit loopback mock.' },
-      { key: 'model', label: 'Model', type: 'select', required: true, default: 's2.1-pro', suggestions: FISH_AUDIO_MODELS },
+      { key: 'model', label: 'Model', type: 'select', required: true, default: providerDefault('fishaudio', 'model'), suggestions: FISH_AUDIO_MODELS },
       { key: 'reference_id', label: 'Voice Reference ID', type: 'text', required: true, placeholder: 'Voice model ID from the Fish Audio library' },
       { key: 'audio_format', label: 'Audio Format', type: 'combobox', required: false, default: 'pcm', suggestions: ['pcm', 'wav'], tooltip: 'PCM streams progressively and is recommended for calls. WAV is buffered before playback.' },
       { key: 'sample_rate', label: 'Provider Sample Rate (Hz)', type: 'combobox', required: false, placeholder: 'Leave blank to follow the call', suggestions: ['8000', '16000', '24000', '32000', '44100'] },
@@ -221,9 +246,13 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
     description: 'OpenAI text-to-speech API',
     yamlType: 'openai',
     fields: [
+      { key: 'tts_transport', label: 'TTS API Workflow', type: 'select', default: providerDefault('openai', 'tts_transport'), suggestions: ['auto', 'speech', 'realtime'], tooltip: 'auto selects Realtime for gpt-realtime models and Speech for existing speech models. Speech models retire January 6, 2027; changing workflows needs a real-call test.' },
+      { key: 'tts_realtime_base_url', label: 'Realtime WebSocket URL', type: 'text', default: 'wss://api.openai.com/v1/realtime' },
+      { key: 'tts_realtime_timeout_sec', label: 'Realtime Synthesis Timeout (sec)', type: 'number', default: Number(providerDefault('openai', 'tts_realtime_timeout_sec')), tooltip: 'Total Realtime synthesis budget per text fragment, from 1 to 120 seconds. Separate from the legacy Speech API response timeout.' },
+      { key: 'tts_instructions', label: 'Speech Instructions', type: 'text', tooltip: 'Optional style instructions. Realtime and compatible speech models only.' },
       { key: 'tts_base_url', label: 'TTS API Base URL', type: 'text', required: false, default: 'https://api.openai.com/v1/audio/speech' },
-      { key: 'tts_model', label: 'Model', type: 'combobox', required: false, default: 'tts-1', suggestions: ['tts-1', 'tts-1-hd', 'gpt-4o-mini-tts'] },
-      { key: 'voice', label: 'Voice', type: 'combobox', required: false, default: 'alloy', suggestions: ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'] },
+      { key: 'tts_model', label: 'Model', type: 'combobox', required: false, default: providerDefault('openai', 'tts_model'), suggestions: modelIds('openai', 'tts') },
+      { key: 'voice', label: 'Voice', type: 'combobox', required: false, default: 'alloy', suggestions: providerVoices('openai', 'tts').map(voice => voice.id) },
       { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${OPENAI_API_KEY}' },
       OUTPUT_RESAMPLER_FIELD,
     ],
@@ -235,8 +264,8 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'groq',
     fields: [
       { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${GROQ_API_KEY}' },
-      { key: 'tts_model', label: 'Model', type: 'combobox', required: false, default: 'canopylabs/orpheus-v1-english', suggestions: ['canopylabs/orpheus-v1-english', 'canopylabs/orpheus-arabic-saudi'] },
-      { key: 'voice', label: 'Voice', type: 'combobox', required: false, default: 'hannah', suggestions: ['autumn', 'diana', 'hannah', 'austin', 'daniel', 'troy'] },
+      { key: 'tts_model', label: 'Model', type: 'combobox', required: false, default: providerDefault('groq', 'tts_model'), suggestions: modelIds('groq', 'tts') },
+      { key: 'voice', label: 'Voice', type: 'combobox', required: false, default: providerDefault('groq', 'voice'), suggestions: providerVoices('groq', 'tts').map(voice => voice.id) },
       OUTPUT_RESAMPLER_FIELD,
     ],
   },
@@ -248,19 +277,24 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
     fields: [
       { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${ELEVENLABS_API_KEY}' },
       { key: 'voice_id', label: 'Voice ID', type: 'text', required: false, default: '21m00Tcm4TlvDq8ikWAM', placeholder: 'Rachel voice ID' },
-      { key: 'model_id', label: 'Model', type: 'combobox', required: false, default: 'eleven_turbo_v2_5', suggestions: ['eleven_turbo_v2_5', 'eleven_multilingual_v2', 'eleven_monolingual_v1'] },
-      { key: 'output_format', label: 'Output Format', type: 'combobox', required: false, default: 'ulaw_8000', suggestions: ['ulaw_8000', 'pcm_16000', 'pcm_24000', 'mp3_44100'] },
+      { key: 'model_id', label: 'Model', type: 'combobox', required: false, default: providerDefault('elevenlabs', 'model_id'), suggestions: modelIds('elevenlabs', 'tts') },
+      { key: 'stability', label: 'Stability', type: 'number', default: 0.5, tooltip: 'Voice consistency from 0 to 1. Eleven v3 accepts only 0, 0.5, or 1 and does not use speaker boost.' },
+      { key: 'similarity_boost', label: 'Similarity', type: 'number', default: 0.75, tooltip: 'Voice similarity from 0 to 1. Supported by Eleven v4 and the v2 family; not sent for Eleven v3.' },
+      { key: 'output_format', label: 'Output Format', type: 'combobox', required: false, default: 'ulaw_8000', suggestions: ['ulaw_8000', 'pcm_16000', 'pcm_24000'] },
       OUTPUT_RESAMPLER_FIELD,
     ],
   },
   {
     id: 'deepgram',
-    label: 'Deepgram Aura',
+    label: 'Deepgram Aura / Flux',
     description: 'Deepgram text-to-speech with native telephony output support',
     yamlType: 'deepgram',
     fields: [
       { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${DEEPGRAM_API_KEY}' },
-      { key: 'tts_model', label: 'Voice Model', type: 'text', required: false, default: 'aura-asteria-en' },
+      { key: 'tts_version', label: 'TTS API Version', type: 'select', default: providerDefault('deepgram', 'tts_version'), suggestions: ['v1', 'v2'], tooltip: 'v1 uses Aura voices; opt-in v2 uses Flux voices and raw audio. Change the voice model to match the version.' },
+      { key: 'tts_model', label: 'Voice Model', type: 'combobox', required: false, default: providerDefault('deepgram', 'tts_model'), suggestions: providerVoices('deepgram', 'tts').map(voice => voice.id) },
+      { key: 'tts_speed', label: 'Speaking Rate', type: 'number', tooltip: 'Aura: 0.7–1.5. Flux: 0.5–1.5 in steps of 0.05. Empty uses the provider default.' },
+      { key: 'tts_expressivity', label: 'Flux Expressivity', type: 'number', tooltip: 'Flux v2 only: integer -2 to 2. Empty uses the provider default.' },
       { key: 'output_encoding', label: 'Output Encoding', type: 'combobox', required: false, default: 'mulaw', suggestions: ['mulaw', 'linear16'] },
       { key: 'output_sample_rate_hz', label: 'Output Sample Rate (Hz)', type: 'number', required: false, default: 8000 },
       OUTPUT_RESAMPLER_FIELD,
@@ -273,7 +307,7 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'google',
     fields: [
       { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${GOOGLE_API_KEY}' },
-      { key: 'tts_voice_name', label: 'Voice', type: 'text', required: false, default: 'en-US-Neural2-C' },
+      { key: 'tts_voice_name', label: 'Voice', type: 'text', required: false, default: providerDefault('google', 'tts_voice_name') },
       { key: 'tts_audio_encoding', label: 'Output Encoding', type: 'combobox', required: false, default: 'MULAW', suggestions: ['MULAW', 'LINEAR16'] },
       { key: 'tts_sample_rate_hz', label: 'Output Sample Rate (Hz)', type: 'number', required: false, default: 8000 },
       OUTPUT_RESAMPLER_FIELD,
@@ -287,7 +321,7 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
     fields: [
       { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${CAMB_API_KEY}' },
       { key: 'voice_id', label: 'Voice ID', type: 'number', required: false, default: 147320 },
-      { key: 'speech_model', label: 'Speech Model', type: 'combobox', required: false, default: 'mars-flash', suggestions: ['mars-flash', 'mars-pro', 'mars-instruct'] },
+      { key: 'speech_model', label: 'Speech Model', type: 'combobox', required: false, default: providerDefault('cambai', 'speech_model'), suggestions: modelIds('cambai', 'tts') },
       { key: 'language', label: 'Language', type: 'text', required: false, default: 'en-us' },
       { key: 'output_format', label: 'Output Format', type: 'combobox', required: false, default: 'pcm_s16le', suggestions: ['pcm_s16le', 'wav'] },
       OUTPUT_RESAMPLER_FIELD,
@@ -301,7 +335,7 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
     fields: [
       { key: 'api_key', label: 'Azure Speech Key', type: 'password', required: true, placeholder: '${AZURE_SPEECH_KEY}' },
       { key: 'region', label: 'Region', type: 'combobox', required: true, default: 'eastus', suggestions: ['eastus', 'westus2', 'westeurope', 'southeastasia'] },
-      { key: 'voice_name', label: 'Voice', type: 'combobox', required: false, default: 'en-US-JennyNeural', suggestions: ['en-US-JennyNeural', 'en-US-GuyNeural', 'en-GB-SoniaNeural'] },
+      { key: 'voice_name', label: 'Voice', type: 'combobox', required: false, default: providerDefault('azure', 'voice_name'), suggestions: providerVoices('azure', 'tts').map(voice => voice.id) },
       { key: 'output_format', label: 'Output Format', type: 'combobox', required: false, default: 'raw-8khz-16bit-mono-pcm', suggestions: ['raw-8khz-16bit-mono-pcm', 'raw-16khz-16bit-mono-pcm'] },
       OUTPUT_RESAMPLER_FIELD,
     ],
@@ -314,7 +348,7 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
     fields: [
       { key: 'ws_url', label: 'WebSocket URL', type: 'text', required: true, default: 'ws://127.0.0.1:8765', placeholder: 'ws://127.0.0.1:8765' },
       { key: 'auth_token', label: 'Auth Token', type: 'password', required: false },
-      { key: 'tts_backend', label: 'TTS Backend', type: 'combobox', required: false, default: 'piper', suggestions: ['piper', 'kokoro', 'silero', 'melotts'] },
+      { key: 'tts_backend', label: 'TTS Backend', type: 'combobox', required: false, default: 'piper', suggestions: modelIds('local', 'tts_backends') },
     ],
   },
 ];
@@ -344,6 +378,9 @@ export const inferSubtype = (config: any): ProviderSubtype | undefined => {
   if (!cap || !MODULAR_SUBTYPES[cap as Capability]) return undefined;
   const yamlType = (config?.type || '').toLowerCase();
   if (!yamlType) return undefined;
+  if (cap === 'stt' && yamlType === 'deepgram' && String(config?.model || '').startsWith('flux-')) {
+    return MODULAR_SUBTYPES.stt.find(s => s.id === 'deepgram_flux');
+  }
   if (cap === 'llm' && yamlType === 'openai') {
     const baseUrl = String(config?.chat_base_url || config?.base_url || '').toLowerCase();
     if (baseUrl.includes('api.deepseek.com')) {

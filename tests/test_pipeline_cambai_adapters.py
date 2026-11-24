@@ -91,10 +91,12 @@ def _make_pcm16_silence(num_samples: int = 320) -> bytes:
 
 
 @pytest.mark.asyncio
-async def test_cambai_tts_adapter_sends_correct_payload():
+@pytest.mark.parametrize("model", ["mars-flash", "mars-8.1-flash-beta", "mars-8.1-pro-beta"])
+async def test_cambai_tts_adapter_sends_correct_payload(model):
     """Verify the adapter sends the correct payload to CAMB AI API."""
     app_config = _build_app_config()
     provider_config = CambAiProviderConfig(**app_config.providers["cambai"])
+    provider_config.speech_model = model
 
     # Fake PCM16 audio response (simulate 24kHz, will be resampled to 8kHz)
     pcm_audio = _make_pcm16_silence(480)  # 20ms at 24kHz
@@ -125,8 +127,9 @@ async def test_cambai_tts_adapter_sends_correct_payload():
     assert payload["text"] == "Hello from CAMB AI"
     assert payload["voice_id"] == 147320
     assert payload["language"] == "en-us"
-    assert payload["speech_model"] == "mars-flash"
-    assert payload["output_configuration"] == {"format": "pcm_s16le"}
+    assert payload["speech_model"] == model
+    assert payload["output_configuration"] == {"format": "pcm_s16le", "sample_rate": 24000}
+    assert len(b"".join(chunks)) == 160  # 20 ms of negotiated 8 kHz mu-law.
 
     # Verify auth header
     assert request["headers"]["x-api-key"] == "test-key"

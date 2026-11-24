@@ -138,7 +138,13 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
 - **Voice:** per-call override → Agent voice → provider default, with provider
   validation/unsupported cases documented in [voice selection](docs/VOICE_SELECTION.md).
   Pipeline TTS voice settings belong to the pipeline; do not assume all modes
-  consume an Agent voice. Catalogs live in `src/utils/voice_catalog.py`.
+  consume an Agent voice. Cloud models/defaults/voices live in
+  `src/utils/provider_catalog.json`; `voice_catalog.py` projects full-agent
+  metadata and generated frontend data is checked by `check_provider_models.py`.
+  API-family migrations are explicit model/transport selections; preserve saved
+  pins. See [provider catalog updates](docs/Provider-Catalog-Updates.md) for
+  OpenAI modular Realtime TTS, Deepgram Flux, Google Extended Thinking tool
+  restrictions, Kokoro global language selection and real-call acceptance.
 - **Tools:** registry and adapters translate provider-specific schemas. The engine
   dispatches pre-, in-, and post-call tools. Calls retain their captured tool
   generation; **Save & Apply** publishes validated configuration without changing

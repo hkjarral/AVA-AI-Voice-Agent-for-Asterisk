@@ -598,6 +598,20 @@
         "kokoro_voice": {
           "type": "string"
         },
+        "kokoro_lang": {
+          "type": "string",
+          "enum": [
+            "a",
+            "b",
+            "e",
+            "f",
+            "h",
+            "i",
+            "j",
+            "p",
+            "z"
+          ]
+        },
         "kokoro_mode": {
           "type": "string"
         },

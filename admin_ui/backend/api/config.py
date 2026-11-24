@@ -44,6 +44,7 @@ from src.fish_audio_url import (
 from src.config.loaders import substitute_braced_env_vars
 from src.config.provider_instances import PROVIDER_SECRETS_ROOT
 from src.utils.voice_catalog import full_agent_kind, provider_voice_meta
+from src.utils.provider_catalog import provider_catalog, provider_default
 from src.tools.execution_history import CALL_HISTORY_TOOL_REDACTION_MODES
 from services.provider_validation import (
     MODULAR_HTTP_KINDS, test_modular_provider,
@@ -1175,7 +1176,77 @@ def _assert_tool_emails_valid(content: str) -> None:
                     _check(v, f"{tool_name}.{key}_by_context.{ctx}")
 
 
-def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
+def _affected_provider_settings(previous: Dict[str, Any], desired: Dict[str, Any], effective: Dict[str, Any]) -> set[str]:
+    """Validate edited providers and routes' dependencies, leaving unused legacy entries alone."""
+    providers = desired.get("providers") or {}
+    old_providers = previous.get("providers") or {}
+    if not isinstance(providers, dict) or not isinstance(old_providers, dict):
+        return set()
+    affected = {str(name) for name, value in providers.items() if value != old_providers.get(name)}
+    pipelines = effective.get("pipelines") or {}
+
+    def include_component(component: Any, role: str) -> None:
+        if not isinstance(component, str):
+            return
+        component = component.strip()
+        if component in providers:
+            affected.add(component)
+        elif component.endswith(f"_{role}"):
+            # Legacy canonical roles can hydrate from a shared full
+            # provider when no explicit role block exists.
+            shared = component[:-(len(role) + 1)]
+            if shared in providers:
+                affected.add(shared)
+
+    def include_route(target: Any) -> None:
+        if not isinstance(target, str):
+            return
+        target = target.strip()
+        if target in providers:
+            affected.add(target)
+        pipeline = pipelines.get(target) if isinstance(pipelines, dict) else None
+        if isinstance(pipeline, dict):
+            for role in ("stt", "llm", "tts"):
+                include_component(pipeline.get(role), role)
+
+    removed = set(old_providers) - set(providers)
+    if removed and isinstance(pipelines, dict):
+        for pipeline in pipelines.values():
+            if not isinstance(pipeline, dict):
+                continue
+            for role in ("stt", "llm", "tts"):
+                component = pipeline.get(role)
+                if isinstance(component, str) and component.strip() in removed:
+                    # Deleting a referenced override changes the effective
+                    # dependency even if the pipeline itself is untouched.
+                    include_component(component, role)
+
+    for key in ("default_provider", "active_pipeline"):
+        if previous.get(key) != desired.get(key):
+            include_route(effective.get(key))
+    for section in ("pipelines", "contexts"):
+        old_entries, entries = previous.get(section) or {}, desired.get(section) or {}
+        if not isinstance(old_entries, dict) or not isinstance(entries, dict):
+            continue
+        for name, body in entries.items():
+            if body == old_entries.get(name):
+                continue
+            if section == "pipelines":
+                include_route(name)
+            if isinstance(body, dict):
+                effective_entries = effective.get(section)
+                effective_body = effective_entries.get(name) if isinstance(effective_entries, dict) else None
+                if not isinstance(effective_body, dict):
+                    effective_body = body
+                for key in ("provider", "default_provider", "pipeline"):
+                    include_route(effective_body.get(key))
+    # The canonical OpenAI speech/LLM roles inherit the shared block.
+    if "openai" in affected and providers.get("openai") != old_providers.get("openai"):
+        affected.update(name for name in ("openai_stt", "openai_llm", "openai_tts") if name in providers)
+    return affected
+
+
+def _validate_ai_agent_config(content: str, *, provider_names: Optional[set[str]] = None) -> Dict[str, Any]:
     """
     Validate ai-agent.yaml content against the canonical AppConfig schema.
 
@@ -1205,7 +1276,7 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
 
     try:
         from pydantic import ValidationError
-        from src.config import AppConfig, load_config
+        from src.config import AppConfig, load_config, validate_provider_settings
         from src.config.provider_instances import validate_provider_instances
     except Exception as exc:
         raise HTTPException(
@@ -1315,7 +1386,9 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
 
     try:
         with _temporary_dotenv(settings.ENV_PATH, defaults=env_required_defaults):
-            load_config(tmp_path)
+            loaded = load_config(tmp_path)
+            affected = provider_names if provider_names is not None else _affected_provider_settings(_read_merged_config_dict() or {}, parsed, loaded.model_dump())
+            validate_provider_settings(loaded.providers, provider_names=affected)
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=f"Config schema validation failed: {exc}")
     except Exception as exc:
@@ -1332,7 +1405,7 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    return {"warnings": warnings}
+    return {"warnings": warnings, "provider_settings_scope": sorted(affected)}
 
 
 def persist_config_content(
@@ -1374,6 +1447,14 @@ def _persist_config_content_locked(
     # Validate YAML + schema before saving.
     validation = _validate_ai_agent_config(content)
     warnings = validation.get("warnings") or []
+    provider_scope = validation.get("provider_settings_scope")
+
+    def validate_migrated_content(migrated: str) -> Dict[str, Any]:
+        # Automatic format/secret migrations do not expand the operator's edit
+        # scope. Explicit credential changes were included by the initial pass.
+        if provider_scope is None:
+            return _validate_ai_agent_config(migrated)
+        return _validate_ai_agent_config(migrated, provider_names=set(provider_scope))
 
     # Parse desired merged config content from UI.
     new_parsed = _safe_load_no_duplicates(content) or {}
@@ -1388,14 +1469,14 @@ def _persist_config_content_locked(
 
     if normalize_legacy_openai_audio(new_parsed):
         content = yaml.dump(new_parsed, default_flow_style=False, sort_keys=False)
-        validation = _validate_ai_agent_config(content)
+        validation = validate_migrated_content(content)
         migrated_warnings = validation.get("warnings")
         warnings = warnings if migrated_warnings is None else migrated_warnings
 
     secrets_migrated = _migrate_inline_provider_secrets(new_parsed)
     if secrets_migrated:
         content = yaml.dump(new_parsed, default_flow_style=False, sort_keys=False)
-        validation = _validate_ai_agent_config(content)
+        validation = validate_migrated_content(content)
         migrated_warnings = validation.get("warnings")
         warnings = warnings if migrated_warnings is None else migrated_warnings
 
@@ -2996,81 +3077,31 @@ def _update_yaml_provider_field_locked(
 @router.get("/options/{provider_type}")
 
 async def get_provider_options(provider_type: str):
-    """Get available options (models, voices) for a specific provider."""
-    
-    # Common catalogs.
-    # Aligned with the DeepgramProviderForm.tsx STT-model dropdown and the
-    # docs/Provider-Deepgram-Setup.md model table. v6.5.0+ ships nova-3 as the
-    # default (preserves pre-fix runtime hardcoded behavior) and exposes Flux
-    # for conversational voice-agent workloads. Flux models are flagged so
-    # frontend consumers can render the EOT VAD note where appropriate.
-    DEEPGRAM_MODELS = [
-        {"id": "flux-general-en", "name": "Flux General — English (recommended for voice agents)", "cost": "Low", "latency": "Ultra Low", "flux": True},
-        {"id": "flux-general-multi", "name": "Flux General — Multilingual", "cost": "Low", "latency": "Ultra Low", "flux": True},
-        {"id": "nova-3", "name": "Nova 3 (General, default)", "cost": "Low", "latency": "Ultra Low"},
-        {"id": "nova-3-medical", "name": "Nova 3 (Medical)", "cost": "Low", "latency": "Ultra Low"},
-        {"id": "nova-2", "name": "Nova 2 (General)", "cost": "Low", "latency": "Ultra Low"},
-        {"id": "nova-2-phonecall", "name": "Nova 2 (Phonecall)", "cost": "Low", "latency": "Ultra Low"},
-        {"id": "nova-2-medical", "name": "Nova 2 (Medical)", "cost": "Low", "latency": "Ultra Low"},
-        {"id": "nova-2-meeting", "name": "Nova 2 (Meeting)", "cost": "Low", "latency": "Ultra Low"},
-        {"id": "nova-2-general", "name": "Nova 2 (General Legacy)", "cost": "Low", "latency": "Ultra Low"},
-    ]
-    
-    OPENAI_LLM_MODELS = [
-        {"id": "gpt-4o", "name": "GPT-4o (Omni)", "description": "Most capable"},
-        {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "description": "Fast & Cheap"},
-        {"id": "gpt-4-turbo", "name": "GPT-4 Turbo", "description": "High intelligence"},
-        {"id": "gpt-3.5-turbo", "name": "GPT-3.5 Turbo", "description": "Legacy fast"},
-    ]
-    
-    OPENAI_STT_MODELS = [
-        {"id": "whisper-1", "name": "Whisper V1"}
-    ]
-    
-    GOOGLE_MODELS = [
-        {"id": "gemini-3.8-flash", "name": "Gemini 3.8 Flash (Recommended)"},
-        {"id": "gemini-3.6-flash", "name": "Gemini 3.6 Flash (Previous generation)"},
-    ]
-
-    GOOGLE_VOICES = [
-        {"id": "en-US-Standard-A", "name": "US Female Standard"},
-        {"id": "en-US-Standard-B", "name": "US Male Standard"},
-        {"id": "en-US-Neural2-A", "name": "US Female Neural"},
-        {"id": "en-US-Neural2-C", "name": "US Male Neural"},
-        {"id": "en-US-Studio-O", "name": "US Female Studio"},
-        {"id": "en-US-Studio-Q", "name": "US Male Studio"},
-    ]
-
-    # Return options based on provider
-    if provider_type == "deepgram":
-        return {"models": DEEPGRAM_MODELS}
-        
-    elif provider_type == "openai":
-        return {
-            "stt_models": OPENAI_STT_MODELS,
-            "llm_models": OPENAI_LLM_MODELS,
-            "tts_models": [{"id": "tts-1", "name": "TTS-1"}, {"id": "tts-1-hd", "name": "TTS-1 HD"}]
-        }
-        
-    elif provider_type == "google":
-        return {
-            "models": GOOGLE_MODELS,
-            "voices": GOOGLE_VOICES
-        }
-        
-    elif provider_type == "elevenlabs":
-        return {
-            "models": [
-                {"id": "eleven_turbo_v2_5", "name": "Turbo v2.5"},
-                {"id": "eleven_multilingual_v2", "name": "Multilingual v2"},
-                {"id": "eleven_monolingual_v1", "name": "Monolingual v1"}
-            ]
-        }
-        
-    elif provider_type == "local":
+    """Return the same verified catalog consumed by runtime and provider forms."""
+    catalog = provider_catalog()
+    provider = catalog["providers"].get(provider_type)
+    if provider is None:
+        return {"error": "Unknown provider type"}
+    if provider_type == "local":
         return {"message": "Use /api/local-ai/models for dynamic local models"}
-        
-    return {"error": "Unknown provider type"}
+    def options(items):
+        return [{**item, "name": item.get("label", item["id"])} for item in items]
+    models = provider.get("models", {})
+    voices = provider.get("voices", {})
+    result = {
+        "defaults": provider.get("defaults", {}),
+        "verified_at": catalog["verified_at"],
+        "model_options": {role: options(items) for role, items in models.items()},
+    }
+    if provider_type == "openai":
+        result.update({f"{role}_models": options(models.get(role, [])) for role in ("stt", "llm", "tts")})
+    else:
+        roles = ("stt", "flux_stt") if provider_type == "deepgram" else tuple(models)
+        result["models"] = options([item for role in roles for item in models.get(role, [])])
+    if voices:
+        result["voices"] = options([item for items in voices.values() for item in items])
+    return result
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3401,6 +3432,15 @@ def _configured_file_metadata(path: str, credential_name: str) -> Dict[str, Any]
 
 def _provider_legacy_api_key_env_names(provider_key: str, kind: str) -> tuple[str, ...]:
     """Return the legacy env fallbacks used by each provider runtime."""
+    if provider_key.endswith(("_stt", "_tts")):
+        speech_env = {
+            "openai": "OPENAI_API_KEY", "google": "GOOGLE_API_KEY",
+            "deepgram": "DEEPGRAM_API_KEY", "groq": "GROQ_API_KEY",
+            "azure": "AZURE_SPEECH_KEY", "cambai": "CAMB_API_KEY",
+            "elevenlabs": "ELEVENLABS_API_KEY", "fishaudio": "FISH_AUDIO_API_KEY",
+        }.get(kind)
+        if speech_env:
+            return (speech_env,)
     full_agent = {
         "openai_realtime": ("OPENAI_API_KEY",),
         "deepgram": ("DEEPGRAM_API_KEY",),
@@ -4260,6 +4300,7 @@ VERTEX_REGIONS = [
     {"value": "europe-west8", "label": "Europe West (Milan)"},
     {"value": "asia-east1", "label": "Asia East (Taiwan)"},
     {"value": "asia-northeast1", "label": "Asia Northeast (Tokyo)"},
+    {"value": "asia-south1", "label": "Asia South (Mumbai)"},
     {"value": "asia-southeast1", "label": "Asia Southeast (Singapore)"},
     {"value": "australia-southeast1", "label": "Australia (Sydney)"},
 ]
@@ -6001,9 +6042,13 @@ async def get_providers_voice_meta():
         voice_field = meta.get("voice_field")
         default_voice = entry.get(voice_field) if voice_field else None
         agent_language = None
+        tts_version = None
         if kind == "deepgram":
             raw_language = str(entry.get("agent_language") or "en").strip().lower()
             agent_language = raw_language.replace("_", "-").split("-", 1)[0] or "en"
+            from src.config.loaders import _expand_env_vars_with_defaults
+            with _temporary_dotenv(settings.ENV_PATH):
+                tts_version = _expand_env_vars_with_defaults(str(entry.get("tts_version") or "v1")) or "v1"
         out.append({
             "name": name,
             "kind": kind,
@@ -6013,5 +6058,6 @@ async def get_providers_voice_meta():
             "voices": meta["voices"],
             "default_voice": default_voice,
             "agent_language": agent_language,
+            "tts_version": tts_version,
         })
     return {"providers": out}

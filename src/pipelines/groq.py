@@ -29,6 +29,7 @@ from ..audio import (
 )
 from ..config import AppConfig, GroqSTTProviderConfig, GroqTTSProviderConfig
 from ..logging_config import get_logger
+from ..utils.provider_catalog import provider_voice_ids
 from .base import STTComponent, TTSComponent
 
 logger = get_logger(__name__)
@@ -553,6 +554,9 @@ class GroqTTSAdapter(TTSComponent):
                 ),
             ),
         }
+        valid_voices = provider_voice_ids("groq", options["model"])
+        if valid_voices and options["voice"] not in valid_voices:
+            raise ValueError("Groq TTS voice does not match the selected model language; select one of: " + ", ".join(valid_voices))
         options["output_resampler"] = resolve_output_resampler_policy(
             provider_mode=options.get("output_resampler")
         )[0]

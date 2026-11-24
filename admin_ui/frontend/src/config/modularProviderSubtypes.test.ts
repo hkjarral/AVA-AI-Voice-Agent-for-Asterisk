@@ -15,7 +15,7 @@ describe('modular LLM provider subtypes', () => {
                 }),
                 expect.objectContaining({
                     key: 'chat_model',
-                    default: 'deepseek-v4-flash',
+                    default: 'deepseek-flash',
                 }),
             ])
         );
@@ -71,8 +71,9 @@ describe('modular TTS provider subtypes', () => {
             's2.1-pro',
             's2.1-pro-free',
             's2-pro',
+            'drama-3',
+            's3-pro',
             's1',
-            'drama-3-preview',
         ]);
     });
 

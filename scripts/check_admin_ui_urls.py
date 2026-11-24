@@ -67,6 +67,7 @@ API_HOSTS = {
     "api.telnyx.com",
     "api.x.ai",
     "generativelanguage.googleapis.com",
+    "speech.googleapis.com",
     "graph.microsoft.com",
     "openrouter.ai",
     "voice-generator.pages.dev",
@@ -76,6 +77,7 @@ API_HOSTS = {
 # themselves. Probe a stable unauthenticated route instead so a removed or
 # renamed API is not mistaken for a valid base merely because its host exists.
 API_PROBES = {
+    "https://speech.googleapis.com/v1": "https://speech.googleapis.com/v1/speech:recognize",
     "https://api.anthropic.com/v1": "https://api.anthropic.com/v1/models",
     "https://api.deepgram.com": "https://api.deepgram.com/v1/projects",
     "https://api.deepgram.com/v1": "https://api.deepgram.com/v1/projects",
@@ -152,7 +154,8 @@ def skip_reason(url: str) -> str | None:
         return "not a complete secure external URL"
     if parsed.username or parsed.password:
         return "embedded credentials are forbidden"
-    if host in SKIPPED_HOSTS or host.endswith(".example.com"):
+    # The .example top-level domain is reserved for examples (RFC 2606).
+    if host in SKIPPED_HOSTS or host.endswith((".example", ".example.com")):
         return "example or local endpoint"
     if _is_private_literal(host):
         return "private or non-routable address"

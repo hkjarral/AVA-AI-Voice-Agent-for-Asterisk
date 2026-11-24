@@ -1,6 +1,6 @@
 """
 v6.5.4 regression tests — every code surface that defaults OpenAI Realtime
-to api_version=ga + model=gpt-realtime.
+to api_version=ga + a current catalog Realtime model.
 
 Background: OpenAI sunset the Beta Realtime API on 2026-05-12 and removed
 the `gpt-4o-realtime-preview-*` model snapshots on 2026-05-07. v6.5.3 was
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from src.utils.provider_catalog import provider_default, provider_models
 
 import pytest
 
@@ -23,7 +24,7 @@ import pytest
 
 
 def test_openai_provider_config_defaults_to_ga():
-    """OpenAIProviderConfig (modular pipeline) must default to ga + gpt-realtime."""
+    """Modular Realtime defaults follow the shared GA catalog."""
     from src.config import OpenAIProviderConfig
 
     cfg = OpenAIProviderConfig()
@@ -32,19 +33,19 @@ def test_openai_provider_config_defaults_to_ga():
         "Beta was sunset 2026-05-12; setting beta produces a one-shot warning "
         "and OpenAI rejects the WebSocket with beta_api_shape_disabled."
     )
-    assert cfg.realtime_model == "gpt-realtime", (
-        "OpenAIProviderConfig.realtime_model default must be 'gpt-realtime'. "
+    assert cfg.realtime_model == provider_default("openai_realtime", "model"), (
+        "OpenAIProviderConfig.realtime_model must match the shared catalog. "
         "Preview snapshots (gpt-4o-realtime-preview-*) were removed 2026-05-07."
     )
 
 
 def test_openai_realtime_provider_config_defaults_to_ga():
-    """OpenAIRealtimeProviderConfig (full-agent) must default to ga + gpt-realtime."""
+    """Full-agent Realtime defaults follow the shared GA catalog."""
     from src.config import OpenAIRealtimeProviderConfig
 
     cfg = OpenAIRealtimeProviderConfig(enabled=True)
     assert cfg.api_version == "ga"
-    assert cfg.model == "gpt-realtime"
+    assert cfg.model == provider_default("openai_realtime", "model")
 
 
 # --- Beta-deprecation warning (one-shot guard) ----------------------------
@@ -156,8 +157,8 @@ def test_providers_page_template_defaults_to_ga():
         "ProvidersPage.tsx openai_realtime template must seed api_version: 'ga'. "
         "Found body:\n" + body[:600]
     )
-    assert "model: 'gpt-realtime'" in body, (
-        "ProvidersPage.tsx openai_realtime template must seed model: 'gpt-realtime'."
+    assert "model: providerDefault('openai_realtime', 'model')" in body, (
+        "ProvidersPage.tsx openai_realtime template must use the shared default."
     )
     # And it must NOT carry the legacy preview model as a FIELD VALUE. We scope
     # the check to quoted-string field assignments to avoid false-positive
@@ -178,21 +179,14 @@ def test_openai_realtime_provider_form_catalog_is_ga_only():
     form = (_REPO_ROOT / "admin_ui" / "frontend" / "src" / "components" / "config"
             / "providers" / "OpenAIRealtimeProviderForm.tsx").read_text()
 
-    # The catalog is declared at module scope.
-    assert "OPENAI_REALTIME_MODELS = [" in form, (
-        "OpenAIRealtimeProviderForm.tsx is missing the OPENAI_REALTIME_MODELS catalog constant. "
-        "Refactor to lift dropdown options to a module-scope constant (Grok form pattern)."
-    )
-    # Slice the constant body.
-    start = form.index("OPENAI_REALTIME_MODELS = [")
-    end = form.index("];", start)
-    catalog = form[start:end]
+    assert "OPENAI_REALTIME_MODELS = modelOptions('openai_realtime', 'realtime')" in form
+    catalog = {model["id"] for model in provider_models("openai_realtime", "realtime")}
 
     for ga_alias in ("gpt-realtime", "gpt-realtime-1.5", "gpt-realtime-2", "gpt-realtime-mini"):
         assert ga_alias in catalog, f"Catalog missing current GA alias: {ga_alias}"
 
     # No removed preview models in the GA catalog body.
-    assert "gpt-4o-realtime-preview" not in catalog, (
+    assert not any("gpt-4o-realtime-preview" in model for model in catalog), (
         "OPENAI_REALTIME_MODELS catalog must not contain removed preview model snapshots. "
         "If an operator pins a legacy value via YAML, it renders via the "
         "'Custom (legacy)' optgroup outside this catalog."

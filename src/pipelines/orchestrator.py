@@ -31,6 +31,7 @@ from ..config import (
     MiniMaxLLMProviderConfig,
     OpenAIProviderConfig,
     TelnyxLLMProviderConfig,
+    provider_settings_payload,
 )
 from ..logging_config import get_logger
 from ..config.provider_instances import resolve_secret_value
@@ -281,6 +282,7 @@ class PipelineOrchestrator:
         registry: Optional[Dict[str, ComponentFactory]] = None,
     ):
         self.config = config
+        self._injected_registry = dict(registry or {})
         self._registry: Dict[str, ComponentFactory] = dict(DEFAULT_COMPONENT_REGISTRY)
         if registry:
             self._registry.update(registry)
@@ -1066,6 +1068,130 @@ class PipelineOrchestrator:
             logger.debug("Azure TTS pipeline adapter not registered - API key unavailable or config missing")
 
 
+        # Run last: explicit speech roles override shared legacy providers.
+        self._register_configured_speech_factories()
+
+    def _register_configured_speech_factories(self) -> None:
+        """Explicit role entries cannot inherit another provider's factory."""
+        providers = getattr(self.config, "providers", {}) or {}
+        if not isinstance(providers, dict):
+            return
+        specs = {
+            "openai": (OpenAIProviderConfig, "OPENAI_API_KEY", {
+                "stt": self._make_openai_stt_factory, "tts": self._make_openai_tts_factory,
+            }),
+            "google": (GoogleProviderConfig, "GOOGLE_API_KEY", {
+                "stt": self._make_google_stt_factory, "tts": self._make_google_tts_factory,
+            }),
+            "deepgram": (DeepgramProviderConfig, "DEEPGRAM_API_KEY", {
+                "stt": self._make_deepgram_stt_factory, "tts": self._make_deepgram_tts_factory,
+            }),
+            "groq": (None, "GROQ_API_KEY", {
+                "stt": self._make_groq_stt_factory, "tts": self._make_groq_tts_factory,
+            }),
+            "azure": (None, "AZURE_SPEECH_KEY", {
+                "stt": self._make_azure_stt_realtime_factory, "tts": self._make_azure_tts_factory,
+            }),
+            "elevenlabs": (ElevenLabsProviderConfig, "ELEVENLABS_API_KEY", {
+                "tts": self._make_elevenlabs_tts_factory,
+            }),
+            "cambai": (CambAiProviderConfig, "CAMB_API_KEY", {
+                "tts": self._make_cambai_tts_factory,
+            }),
+        }
+        for name, raw in providers.items():
+            try:
+                role = _extract_role(str(name))
+            except PipelineOrchestratorError:
+                continue
+            if role not in {"stt", "tts"}:
+                continue
+            # An explicit entry owns this role even when its shape, kind or
+            # capability is invalid. Never retain a shared legacy factory.
+            self.register_factory(str(name), _make_placeholder_factory(role))
+            # Fish performs its own per-instance hydration (including legacy
+            # aliases and managed secrets). Restore only this entry's result.
+            fish_config = self._fishaudio_component_configs.get(str(name))
+            if isinstance(raw, (LocalProviderConfig, OpenAIProviderConfig)):
+                typed_kind = "local" if isinstance(raw, LocalProviderConfig) else "openai"
+                raw = {**raw.model_dump(exclude_unset=typed_kind == "openai"), "type": typed_kind}
+            prefix = _extract_provider(str(name)) or ""
+            kind = (
+                str(raw.get("type") or prefix).strip().lower()
+                if isinstance(raw, dict) else "fishaudio" if isinstance(raw, FishAudioProviderConfig) else None
+            )
+            if kind in {"full", "modular", "stt", "llm", "tts"}:
+                kind = prefix
+            if kind == "deepgram_flux":
+                kind = "deepgram"
+            def retain_extension():
+                injected = self._injected_registry.get(str(name))
+                if injected is not None:
+                    self.register_factory(str(name), injected)
+            if isinstance(raw, dict) and raw.get("enabled") is False:
+                continue
+            if role == "tts" and kind == "fishaudio" and fish_config is not None:
+                self.register_factory(str(name), self._make_fishaudio_tts_factory(fish_config))
+                continue
+            if not isinstance(raw, dict):
+                continue
+            if kind == "local":
+                local_config = self._hydrate_local_config(raw, component_key=str(name))
+                if local_config is not None:
+                    builder = self._make_local_stt_factory if role == "stt" else self._make_local_tts_factory
+                    self.register_factory(str(name), builder(local_config))
+                continue
+            spec = specs.get(kind)
+            if spec is None or role not in spec[2]:
+                if kind not in {*specs, "local", "fishaudio"}:
+                    retain_extension()
+                continue
+            if raw.get("enabled") is False:
+                continue
+            cls, legacy_env, builders = spec
+            payload = dict(raw)
+            if kind == "groq":
+                cls = GroqSTTProviderConfig if role == "stt" else GroqTTSProviderConfig
+            elif kind == "azure":
+                cls = AzureSTTProviderConfig if role == "stt" else AzureTTSProviderConfig
+            try:
+                if kind == "openai" and str(name) in {"openai_stt", "openai_llm", "openai_tts"}:
+                    base = providers.get("openai")
+                    if isinstance(base, OpenAIProviderConfig):
+                        base = base.model_dump(exclude_unset=True)
+                    if isinstance(base, dict) and base.get("enabled") is not False:
+                        payload = {**base, **payload}
+                # Distinguish valid-but-unavailable built-ins from invalid
+                # known settings before considering an injected extension.
+                cls(**provider_settings_payload(cls, payload))
+                # Preserve canonical OpenAI roles' historical shared-key fallback.
+                if kind == "openai" and str(name) in self._openai_component_configs:
+                    config = self._openai_component_configs[str(name)]
+                else:
+                    payload["api_key"] = resolve_secret_value(
+                        payload,
+                        file_field="api_key_file", env_field="api_key_env", inline_field="api_key",
+                        legacy_env_names=() if kind == "google" and payload.get("credentials_path") else (legacy_env,),
+                    )
+                    has_google_credentials = kind == "google" and (
+                        payload.get("credentials_path") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+                    )
+                    if not payload["api_key"] and not has_google_credentials:
+                        if not any(payload.get(key) for key in ("api_key", "api_key_file", "api_key_env")):
+                            retain_extension()
+                        continue
+                    if kind == "deepgram" and prefix == "deepgram_flux" and not payload.get("model"):
+                        payload["model"] = "flux-general-en"
+                    config = cls(**provider_settings_payload(cls, payload))
+                builder = builders[role]
+                if kind == "deepgram" and role == "stt" and config.model.startswith("flux-"):
+                    builder = self._make_deepgram_flux_stt_factory
+                elif kind == "azure" and role == "stt" and config.variant == "fast":
+                    builder = self._make_azure_stt_fast_factory
+                self.register_factory(str(name), builder(config))
+            except Exception:
+                logger.warning("Modular speech provider is unavailable: invalid configuration", component=str(name), provider_type=kind)
+
     def _register_configured_llm_factories(self) -> None:
         """Register every supported modular ``*_llm`` provider by its YAML key."""
         providers = getattr(self.config, "providers", {}) or {}
@@ -1258,13 +1384,11 @@ class PipelineOrchestrator:
         self,
         provider_config: OpenAIProviderConfig,
     ) -> ComponentFactory:
-        config_payload = provider_config.model_dump()
-
         def factory(component_key: str, options: Dict[str, Any]) -> Component:
             return OpenAISTTAdapter(
                 component_key,
                 self.config,
-                OpenAIProviderConfig(**config_payload),
+                provider_config.model_copy(deep=True),
                 options,
             )
 
@@ -1274,13 +1398,11 @@ class PipelineOrchestrator:
         self,
         provider_config: OpenAIProviderConfig,
     ) -> ComponentFactory:
-        config_payload = provider_config.model_dump()
-
         def factory(component_key: str, options: Dict[str, Any]) -> Component:
             return OpenAILLMAdapter(
                 component_key,
                 self.config,
-                OpenAIProviderConfig(**config_payload),
+                provider_config.model_copy(deep=True),
                 options,
             )
 
@@ -1322,13 +1444,11 @@ class PipelineOrchestrator:
         self,
         provider_config: OpenAIProviderConfig,
     ) -> ComponentFactory:
-        config_payload = provider_config.model_dump()
-
         def factory(component_key: str, options: Dict[str, Any]) -> Component:
             return OpenAITTSAdapter(
                 component_key,
                 self.config,
-                OpenAIProviderConfig(**config_payload),
+                provider_config.model_copy(deep=True),
                 options,
             )
 
@@ -1471,7 +1591,7 @@ class PipelineOrchestrator:
                     file_field="api_key_file",
                     env_field="api_key_env",
                     inline_field="api_key",
-                    legacy_env_names=("GOOGLE_API_KEY",),
+                    legacy_env_names=() if payload.get("credentials_path") else ("GOOGLE_API_KEY",),
                 )
                 config = GoogleProviderConfig(**payload)
             except Exception as exc:
@@ -1489,6 +1609,7 @@ class PipelineOrchestrator:
 
         if not (
             config.api_key
+            or config.credentials_path
             or os.getenv("GOOGLE_API_KEY")
             or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         ):
@@ -1580,6 +1701,8 @@ class PipelineOrchestrator:
         candidates: Dict[str, Any] = {}
         if isinstance(providers, dict):
             for name, provider in providers.items():
+                if str(name) == "fishaudio" and "fishaudio_tts" in providers:
+                    continue  # Explicit role always owns the canonical alias.
                 if not isinstance(provider, (dict, FishAudioProviderConfig)):
                     continue
                 provider_type = (
@@ -1726,7 +1849,7 @@ class PipelineOrchestrator:
         if isinstance(raw_config, dict):
             merged.update(raw_config)
         elif isinstance(raw_config, OpenAIProviderConfig):
-            merged.update(raw_config.model_dump())
+            merged.update(raw_config.model_dump(exclude_unset=True))
         elif raw_config is not None:
             logger.warning(
                 "Unsupported OpenAI provider config type for pipelines",
@@ -1735,7 +1858,7 @@ class PipelineOrchestrator:
             )
             return None
 
-        if not merged:
+        if not merged and not isinstance(raw_config, OpenAIProviderConfig):
             return None
 
         provider_prefix = _extract_provider(component_key) or "openai"
@@ -1774,7 +1897,7 @@ class PipelineOrchestrator:
             if raw_base.get("enabled", True):
                 base.update(raw_base)
         elif isinstance(raw_base, OpenAIProviderConfig):
-            base.update(raw_base.model_dump())
+            base.update(raw_base.model_dump(exclude_unset=True))
 
         configs: Dict[str, OpenAIProviderConfig] = {}
         for role in ("stt", "llm", "tts"):

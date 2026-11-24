@@ -13,6 +13,7 @@ from websockets.asyncio.client import ClientConnection
 
 from structlog import get_logger
 from prometheus_client import Gauge, Info
+from ..utils.provider_catalog import provider_models
 from ..utils.voice_catalog import known_voice_map
 from ..audio.resampler import (
     mulaw_to_pcm16le,
@@ -38,6 +39,11 @@ logger = get_logger(__name__)
 
 DEEPGRAM_AGENT_LANGUAGES = frozenset({"en", "es", "de", "fr", "it", "nl", "ja"})
 DEEPGRAM_LEGACY_PHONECALL_MODEL = "nova-2-phonecall"
+FLUX_STT_LANGUAGES = {
+    model["id"]: frozenset(model["languages"])
+    for model in provider_models("deepgram", "flux_stt")
+    if "languages" in model
+}
 
 
 def normalize_agent_language(language: Optional[str]) -> str:
@@ -69,6 +75,7 @@ def validate_agent_language_configuration(
     listen_model: str,
     agent_language: Optional[str],
     speak_model: str,
+    tts_version: str = "v1",
 ) -> str:
     """Validate the supported full-agent language contract before connect.
 
@@ -79,8 +86,11 @@ def validate_agent_language_configuration(
     silently changing the customer's voice.
     """
     language = normalize_agent_language(agent_language)
-    supported = ", ".join(sorted(DEEPGRAM_AGENT_LANGUAGES))
-    if language not in DEEPGRAM_AGENT_LANGUAGES:
+    languages = DEEPGRAM_AGENT_LANGUAGES
+    if tts_version == "v2":
+        languages = frozenset(v.rsplit("-", 1)[-1] for v in known_voice_map("deepgram").values() if v.startswith("flux-"))
+    supported = ", ".join(sorted(languages))
+    if language not in languages:
         raise ValueError(
             f"Unsupported Deepgram Voice Agent language '{agent_language}'. "
             f"AAVA supports: {supported}. Select a supported agent_language "
@@ -95,7 +105,20 @@ def validate_agent_language_configuration(
             "flux-general-multi/nova-3."
         )
 
-    voice_language = deepgram_aura_language(speak_model)
+    listen_languages = FLUX_STT_LANGUAGES.get(normalized_model)
+    if listen_languages is not None and language not in listen_languages:
+        raise ValueError(
+            f"Deepgram listen model '{listen_model}' does not support "
+            f"agent_language '{agent_language}'. Supported listen languages: "
+            f"{', '.join(sorted(listen_languages))}."
+        )
+
+    if str(speak_model).startswith("flux-") != (tts_version == "v2"):
+        raise ValueError("Deepgram tts_version must match the selected Aura (v1) or Flux (v2) voice")
+    voice_language = (
+        speak_model.rsplit("-", 1)[-1] if tts_version == "v2" and speak_model in known_voice_map("deepgram").values()
+        else deepgram_aura_language(speak_model)
+    )
     if voice_language is None:
         raise ValueError(
             f"Unknown or unsupported Deepgram Aura voice '{speak_model}'. "
@@ -108,6 +131,45 @@ def validate_agent_language_configuration(
             "Aura voice; AAVA will not silently replace it."
         )
     return language
+
+
+
+def build_speak_provider_block(*, model: str, version: str = "v1", speed=None, expressivity=None,
+                               encoding: str = "mulaw", sample_rate: int = 8000) -> Dict[str, Any]:
+    """Project the voice family once for primary Settings and fallback retry."""
+    if version not in {"v1", "v2"} or model.startswith("flux-") != (version == "v2"):
+        raise ValueError("Deepgram tts_version must match the selected Aura (v1) or Flux (v2) voice")
+    block: Dict[str, Any] = {"type": "deepgram", "model": model}
+    if version == "v2":
+        block["version"] = "v2"
+        rates = {8000, 16000, 24000, 32000, 44100, 48000} if encoding == "linear16" else {8000, 16000}
+        if encoding not in {"linear16", "mulaw"} or int(sample_rate) not in rates:
+            raise ValueError("Flux TTS requires raw linear16 or mulaw at a supported sample rate; A-law output is not supported")
+    if speed is not None:
+        value = float(speed)
+        if not (0.5 if version == "v2" else 0.7) <= value <= 1.5:
+            raise ValueError("Deepgram TTS speed is outside the selected model range")
+        if version == "v2" and abs(value * 20 - round(value * 20)) > 1e-7:
+            raise ValueError("Flux TTS speed must use 0.05 increments")
+        block["speed"] = value
+    if expressivity is not None:
+        if version != "v2" or isinstance(expressivity, bool) or not isinstance(expressivity, int) or expressivity not in range(-2, 3):
+            raise ValueError("Deepgram expressivity requires Flux TTS and an integer from -2 to 2")
+        block["expressivity"] = expressivity
+    return block
+
+
+def build_think_provider_block(model: str) -> Dict[str, Any]:
+    """Keep legacy sampling while reasoning models use provider defaults.
+
+    Deepgram's managed OpenAI path uses Chat Completions. GPT-5 and newer
+    reasoning families can reject custom temperature, including 0.7; omitting
+    it leaves Deepgram/OpenAI to apply the model's supported default.
+    """
+    block: Dict[str, Any] = {"type": "open_ai", "model": model}
+    if not str(model).strip().lower().startswith(("gpt-5", "gpt-6", "o1", "o3", "o4")):
+        block["temperature"] = 0.7
+    return block
 
 
 def _log_provider_task_exception(task: asyncio.Task) -> None:
@@ -781,6 +843,13 @@ class DeepgramProvider(AIProviderInterface):
             listen_model=preflight_listen_model,
             agent_language=preflight_language,
             speak_model=preflight_speak_model,
+            tts_version=self._get_config_value("tts_version", "v1"),
+        )
+        build_speak_provider_block(
+            model=preflight_speak_model, version=self._get_config_value("tts_version", "v1"),
+            speed=self._get_config_value("tts_speed", None), expressivity=self._get_config_value("tts_expressivity", None),
+            encoding=self._canonicalize_encoding(self._get_config_value("output_encoding", "mulaw")),
+            sample_rate=self._get_config_value("output_sample_rate_hz", 8000),
         )
 
         try:
@@ -891,14 +960,19 @@ class DeepgramProvider(AIProviderInterface):
             output_encoding=self._dg_output_encoding,
             output_sample_rate=self._dg_output_rate,
         )
-        # Resolved think (LLM) model used by both the primary Settings build and
-        # the `_last_settings_minimal` retry fallback. Default kept at
-        # "gpt-4o-mini" (the previously-hardcoded primary-path value) to
-        # preserve the conservative cost behavior on upgrade for deployments
-        # that don't set `llm_config.model`. Per CodeRabbit review of PR #384
-        # comment 3214130572 — eliminates the primary/retry think-model drift
-        # that pre-fix could swap a configured model for "gpt-4o-mini" on retry.
-        think_model = getattr(self.llm_config, 'model', None) or "gpt-4o-mini"
+        # Resolve once for primary Settings and minimal retry. Preserve an
+        # explicit historical global model when no provider model was selected.
+        configured_think_model = self._get_config_value("think_model", None)
+        historical_think_model = getattr(self.llm_config, "model", None)
+        explicit_fields = set(self.config) if isinstance(self.config, dict) else getattr(self.config, "model_fields_set", set())
+        think_model = (
+            configured_think_model if "think_model" in explicit_fields
+            else historical_think_model or configured_think_model
+        )
+        if not think_model:
+            from ..utils.provider_catalog import provider_default
+            think_model = provider_default("deepgram", "think_model")
+        think_provider = build_think_provider_block(think_model)
         # Try context-injected prompt first (can be 'instructions' or 'prompt' key), then provider config, then llm_config, then default
         think_prompt = (
             self._get_config_value('instructions', None) or  # Context injection uses 'instructions' for Deepgram
@@ -930,6 +1004,12 @@ class DeepgramProvider(AIProviderInterface):
             listen_model=listen_model,
             agent_language=agent_language,
             speak_model=speak_model,
+            tts_version=self._get_config_value("tts_version", "v1"),
+        )
+        speak_provider = build_speak_provider_block(
+            model=speak_model, version=self._get_config_value("tts_version", "v1"),
+            speed=self._get_config_value("tts_speed", None), expressivity=self._get_config_value("tts_expressivity", None),
+            encoding=output_format, sample_rate=int(output_sample_rate),
         )
         logger.info(
             "Deepgram Voice Agent language configuration validated",
@@ -966,20 +1046,11 @@ class DeepgramProvider(AIProviderInterface):
         agent_settings = {
             "listen": {"provider": listen_provider},
             "think": {
-                "provider": {
-                    "type": "open_ai",
-                    # Use the resolved `think_model` so primary and retry
-                    # paths can't drift. Default still "gpt-4o-mini" (set
-                    # at the variable definition above) to preserve the
-                    # prior conservative cost default. Per CodeRabbit
-                    # review of PR #384 comment 3214130572.
-                    "model": think_model,
-                    "temperature": 0.7
-                },
+                "provider": dict(think_provider),
                 "prompt": think_prompt
             },
             "speak": {
-                "provider": {"type": "deepgram", "model": speak_model}
+                "provider": dict(speak_provider)
             },
             "greeting": greeting_val
         }
@@ -1027,8 +1098,8 @@ class DeepgramProvider(AIProviderInterface):
             minimal_agent_settings = {
                 "greeting": greeting_val,
                 "listen": { "provider": minimal_listen_provider },
-                "think": { "provider": { "type": "open_ai", "model": think_model }, "prompt": think_prompt },
-                "speak": { "provider": { "type": "deepgram", "model": speak_model } }
+                "think": { "provider": dict(think_provider), "prompt": think_prompt },
+                "speak": { "provider": dict(speak_provider) }
             }
             if not is_flux_v2:
                 minimal_agent_settings["language"] = agent_language

@@ -14,6 +14,7 @@ import {
 } from '../../utils/outboundPbx';
 
 import { useAuth } from '../../auth/AuthContext';
+import { KOKORO_LANGUAGE_OPTIONS, kokoroLanguageForVoice, kokoroVoiceOptions } from '../../config/kokoroVoices';
 
 const PROVIDER_CREDENTIAL_TYPES: Record<string, string[]> = {
     openai_realtime: ['api-key'],
@@ -1877,27 +1878,22 @@ const EnvPage = () => {
 	                                <FormSelect
 	                                    label="Voice"
 	                                    value={env['KOKORO_VOICE'] || 'af_heart'}
-	                                    onChange={(e) => updateEnv('KOKORO_VOICE', e.target.value)}
-	                                    options={[
-                                        { value: 'af_heart', label: 'Heart (Female, American)' },
-                                        { value: 'af_bella', label: 'Bella (Female, American)' },
-                                        { value: 'af_nicole', label: 'Nicole (Female, American)' },
-                                        { value: 'af_sarah', label: 'Sarah (Female, American)' },
-                                        { value: 'af_sky', label: 'Sky (Female, American)' },
-                                        { value: 'am_adam', label: 'Adam (Male, American)' },
-                                        { value: 'am_michael', label: 'Michael (Male, American)' },
-                                        { value: 'bf_emma', label: 'Emma (Female, British)' },
-                                        { value: 'bf_isabella', label: 'Isabella (Female, British)' },
-                                        { value: 'bm_george', label: 'George (Male, British)' },
-                                        { value: 'bm_lewis', label: 'Lewis (Male, British)' },
-                                    ]}
-                                    tooltip="Voice identity used by Kokoro synthesis."
+	                                    onChange={(e) => {
+                                            updateEnv('KOKORO_VOICE', e.target.value);
+                                            const language = kokoroLanguageForVoice(e.target.value);
+                                            if (language) updateEnv('KOKORO_LANG', language);
+                                        }}
+	                                    options={kokoroVoiceOptions(env['KOKORO_VOICE'] || 'af_heart')}
+                                    tooltip="Selecting a stock voice also chooses its phonemizer language. Download the voice files from Models first. Save and recreate Local AI to apply."
                                 />
-                                <FormInput
+                                <FormSelect
                                     label="Kokoro Language"
-                                    value={env['KOKORO_LANG'] || 'a'}
+                                    value={env['KOKORO_LANG'] || kokoroLanguageForVoice(env['KOKORO_VOICE'] || 'af_heart') || 'a'}
                                     onChange={(e) => updateEnv('KOKORO_LANG', e.target.value)}
-                                    tooltip="Kokoro language code. Default 'a' is American English."
+                                    options={env['KOKORO_LANG'] && !KOKORO_LANGUAGE_OPTIONS.some(option => option.value === env['KOKORO_LANG'])
+                                        ? [{ value: env['KOKORO_LANG'], label: `${env['KOKORO_LANG']} (current)` }, ...KOKORO_LANGUAGE_OPTIONS]
+                                        : KOKORO_LANGUAGE_OPTIONS}
+                                    tooltip="Phonemizer language. Stock voice selection sets this automatically. Save and recreate Local AI to apply."
                                 />
 	                                {kokoroMode === 'api' ? (
 	                                    <>

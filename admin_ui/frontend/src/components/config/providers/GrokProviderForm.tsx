@@ -1,3 +1,4 @@
+import { modelOptions, providerDefault } from '../../../config/providerCatalog';
 import ConnectionRecoveryFields from './ConnectionRecoveryFields';
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
@@ -18,10 +19,7 @@ interface GrokProviderFormProps {
     };
 }
 
-const GROK_MODELS = [
-    { value: 'grok-voice-latest', label: 'grok-voice-latest (recommended)' },
-    { value: 'grok-voice-3.0', label: 'grok-voice-3.0 (versioned)' },
-];
+const GROK_MODELS = modelOptions('grok', 'realtime');
 
 function GrokFieldLabel({ id, label, children }: { id: string; label: string; children: React.ReactNode }) {
     return (
@@ -35,7 +33,7 @@ function GrokFieldLabel({ id, label, children }: { id: string; label: string; ch
 const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, providerKey, baseConfig }) => {
     const inheritedSpeed = config.speed === undefined ? baseConfig?.speed : undefined;
     const inheritedEffort = config.reasoning_effort === undefined ? baseConfig?.reasoning_effort : undefined;
-    const selectedModel = config.model ?? baseConfig?.model ?? 'grok-voice-latest';
+    const selectedModel = config.model ?? baseConfig?.model ?? providerDefault('grok', 'model');
     const fixedOutputRate = ['ulaw', 'alaw'].includes(config.output_encoding);
     const effectiveVad = config.turn_detection === undefined ? baseConfig?.turn_detection : config.turn_detection;
     const handleChange = (field: string, value: any) => {

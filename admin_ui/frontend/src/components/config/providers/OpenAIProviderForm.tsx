@@ -1,3 +1,4 @@
+import { modelOptions, modelIds, providerDefault, voiceIdsForModel, effectiveOpenAITtsModel } from '../../../config/providerCatalog';
 import React from 'react';
 import HelpTooltip from '../../ui/HelpTooltip';
 import OutputResamplerField from './OutputResamplerField';
@@ -14,6 +15,8 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
         onChange({ ...config, [field]: value });
     };
 
+    const ttsModel = effectiveOpenAITtsModel(config);
+    const voices = voiceIdsForModel('openai', ttsModel);
     const name = (config?.name || '').toLowerCase();
     const isSTT = name.includes('stt');
     const isTTS = name.includes('tts');
@@ -174,9 +177,9 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                                         <>
                                             <strong>Chat Model</strong> — which OpenAI model generates responses.
                                             <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                                <li><code>gpt-4o-mini</code> — cheap, fast, default for voice</li>
+                                                <li><code>gpt-6-luna</code> — current default; tool calling uses reasoning effort none</li>
                                                 <li><code>gpt-4o</code> — higher quality, more expensive</li>
-                                                <li><code>gpt-4.1</code> / <code>gpt-3.5-turbo</code> — alternative tiers</li>
+                                                <li>Explicit compatible gateway model names remain preserved.</li>
                                             </ul>
                                             Standard pay-per-token pricing.
                                         </>
@@ -187,18 +190,12 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.chat_model || 'gpt-4o-mini'}
-                                onChange={(e) => handleChange('chat_model', e.target.value)}
+                                value={config.chat_model || providerDefault('openai', 'chat_model')}
+                                onChange={(e) => onChange({ ...config, chat_model: e.target.value,
+                                    ...(e.target.value.startsWith('gpt-6.2-') && config.reasoning_effort === 'none' ? { reasoning_effort: null } : {}) })}
                             >
-                                <optgroup label="GPT-4o (Latest)">
-                                    <option value="gpt-4o">gpt-4o</option>
-                                    <option value="gpt-4o-mini">gpt-4o-mini</option>
-                                    <option value="gpt-4o-mini-tts">gpt-4o-mini-tts</option>
-                                </optgroup>
-                                <optgroup label="GPT-4">
-                                    <option value="gpt-4">gpt-4</option>
-                                    <option value="gpt-4o-2024-08-06">gpt-4o-2024-08-06</option>
-                                </optgroup>
+                                {config.chat_model && !modelIds('openai', 'llm').includes(config.chat_model) && <option value={config.chat_model}>{config.chat_model} (configured)</option>}
+                                {modelOptions('openai', 'llm').map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
                             </select>
                         </div>
                         <div className="space-y-2">
@@ -312,14 +309,11 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.stt_model || 'whisper-1'}
+                                value={config.stt_model || providerDefault('openai', 'stt_model')}
                                 onChange={(e) => handleChange('stt_model', e.target.value)}
                             >
-                                <option value="whisper-1">whisper-1 (default)</option>
-                                <option value="gpt-4o-mini-transcribe">gpt-4o-mini-transcribe</option>
-                                <option value="gpt-4o-mini-transcribe-2025-12-15">gpt-4o-mini-transcribe-2025-12-15</option>
-                                <option value="gpt-4o-transcribe">gpt-4o-transcribe</option>
-                                <option value="gpt-4o-transcribe-diarize">gpt-4o-transcribe-diarize</option>
+                                {config.stt_model && !modelIds('openai', 'stt').includes(config.stt_model) && <option value={config.stt_model}>{config.stt_model} (configured)</option>}
+                                {modelOptions('openai', 'stt').map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
                             </select>
                             <p className="text-xs text-muted-foreground">
                                 Note: <code>whisper-1</code> supports more <code>response_format</code> options than the GPT-4o transcribe models.
@@ -410,7 +404,19 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
 
             {isTTS && (
                 <div className="space-y-4">
-                    <h4 className="font-semibold text-sm border-b pb-2">TTS (audio.speech)</h4>
+                    <h4 className="font-semibold text-sm border-b pb-2">TTS</h4>
+                    <p className="text-xs text-muted-foreground">Speech API models retire January 6, 2027. Realtime models use a separate WebSocket workflow; switching requires real-call acceptance.</p>
+                    <label htmlFor="openai-tts-transport" className="text-sm font-medium">TTS API Workflow</label>
+                    <select id="openai-tts-transport" value={config.tts_transport ?? providerDefault('openai', 'tts_transport')} onChange={event => handleChange('tts_transport', event.target.value)} className="w-full p-2 rounded border border-input bg-background">
+                        <option value="auto">Auto (by model)</option><option value="speech">Speech API</option><option value="realtime">Realtime API</option>
+                    </select>
+                    <label htmlFor="openai-tts-realtime-url" className="text-sm font-medium">Realtime WebSocket URL</label>
+                    <input id="openai-tts-realtime-url" value={config.tts_realtime_base_url ?? 'wss://api.openai.com/v1/realtime'} onChange={event => handleChange('tts_realtime_base_url', event.target.value)} className="w-full p-2 rounded border border-input bg-background" />
+                    <label htmlFor="openai-tts-realtime-timeout" className="text-sm font-medium">Realtime Synthesis Timeout (sec)</label>
+                    <input id="openai-tts-realtime-timeout" type="number" min={1} max={120} value={config.tts_realtime_timeout_sec ?? providerDefault('openai', 'tts_realtime_timeout_sec')} onChange={event => handleChange('tts_realtime_timeout_sec', Number(event.target.value))} className="w-full p-2 rounded border border-input bg-background" />
+                    <p className="text-xs text-muted-foreground">Total generation budget for each text fragment. Separate from the legacy Speech API response timeout.</p>
+                    <label htmlFor="openai-tts-instructions" className="text-sm font-medium">Speech Instructions</label>
+                    <input id="openai-tts-instructions" value={config.tts_instructions ?? ''} onChange={event => handleChange('tts_instructions', event.target.value)} className="w-full p-2 rounded border border-input bg-background" />
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
                             <div className="flex items-center gap-1.5">
@@ -452,7 +458,7 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                                                 <li><code>tts-1-hd</code> — higher fidelity, slower</li>
                                                 <li><code>gpt-4o-mini-tts</code> — newer; accepts instructions for tone/style</li>
                                             </ul>
-                                            If you see "invalid model ID", fall back to <code>tts-1</code>.
+                                            The selected model must match the Speech or Realtime API workflow.
                                         </>
                                     }
                                     link="https://platform.openai.com/docs/guides/text-to-speech"
@@ -461,16 +467,14 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.tts_model || 'tts-1'}
+                                value={ttsModel}
                                 onChange={(e) => handleChange('tts_model', e.target.value)}
                             >
-                                <option value="tts-1">tts-1</option>
-                                <option value="tts-1-hd">tts-1-hd</option>
-                                <option value="gpt-4o-mini-tts">gpt-4o-mini-tts</option>
-                                <option value="gpt-4o-mini-tts-2025-12-15">gpt-4o-mini-tts-2025-12-15</option>
+                                {ttsModel && !modelIds('openai', 'tts').includes(ttsModel) && <option value={ttsModel}>{ttsModel} (configured)</option>}
+                                {modelOptions('openai', 'tts').map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
                             </select>
                             <p className="text-xs text-muted-foreground">
-                                If you see “invalid model ID”, switch to <code>tts-1</code>.
+                                Legacy Speech models remain selectable until their announced retirement.
                             </p>
                         </div>
                         <div className="space-y-2">
@@ -483,7 +487,7 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                                             <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                                 <li>Classic: <code>alloy</code>, <code>echo</code>, <code>fable</code>, <code>onyx</code>, <code>nova</code>, <code>shimmer</code></li>
                                                 <li>Newer (gpt-4o-mini-tts): <code>ash</code>, <code>ballad</code>, <code>coral</code>, <code>sage</code>, <code>verse</code>, <code>marin</code>, <code>cedar</code></li>
-                                                <li>No cloning; only these named voices</li>
+                                                <li>Voice availability depends on the selected model.</li>
                                             </ul>
                                         </>
                                     }
@@ -496,19 +500,8 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                                 value={config.voice || 'alloy'}
                                 onChange={(e) => handleChange('voice', e.target.value)}
                             >
-                                <option value="alloy">Alloy</option>
-                                <option value="ash">Ash</option>
-                                <option value="ballad">Ballad</option>
-                                <option value="coral">Coral</option>
-                                <option value="echo">Echo</option>
-                                <option value="fable">Fable</option>
-                                <option value="onyx">Onyx</option>
-                                <option value="nova">Nova</option>
-                                <option value="sage">Sage</option>
-                                <option value="shimmer">Shimmer</option>
-                                <option value="verse">Verse</option>
-                                <option value="marin">Marin</option>
-                                <option value="cedar">Cedar</option>
+                                {config.voice && !voices.includes(config.voice) && <option value={config.voice}>{config.voice} (configured; verify model compatibility)</option>}
+                                {voices.map(voice => <option key={voice} value={voice}>{voice}</option>)}
                             </select>
                         </div>
                         <div className="space-y-2">

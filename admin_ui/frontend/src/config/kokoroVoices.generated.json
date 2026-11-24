@@ -1,0 +1,285 @@
+{
+  "language_codes": {
+    "a": "en-US",
+    "b": "en-GB",
+    "e": "es-ES",
+    "f": "fr-FR",
+    "h": "hi-IN",
+    "i": "it-IT",
+    "j": "ja-JP",
+    "p": "pt-BR",
+    "z": "zh-CN"
+  },
+  "voices": [
+    {
+      "id": "af_alloy",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "af_aoede",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "af_bella",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "af_heart",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "af_jessica",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "af_kore",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "af_nicole",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "af_nova",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "af_river",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "af_sarah",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "af_sky",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "am_adam",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "am_echo",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "am_eric",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "am_fenrir",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "am_liam",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "am_michael",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "am_onyx",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "am_puck",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "am_santa",
+      "language": "en-US",
+      "lang_code": "a"
+    },
+    {
+      "id": "bf_alice",
+      "language": "en-GB",
+      "lang_code": "b"
+    },
+    {
+      "id": "bf_emma",
+      "language": "en-GB",
+      "lang_code": "b"
+    },
+    {
+      "id": "bf_isabella",
+      "language": "en-GB",
+      "lang_code": "b"
+    },
+    {
+      "id": "bf_lily",
+      "language": "en-GB",
+      "lang_code": "b"
+    },
+    {
+      "id": "bm_daniel",
+      "language": "en-GB",
+      "lang_code": "b"
+    },
+    {
+      "id": "bm_fable",
+      "language": "en-GB",
+      "lang_code": "b"
+    },
+    {
+      "id": "bm_george",
+      "language": "en-GB",
+      "lang_code": "b"
+    },
+    {
+      "id": "bm_lewis",
+      "language": "en-GB",
+      "lang_code": "b"
+    },
+    {
+      "id": "ef_dora",
+      "language": "es-ES",
+      "lang_code": "e"
+    },
+    {
+      "id": "em_alex",
+      "language": "es-ES",
+      "lang_code": "e"
+    },
+    {
+      "id": "em_santa",
+      "language": "es-ES",
+      "lang_code": "e"
+    },
+    {
+      "id": "ff_siwis",
+      "language": "fr-FR",
+      "lang_code": "f"
+    },
+    {
+      "id": "hf_alpha",
+      "language": "hi-IN",
+      "lang_code": "h"
+    },
+    {
+      "id": "hf_beta",
+      "language": "hi-IN",
+      "lang_code": "h"
+    },
+    {
+      "id": "hm_omega",
+      "language": "hi-IN",
+      "lang_code": "h"
+    },
+    {
+      "id": "hm_psi",
+      "language": "hi-IN",
+      "lang_code": "h"
+    },
+    {
+      "id": "if_sara",
+      "language": "it-IT",
+      "lang_code": "i"
+    },
+    {
+      "id": "im_nicola",
+      "language": "it-IT",
+      "lang_code": "i"
+    },
+    {
+      "id": "jf_alpha",
+      "language": "ja-JP",
+      "lang_code": "j"
+    },
+    {
+      "id": "jf_gongitsune",
+      "language": "ja-JP",
+      "lang_code": "j"
+    },
+    {
+      "id": "jf_nezumi",
+      "language": "ja-JP",
+      "lang_code": "j"
+    },
+    {
+      "id": "jf_tebukuro",
+      "language": "ja-JP",
+      "lang_code": "j"
+    },
+    {
+      "id": "jm_kumo",
+      "language": "ja-JP",
+      "lang_code": "j"
+    },
+    {
+      "id": "pf_dora",
+      "language": "pt-BR",
+      "lang_code": "p"
+    },
+    {
+      "id": "pm_alex",
+      "language": "pt-BR",
+      "lang_code": "p"
+    },
+    {
+      "id": "pm_santa",
+      "language": "pt-BR",
+      "lang_code": "p"
+    },
+    {
+      "id": "zf_xiaobei",
+      "language": "zh-CN",
+      "lang_code": "z"
+    },
+    {
+      "id": "zf_xiaoni",
+      "language": "zh-CN",
+      "lang_code": "z"
+    },
+    {
+      "id": "zf_xiaoxiao",
+      "language": "zh-CN",
+      "lang_code": "z"
+    },
+    {
+      "id": "zf_xiaoyi",
+      "language": "zh-CN",
+      "lang_code": "z"
+    },
+    {
+      "id": "zm_yunjian",
+      "language": "zh-CN",
+      "lang_code": "z"
+    },
+    {
+      "id": "zm_yunxi",
+      "language": "zh-CN",
+      "lang_code": "z"
+    },
+    {
+      "id": "zm_yunxia",
+      "language": "zh-CN",
+      "lang_code": "z"
+    },
+    {
+      "id": "zm_yunyang",
+      "language": "zh-CN",
+      "lang_code": "z"
+    }
+  ]
+}

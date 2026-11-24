@@ -158,9 +158,9 @@ describe('Deepgram Voice Agent supported language surface', () => {
         render(<DeepgramProviderForm config={{ agent_language: 'es' }} onChange={vi.fn()} />);
 
         const voice = selectBesideLabel('Default Voice Model');
-        expect(voice).toHaveValue('aura-asteria-en');
+        expect(voice).toHaveValue('aura-2-thalia-en');
         const preservationOption = screen.getByRole('option', {
-            name: /Current effective fallback — aura-asteria-en/i,
+            name: /Current effective fallback — aura-2-thalia-en/i,
         });
         expect(preservationOption).not.toHaveAttribute('hidden');
         expect(preservationOption).not.toBeDisabled();
@@ -190,5 +190,48 @@ describe('Deepgram Voice Agent supported language surface', () => {
                 tts_model: 'aura-2-thalia-en',
             })
         );
+    });
+});
+
+describe('Deepgram opt-in Flux TTS surface', () => {
+    it('offers only languages shared by multilingual Flux recognition and Flux synthesis', () => {
+        const onChange = vi.fn();
+        render(<DeepgramProviderForm config={{ model: 'flux-general-multi', tts_version: 'v2', tts_model: 'flux-bruno-pt', agent_language: 'pt' }} onChange={onChange} />);
+        const language = selectBesideLabel('Agent Language');
+        expect(language.querySelector('option[value="pt"]')).toBeInTheDocument();
+        expect(language.querySelector('option[value="en"]')).toBeInTheDocument();
+        expect(language.querySelector('option[value="bg"]')).toBeNull();
+        expect(Array.from(language.options).map(option => option.value)).toHaveLength(10);
+        expect(onChange).not.toHaveBeenCalled();
+    });
+    it('preserves an unsupported saved Flux listen language with an actionable mismatch', () => {
+        const onChange = vi.fn();
+        render(<DeepgramProviderForm config={{ model: 'flux-general-multi', tts_version: 'v2', agent_language: 'bg' }} onChange={onChange} />);
+        expect(selectBesideLabel('Agent Language')).toHaveValue('bg');
+        expect(screen.getByText(/does not support the selected listen language \(bg\)/)).toBeInTheDocument();
+        expect(onChange).not.toHaveBeenCalled();
+    });
+    it('clears Flux-only expressivity when explicitly selecting Aura without rewriting the saved voice', () => {
+        const onChange = vi.fn();
+        const config = { tts_version: 'v2', tts_model: 'flux-kit-en', tts_expressivity: 1 };
+        render(<DeepgramProviderForm config={config} onChange={onChange} />);
+        expect(onChange).not.toHaveBeenCalled();
+        fireEvent.change(screen.getByLabelText('TTS API Version'), { target: { value: 'v1' } });
+        expect(onChange).toHaveBeenCalledWith({ ...config, tts_version: 'v1', tts_expressivity: null });
+    });
+    it('offers Flux languages and voices when explicitly selecting v2', () => {
+        const onChange = vi.fn();
+        render(<DeepgramProviderForm config={{ tts_version: 'v2', tts_model: 'flux-bruno-pt', agent_language: 'pt', model: 'nova-3' }} onChange={onChange} />);
+        expect(selectBesideLabel('Agent Language').querySelector('option[value="pt"]')).toBeEnabled();
+        expect(selectBesideLabel('Default Voice Model')).toHaveValue('flux-bruno-pt');
+        expect(screen.getByLabelText('Flux Expressivity (-2 to 2)')).toBeInTheDocument();
+        expect(onChange).not.toHaveBeenCalled();
+    });
+    it('preserves an Aura voice after selecting the Flux workflow until the operator fixes it', () => {
+        const onChange = vi.fn();
+        render(<DeepgramProviderForm config={{ tts_version: 'v2', tts_model: 'aura-2-thalia-en' }} onChange={onChange} />);
+        expect(selectBesideLabel('Default Voice Model')).toHaveValue('aura-2-thalia-en');
+        expect(screen.getByText(/AAVA will not silently replace it/)).toBeInTheDocument();
+        expect(onChange).not.toHaveBeenCalled();
     });
 });

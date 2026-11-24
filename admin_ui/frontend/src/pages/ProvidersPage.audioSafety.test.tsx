@@ -560,7 +560,7 @@ describe('ProvidersPage provider save contracts', () => {
             capabilities: ['llm'],
             chat_base_url: 'https://api.deepseek.com',
             api_key_env: 'DEEPSEEK_API_KEY',
-            chat_model: 'deepseek-v4-flash',
+            chat_model: 'deepseek-flash',
         });
     });
 
