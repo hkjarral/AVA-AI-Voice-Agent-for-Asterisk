@@ -87,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   FreePBX. Thanks to @MVECoder for the reproduction and original fax-only patch.
 - Add an inbound-only, per-Agent inactivity fallback to configured extensions,
   queues or ring groups, with scoped destination validation and guarded handoff.
+  Late provider disconnects preserve the caller after transfer ownership is claimed.
 
 - Persist confirmed VICIdial terminal results before retrying a late Call History write. Clearing the log file path while file logging is enabled restores the standard path.
 

@@ -26,7 +26,7 @@ export function transferDestinationsFromConfig(value: unknown): TransferDestinat
         .map(([key, destination]) => ({
             key,
             type: String(destination.type || ''),
-            target: String(destination.target || destination.extension || ''),
+            target: String(destination.target ?? destination.extension ?? ''),
             description: String(destination.description || destination.name || ''),
             attendedAllowed: destination.attended_allowed === true,
             liveAgent: destination.live_agent === true,

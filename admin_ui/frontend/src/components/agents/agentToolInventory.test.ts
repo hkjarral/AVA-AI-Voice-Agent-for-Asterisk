@@ -4,6 +4,13 @@ import { transferDestinationsFromConfig, inactivityFallbackDestinations } from '
 
 
 describe('Agent transfer destination inventory', () => {
+    it.each([0, '0'])('keeps operator extension %s available for inactivity fallback', target => {
+        const destinations = transferDestinationsFromConfig({ operator: { type: 'extension', target } });
+        expect(inactivityFallbackDestinations(destinations, 'inherit', [])).toEqual([
+            expect.objectContaining({ key: 'operator', target: '0' }),
+        ]);
+    });
+
     it('limits inactivity fallback to supported destinations within the agent scope', () => {
         const destinations = transferDestinationsFromConfig({
             reception: { type: 'queue', target: '600' },

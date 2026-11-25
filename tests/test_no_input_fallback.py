@@ -166,3 +166,33 @@ async def test_rejected_response_cannot_restore_flags_or_hang_up_a_replacement_c
     assert replacement.transfer_active is True
     assert replacement.transfer_state == "other-owner"
     engine._terminate_call_after_audio.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claim_at", ["before_disconnect", "connection_audio_stop", "fallback_playback"])
+async def test_provider_disconnect_preserves_inactivity_handoff_owner(claim_at):
+    engine, session = await setup_call()
+    engine.config = SimpleNamespace(tools={"hangup_call": {"fallback_media_uri": "sound:synthetic-failure"}})
+    engine._google_long_audio_provider = Mock(return_value=None)
+    engine._stop_connection_audio = AsyncMock()
+    engine.ari_client.hangup_channel = AsyncMock()
+    engine.ari_client.play_media = AsyncMock(return_value={})
+
+    async def transfer_during_await(*args, **kwargs):
+        await engine._hangup_for_no_input(session.call_id)
+        return {}
+
+    if claim_at == "before_disconnect":
+        await engine._hangup_for_no_input(session.call_id)
+    elif claim_at == "connection_audio_stop":
+        engine._stop_connection_audio.side_effect = transfer_during_await
+    else:
+        engine.ari_client.play_media.side_effect = transfer_during_await
+
+    await engine.on_provider_event({"type": "ProviderDisconnected", "call_id": session.call_id})
+
+    assert session.transfer_active is True
+    assert session.transfer_state == "no_input_fallback"
+    engine.ari_client.continue_in_dialplan.assert_awaited_once()
+    engine.ari_client.hangup_channel.assert_not_awaited()
+    engine._terminate_call_after_audio.assert_not_awaited()

@@ -15535,8 +15535,8 @@ class Engine:
             # Provider transport died mid-call (e.g. Google Live WebSocket 1008/1011).
             # Avoid dead air by terminating the call promptly (or allow future live-agent routing).
             if etype == "ProviderDisconnected":
-                if session.caller_stasis_ended or session.fax_handoff:
-                    return  # The caller has left AVA; cleanup owns provider teardown.
+                if session.caller_stasis_ended or self._session_was_transferred(session):
+                    return  # Transfer or cleanup owns caller teardown.
                 provider = event.get("provider") or session.provider_name
                 code = event.get("code")
                 reason = event.get("reason")
@@ -15548,7 +15548,7 @@ class Engine:
                     reason=reason,
                 )
                 await self._stop_connection_audio(session, reason="provider-disconnected")
-                if session.caller_stasis_ended or session.fax_handoff:
+                if session.caller_stasis_ended or self._session_was_transferred(session):
                     return
                 google_disconnect_drain = bool(self._google_long_audio_provider(session))
                 if not google_disconnect_drain:
@@ -15595,7 +15595,7 @@ class Engine:
                     logger.debug("Provider-disconnect fallback playback failed", call_id=call_id, exc_info=True)
 
                 # Hang up immediately to avoid long dead-air stretches.
-                if session.caller_stasis_ended or session.fax_handoff:
+                if session.caller_stasis_ended or self._session_was_transferred(session):
                     return
                 try:
                     await self.ari_client.hangup_channel(session.caller_channel_id)

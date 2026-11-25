@@ -351,16 +351,21 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, 
         if (!toolState.provider && !toolState.pipeline) {
             toast.error('Choose an AI engine (a provider or a pipeline)'); return;
         }
+        const baseBody = buildPayload();
+        const changed = Object.fromEntries(Object.entries(baseBody).filter(
+            ([key, value]) => JSON.stringify(value) !== JSON.stringify(initialPayload.current[key]),
+        ));
+        const fallbackChanged = isNew || 'extra_json' in changed || 'tool_configs_json' in changed;
         const timeoutAction = noInputString('timeout_action') || 'hangup';
-        if (!['hangup', 'transfer'].includes(timeoutAction)) {
+        if (fallbackChanged && !['hangup', 'transfer'].includes(timeoutAction)) {
             toast.error('Choose a supported inbound timeout action'); return;
         }
-        if (timeoutAction === 'transfer' && (!fallbackTransferEnabled || !fallbackDestinations.some(
+        if (fallbackChanged && timeoutAction === 'transfer' && (!fallbackTransferEnabled || !fallbackDestinations.some(
             destination => destination.key === noInputString('fallback_destination'),
         ))) {
             toast.error('Choose an available fallback destination within this Agent’s transfer scope'); return;
         }
-        if (noInputString('transfer_message').trim().length > 500) {
+        if (fallbackChanged && noInputString('transfer_message').trim().length > 500) {
             toast.error('Keep the transfer message within 500 characters'); return;
         }
         if (
@@ -374,15 +379,10 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, 
         setSaving(true);
         onSavingChange?.(true);
         try {
-            const baseBody = buildPayload();
-
             if (isNew) {
                 await axios.post('/api/agents', { ...baseBody, slug: slug.trim() });
                 toast.success('Agent created');
             } else {
-                const changed = Object.fromEntries(Object.entries(baseBody).filter(
-                    ([key, value]) => JSON.stringify(value) !== JSON.stringify(initialPayload.current[key]),
-                ));
                 if (Object.keys(changed).length) await axios.patch(`/api/agents/${agent!.slug}`, changed);
                 toast.success('Agent saved');
             }
