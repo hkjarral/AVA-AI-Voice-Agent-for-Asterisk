@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 
 export interface CleanupJob {
@@ -14,7 +14,8 @@ export function useDockerCleanup(onTerminal: () => void) {
     const [job, setJob] = useState<CleanupJob | null>(null);
     const [checking, setChecking] = useState(true);
     const [starting, setStarting] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const [pollError, setPollError] = useState<string | null>(null);
+    const [submissionError, setSubmissionError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
     const previousRunning = useRef<string | null>(null);
     const controller = useRef<AbortController | null>(null);
@@ -24,25 +25,23 @@ export function useDockerCleanup(onTerminal: () => void) {
     const terminalCallback = useRef(onTerminal);
     terminalCallback.current = onTerminal;
 
-    const reportTerminal = (id: string) => {
-        if (terminalRef.current !== id) {
-            terminalRef.current = id;
-            terminalCallback.current();
-        }
-    };
-
-    const accept = (next: CleanupJob | null) => {
-        if (previousRunning.current && previousRunning.current !== next?.job_id) {
-            reportTerminal(previousRunning.current);
+    const accept = useCallback((next: CleanupJob | null) => {
+        let refreshUsage = false;
+        const previous = previousRunning.current;
+        if (previous && previous !== next?.job_id && terminalRef.current !== previous) {
+            terminalRef.current = previous;
+            refreshUsage = true;
         }
         previousRunning.current = next?.status === 'running' ? next.job_id : null;
         setJob(next);
         setChecking(false);
-        setError(null);
+        setPollError(null);
         if (next && next.status !== 'running' && terminalRef.current !== next.job_id) {
-            reportTerminal(next.job_id);
+            terminalRef.current = next.job_id;
+            refreshUsage = true;
         }
-    };
+        if (refreshUsage) terminalCallback.current();
+    }, []);
 
     useEffect(() => {
         const abort = new AbortController();
@@ -57,7 +56,7 @@ export function useDockerCleanup(onTerminal: () => void) {
             } catch {
                 if (!abort.signal.aborted && version === generation.current) {
                     setChecking(false);
-                    setError('Cleanup status unavailable. Reconnecting...');
+                    setPollError('Cleanup status unavailable. Reconnecting...');
                 }
             } finally {
                 if (!abort.signal.aborted) timer = setTimeout(poll, 2000);
@@ -68,7 +67,7 @@ export function useDockerCleanup(onTerminal: () => void) {
             abort.abort();
             clearTimeout(timer);
         };
-    }, []);
+    }, [accept]);
 
     const start = async (type: 'build_cache' | 'images') => {
         if (startingRef.current) return;
@@ -76,6 +75,7 @@ export function useDockerCleanup(onTerminal: () => void) {
         startingRef.current = true;
         setStarting(true);
         setNotice(null);
+        setSubmissionError(null);
         generation.current += 1;
         try {
             const response = await axios.post('/api/system/docker/prune', {
@@ -95,7 +95,7 @@ export function useDockerCleanup(onTerminal: () => void) {
         } catch (err) {
             if (!abort?.signal.aborted) {
                 const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
-                setError(typeof detail === 'string' ? detail : 'Cleanup request could not be confirmed. Checking status...');
+                setSubmissionError(typeof detail === 'string' ? detail : 'Cleanup request could not be confirmed. Check status before retrying.');
                 terminalCallback.current();
             }
         } finally {
@@ -104,5 +104,5 @@ export function useDockerCleanup(onTerminal: () => void) {
         }
     };
 
-    return { job, error, notice, busy: checking || starting || !!error || job?.status === 'running', start };
+    return { job, error: [submissionError, pollError].filter(Boolean).join(' ') || null, notice, busy: checking || starting || !!pollError || job?.status === 'running', start };
 }

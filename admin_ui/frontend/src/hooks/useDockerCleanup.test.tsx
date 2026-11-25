@@ -52,7 +52,7 @@ it('settles network errors and recovers through polling', async () => {
     expect(terminal).toHaveBeenCalledTimes(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     expect(hook.result.current.busy).toBe(false);
-    expect(hook.result.current.error).toBeNull();
+    expect(hook.result.current.error).toContain('could not be confirmed');
 });
 
 it('aborts polling and clears its timer on unmount', async () => {
@@ -91,4 +91,31 @@ it('explains when an existing cleanup does not include the requested resource', 
     expect(hook.result.current.notice).toContain('Unused images cleanup was not queued');
     expect(hook.result.current.job?.job_id).toBe('one');
     expect(hook.result.current.busy).toBe(true);
+});
+
+it('keeps an explicit submission rejection visible when polling returns an older completion', async () => {
+    vi.mocked(axios.isAxiosError).mockReturnValue(true);
+    vi.mocked(axios.get).mockResolvedValue({ data: { job: { ...running, status: 'completed' } } });
+    vi.mocked(axios.post).mockRejectedValue({ response: { status: 503, data: { detail: 'Cleanup storage unavailable' } } });
+    const hook = renderHook(() => useDockerCleanup(vi.fn()));
+    await act(async () => {});
+    await act(async () => { await hook.result.current.start('images'); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(hook.result.current.error).toContain('Cleanup storage unavailable');
+    expect(hook.result.current.busy).toBe(false);
+    vi.mocked(axios.post).mockResolvedValue({ data: { job: { ...running,
+        steps: [{ resource: 'images', status: 'running', reclaimed: null, error: null }],
+    } } });
+    await act(async () => { await hook.result.current.start('images'); });
+    expect(hook.result.current.error).toBeNull();
+});
+
+it('coalesces terminal refreshes when a completed job replaces an observed running job', async () => {
+    vi.mocked(axios.get).mockResolvedValueOnce({ data: { job: running } })
+        .mockResolvedValue({ data: { job: { ...running, job_id: 'two', status: 'completed' } } });
+    const terminal = vi.fn();
+    renderHook(() => useDockerCleanup(terminal));
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+    expect(terminal).toHaveBeenCalledTimes(1);
 });

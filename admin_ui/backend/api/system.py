@@ -1630,7 +1630,12 @@ class PruneRequest(BaseModel):
 @router.get("/docker/prune")
 async def docker_prune_status():
     from services import docker_cleanup
-    return {"job": await asyncio.to_thread(docker_cleanup.latest)}
+    try:
+        return {"job": await docker_cleanup.bounded_io(docker_cleanup.latest)}
+    except BlockingIOError:
+        raise HTTPException(409, detail="Cleanup progress storage is busy. Retry shortly.") from None
+    except asyncio.TimeoutError:
+        raise HTTPException(503, detail="Cleanup progress storage timed out. Reconnecting is safe.") from None
 
 
 @router.post("/docker/prune", status_code=202)
@@ -1645,9 +1650,11 @@ async def prune_docker_resources(request: PruneRequest):
     if not resources:
         raise HTTPException(422, detail="Select at least one cleanup resource")
     try:
-        return {"job": await asyncio.to_thread(docker_cleanup.start, resources)}
+        return {"job": await docker_cleanup.bounded_io(docker_cleanup.start, resources)}
     except BlockingIOError:
         raise HTTPException(409, detail="Cleanup is finishing. Retry shortly.") from None
+    except asyncio.TimeoutError:
+        raise HTTPException(504, detail="Cleanup request is still being checked. Recheck status before retrying.") from None
     except OSError:
         raise HTTPException(503, detail="Cleanup progress storage is unavailable. No new cleanup was started.") from None
 

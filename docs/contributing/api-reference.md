@@ -396,12 +396,17 @@ waiting for the former synchronous `success` response. Stopped-container cleanup
 remains available through `prune_containers`. Empty selections are rejected.
 
 One cleanup worker owns a shared file lock and atomically journals the latest job
-under `data/operator/docker-cleanup/`. A short submission lock serializes creation
-across API processes. Request disconnects and API restarts leave the worker running.
+under `data/operator/docker-cleanup/`. A nonblocking submission lock coordinates creation across API processes.
+Cleanup storage I/O has one dedicated worker and a two-second request wait limit,
+so stalled storage cannot exhaust the shared API executor. Busy status reads
+return retryable HTTP 409. A start request whose outcome is still unknown returns
+HTTP 504 and must be reconciled through status polling. Request disconnects and API restarts leave the worker running.
 If the worker and Docker CLI disappear during a container restart, the next status
 read marks unfinished work interrupted. Cleanup is never automatically replayed.
 An independent command supervisor retains the deadline and operation lock if the
-journal worker exits unexpectedly. The Docker CLI also inherits the lock. All deployments sharing a Docker daemon must share
+journal worker exits unexpectedly. The Docker CLI also inherits the lock. The CLI and plugins share the supervisor
+process group. If the supervisor exits unexpectedly, the journal worker kills
+that group. On timeout, the supervisor reaps the CLI and terminates its group. All deployments sharing a Docker daemon must share
 this operator state directory to coordinate cleanup.
 
 The cleanup budget is 15 minutes across selected steps, including journal and
@@ -411,7 +416,8 @@ space when available. A missing total means unknown, including partial deletion
 before a failure. Progress-storage failures stop further steps. If a full disk
 prevents saving completion, status reconciliation reports interrupted work with
 uncertain results. A failure to journal a new job returns HTTP 503 before launch.
-A request during terminal lock release returns a retryable HTTP 409. A timeout kills the CLI process group, including Docker CLI plugins, and reaps the CLI. Docker may still be finishing
+A request during terminal lock release returns a retryable HTTP 409. Explicit
+submission rejections remain visible while polling reconciles older job results. A timeout kills the CLI process group, including Docker CLI plugins, and reaps the CLI. Docker may still be finishing
 deletions on the daemon, so refresh usage before choosing to retry. Disk usage is
 queried separately with bounded commands off the API event loop. Cleanup buttons
 remain available if usage cannot be measured. Tabs refresh usage when a later job
