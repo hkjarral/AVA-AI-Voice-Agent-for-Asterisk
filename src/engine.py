@@ -10656,12 +10656,7 @@ class Engine:
             if channel_id in self._outbound_awaiting_amd_channel_ids:
                 logger.debug("Ignoring StasisEnd during outbound AMD hop", channel_id=channel_id)
                 return
-            session = await self.session_store.get_by_channel_id(channel_id)
-            if session and session.caller_channel_id == channel_id:
-                session.caller_stasis_ended = True
-                session.cleanup_in_progress = True
-                self._note_fax_handoff(session, channel, source="stasis_end")
-            await self._cleanup_call(channel_id)
+            await self._cleanup_call(channel_id, stasis_end_channel=channel)
         except Exception as exc:
             logger.error("Error handling StasisEnd", error=str(exc), exc_info=True)
 
@@ -11118,7 +11113,8 @@ class Engine:
             logger.debug("ChannelTalkingFinished handler failed", ari_event=event, exc_info=True)
 
     async def _cleanup_call(
-        self, channel_or_call_id: str, *, force_caller_hangup: bool = False
+        self, channel_or_call_id: str, *, force_caller_hangup: bool = False,
+        stasis_end_channel: Optional[dict] = None,
     ) -> None:
         """Shared cleanup for StasisEnd/ChannelDestroyed paths."""
         resolved_call_id = None  # Track for finally block cleanup
@@ -11253,6 +11249,11 @@ class Engine:
 
             call_id = session.call_id
             resolved_call_id = call_id  # Save for finally block
+            if (stasis_end_channel is not None
+                    and stasis_end_channel.get("id") == session.caller_channel_id):
+                session.caller_stasis_ended = True
+                session.cleanup_in_progress = True
+                self._note_fax_handoff(session, stasis_end_channel, source="stasis_end")
 
             # Completed guard: some late events (e.g., streaming/playback teardown) can re-upsert
             # the session after cleanup, which may cause cleanup (and email sends) to run twice.
