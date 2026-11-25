@@ -6,6 +6,8 @@ import asyncio
 
 from structlog import get_logger
 
+from src.core.transfer_handoff import origin_spoke_handoff
+
 logger = get_logger(__name__)
 
 class AIProviderInterface(ABC):
@@ -49,10 +51,13 @@ class AIProviderInterface(ABC):
             await self.on_event({"type": "HandoffPrepared", "call_id": call_id,
                                  "action_id": action["id"], "origin": origin})
 
-    async def handoff_result_sent(self, result, call_id, *, success=True, origin_already_spoken=False):
+    async def handoff_result_sent(self, result, call_id, *, success=True, origin_id=None):
+        """Report delivery and return True if a supplied native parent spoke the handoff."""
         action = result.get("deferred_transfer") if isinstance(result, dict) else None
         if not isinstance(action, dict) or not self.on_event:
             return
+        origin = self._handoff_evidence.result_origin(call_id, action, origin_id) if success and origin_id else None
+        spoken = bool(origin and origin_spoke_handoff(origin, result["message"]))
         if not action.get("handoff"):
             # No announcement bounds the wait for the reply turn that commits
             # this action, so let the engine time it from here: the model has
@@ -63,13 +68,17 @@ class AIProviderInterface(ABC):
             flags["result_sent"] = True
             await self.on_event({"type": "DeferredTransferArmed", "call_id": call_id,
                                  "action_id": action.get("id"), "success": success,
-                                 **({"origin_already_spoken": True} if origin_already_spoken else {})})
+                                 **({"origin_already_spoken": True} if spoken else {})})
             if flags["caller_speaking"]:
                 await self.emit_caller_speech(call_id, started=True)  # Still talking.
-            return
-        await self.on_event({"type": "HandoffToolResultSent", "call_id": call_id,
-                             "action_id": action["id"], "sent_at": time.monotonic(),
-                             "success": success})
+            return spoken
+        event = {"type": "HandoffToolResultSent", "call_id": call_id,
+                 "action_id": action["id"], "sent_at": time.monotonic(), "success": success}
+        if origin:
+            # The parent can be interrupted after preparation, while its result is in flight.
+            event["origin"] = origin
+        await self.on_event(event)
+        return spoken
 
     async def emit_caller_speech(self, call_id, *, started):
         """Report a provider VAD caller-speech start or end to the engine.

@@ -38,7 +38,6 @@ from ..audio import (
     resample_audio,
     resolve_output_resampler_policy,
 )
-from ..core.transfer_handoff import origin_spoke_handoff
 from ..config import GrokProviderConfig
 from ..utils.voice_catalog import GROK_BUILTIN_IDS
 
@@ -791,21 +790,6 @@ class GrokProvider(AIProviderInterface):
                 timeout_s=timeout,
             )
 
-    async def _blind_transfer_result_sent(self, result, call_id, *, success, origin_id):
-        """Decide about a second turn only after the function output is on the wire."""
-        state = self._handoff_evidence.state(call_id)
-        origin = state["turns"].get(origin_id, {})
-        action = result["deferred_transfer"]
-        action_id = action["id"]
-        same_action = origin.get("owner_action_id") in (None, action_id)
-        if action.get("handoff"):
-            same_action = state["active"] == action_id and state.get("origin_id") == origin_id
-        spoken = bool(success and same_action and origin_spoke_handoff(origin, result["message"]))
-        if spoken:
-            origin["owner_action_id"] = action_id
-        await self.handoff_result_sent(result, call_id, success=success, origin_already_spoken=spoken)
-        return spoken
-
     async def _handle_function_call(self, event_data: Dict[str, Any]):
         """
         Handle function call request from Grok Voice Agent API.
@@ -885,7 +869,7 @@ class GrokProvider(AIProviderInterface):
                 and action.get("source_tool") == "blind_transfer" and action.get("id")
                 and result.get("message") and result.get("ai_should_speak", True)
             ):
-                context["handoff_result_sent"] = partial(self._blind_transfer_result_sent, origin_id=parent_id)
+                context["handoff_result_sent"] = partial(self.handoff_result_sent, origin_id=parent_id)
 
             await self._await_parent_response_done(event_data, function_name=function_name)
 

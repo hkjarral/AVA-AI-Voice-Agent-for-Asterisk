@@ -587,7 +587,7 @@ async def test_grok_native_tool_execution_preserves_private_handoff_until_wire(m
 
 
 @pytest.mark.parametrize("configured", [False, True], ids=["default", "configured"])
-@pytest.mark.parametrize("sequence", ["tool-first", "speech-first", "slow-tool", "paced", "filler", "interrupted", "failed"])
+@pytest.mark.parametrize("sequence", ["tool-first", "speech-first", "slow-tool", "paced", "filler", "interrupted", "interrupted-at-send", "failed"])
 async def test_grok_blind_transfer_result_and_drain(configured, sequence, monkeypatch):
     from src.config import GrokProviderConfig
     from src.tools.adapters.grok import GrokToolAdapter
@@ -632,7 +632,11 @@ async def test_grok_blind_transfer_result_and_drain(configured, sequence, monkey
     registry = ToolRegistry()
     registry.register(UnifiedTransferTool)
     provider.tool_adapter = GrokToolAdapter(registry)
-    send = AsyncMock()
+    async def send_payload(payload):
+        if sequence == "interrupted-at-send" and json.loads(payload)["type"] == "conversation.item.create":
+            await provider.handle_local_barge_in()
+
+    send = AsyncMock(side_effect=send_payload)
     provider.websocket = SimpleNamespace(state=SimpleNamespace(name="OPEN"), send=send)
     waiting = asyncio.Event()
     wait_for_parent = provider._await_parent_response_done
@@ -644,6 +648,8 @@ async def test_grok_blind_transfer_result_and_drain(configured, sequence, monkey
     monkeypatch.setattr(provider, "_await_parent_response_done", wait)
 
     async def speech(response_id, words):
+        await provider._handle_event({"type": "response.output_item.added", "response_id": response_id,
+                                      "item": {"id": "audio-" + response_id, "role": "assistant", "type": "message"}})
         await provider._handle_event({"type": "response.output_audio.delta", "response_id": response_id,
                                       "delta": base64.b64encode(bytes(960)).decode()})
         await provider._handle_event({"type": "response.output_audio_transcript.delta",
