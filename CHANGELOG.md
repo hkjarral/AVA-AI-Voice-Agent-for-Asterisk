@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Require the Debian fix for CVE-2026-124851 in both stages of the Local AI CPU image. Builds stop if the installed `libzstd1` is older than `1.5.7+dfsg-1+deb13u1`.
+
 - Mask numeric credential echoes in HTTP tool tests, short Bearer credentials in templates, and embedded credentials shared through YAML aliases. MCP password rotation can retain other credentials for the same command.
 
 - Local AI connection checks report model readiness without returning the WebSocket URL or provider-supplied text.

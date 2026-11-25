@@ -10,18 +10,21 @@ This is the **canonical guide** for all local deployment topologies:
 
 ### CPU image security updates
 
-Rebuild installed CPU Local AI images with the original backend flags to receive
-the glibc update. Both builder and runtime explicitly install `libc6`/`libc-bin`
-and refuse versions below `2.41-12+deb13u5`, even when an upstream base layer is
-cached or native-build backends are disabled. If a mirror lacks the fixed
-packages, refresh/retry the build after mirror availability is restored; do not
-remove the version checks. Preserve models and configuration. Build the
-replacement before recreation, drain calls, and keep unused services stopped.
+Rebuild installed CPU Local AI images with their original backend flags. Both
+stages install `libzstd1` and require `1.5.7+dfsg-1+deb13u1` or later to
+address an information disclosure in Zstandard decompression.
+[Debian advisory for CVE-2026-124851](https://security-tracker.debian.org/tracker/CVE-2026-124851)
 
-This Trixie change does not update the Ubuntu CUDA image, Bookworm services,
-Python packaging tools or other residual dependency findings. The release's
-separate security disposition still applies; a successful build is not a claim
-that every optional backend or physical GPU was tested.
+Both stages also require `libc6` and `libc-bin` at `2.41-12+deb13u5` or later.
+These checks apply with cached base images and with native-build backends
+disabled. If the build reports an older package, check that the configured
+Trixie security mirror is up to date, then rebuild. Preserve model volumes and
+configuration, build the replacement before recreation, drain calls, and keep
+unused services stopped.
+
+These package floors apply to the Debian Trixie CPU image. The Ubuntu CUDA
+image, Bookworm services and Python dependencies have separate security
+updates and validation.
 
 ## Overview
 
