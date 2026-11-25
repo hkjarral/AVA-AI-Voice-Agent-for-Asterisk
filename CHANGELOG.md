@@ -82,6 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Grok can retry a greeting once after pickup noise cancels it before any audio. A caller who starts a conversation takes priority.
+- Preserve confirmed inbound fax redirects during call cleanup while releasing
+  AVA's provider and media resources. Document late fax detection routing in
+  FreePBX. Thanks to @MVECoder for the reproduction and original fax-only patch.
 
 - Persist confirmed VICIdial terminal results before retrying a late Call History write. Clearing the log file path while file logging is enabled restores the standard path.
 
