@@ -23,9 +23,11 @@ runtime, live-call and upgrade testing, including exact-candidate acceptance and
 a successful-call golden baseline. Retain original revisions and unverified lanes
 for fax, fallback/watchdog, Grok transfers, Docker cleanup and optional providers.
 Required CI, automated/image checks, security assessment and review are not waived.
-The v7.7.4 security exception does not carry forward; remaining findings require
-an explicit [current disposition](baselines/golden/v7.7.5-validation-matrix.md#security-disposition).
-Its November 29 follow-up remains due. Merge and tag remain held for separate approval.
+The v7.7.4 security exception does not carry forward. The maintainer separately
+approved the [v7.7.5-only exception](baselines/golden/v7.7.5-validation-matrix.md#approved-v775-only-exception)
+for the recorded residual baseline. Release maintainers review remediation by
+November 29, 2026 or before the following stable tag, whichever comes first.
+New findings require separate assessment. Merge/tag remain held for approval.
 
 ### Historical v7.7.4 evidence acceptance
 

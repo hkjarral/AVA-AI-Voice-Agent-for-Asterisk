@@ -62,8 +62,11 @@ Admin UI so an old client does not interpret the new credential/API shapes.
 The maintainer approved a fresh [v7.7.5-only testing waiver](baselines/golden/v7.7.5-validation-matrix.md#scoped-acceptance-of-existing-evidence).
 Live fax, fallback/watchdog, Grok transfer and Docker cleanup gaps remain explicit.
 Required CI, image/security checks and review are not waived. The previous
-security exception does not carry forward; [security disposition](baselines/golden/v7.7.5-validation-matrix.md#security-disposition),
-merge and tag require separate approval. Supported trains remain 7.7.x and 7.6.x.
+security exception does not carry forward. The maintainer separately approved the
+[fresh v7.7.5-only exception](baselines/golden/v7.7.5-validation-matrix.md#approved-v775-only-exception),
+with release-maintainer remediation review due November 29, 2026 or before the
+following stable tag, whichever comes first. Merge/tag remain on HOLD.
+Supported trains remain 7.7.x and 7.6.x.
 
 <a id="upcoming-admin-api-changes"></a>
 

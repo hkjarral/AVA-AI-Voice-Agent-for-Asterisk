@@ -26,6 +26,13 @@ Grok/noise reports. See [verified contributor roles](CONTRIBUTORS.md).
   remaining security findings, merge or tag. The v7.7.4 security exception does
   not carry forward; see the [current security disposition](docs/baselines/golden/v7.7.5-validation-matrix.md#security-disposition).
 
+- The maintainer separately approved a [v7.7.5-only security exception](docs/baselines/golden/v7.7.5-validation-matrix.md#approved-v775-only-exception)
+  for seven manifest alerts, the remaining Engine 10 / CPU 14 core-profile scan
+  results and the disclosed Bookworm exposure/inventory limits. Release
+  maintainers review remediation by **2026-11-29 or before the following stable
+  tag**, whichever comes first. This is risk acceptance, not remediation or alert
+  dismissal. Merge/tag remain held; the targeted CPU libzstd issue is fixed below.
+
 - Require the Debian fix for CVE-2026-124851 in both stages of the Local AI CPU image. Builds stop if the installed `libzstd1` is older than `1.5.7+dfsg-1+deb13u1`.
 
 - Mask numeric credential echoes in HTTP tool tests, short Bearer credentials in templates, and embedded credentials shared through YAML aliases. MCP password rotation can retain other credentials for the same command.
