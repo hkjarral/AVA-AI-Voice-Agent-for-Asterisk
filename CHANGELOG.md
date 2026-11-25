@@ -7,16 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [7.7.5] - 2026-11-24
+## [7.7.5] - 2026-11-25
 
-Prepared from verified main `b3d12951`, covering eight merged PRs after v7.7.4:
-#892, #893, #896, #897, #898, #899, #900 and #901. The staged date remains
+Prepared from verified main `408407d4`, covering nine merged PRs after v7.7.4:
+#892, #893, #896, #897, #898, #899, #900, #901 and #903. The staged date remains
 provisional until explicit publication approval. See the [upgrade and API migration
 notes](docs/MIGRATION.md#v774-to-v775) and [validation matrix](docs/baselines/golden/v7.7.5-validation-matrix.md).
 Thanks to `hkjarral` for implementation/integration, `Andrew-Engelbrecht` for the
 inactivity-fallback proposal, and `MVECoder` for the fax patch/reproduction and
 Grok/noise reports. See [verified contributor roles](CONTRIBUTORS.md).
-
 
 ### Security
 
@@ -26,6 +25,8 @@ Grok/noise reports. See [verified contributor roles](CONTRIBUTORS.md).
   assessment and review remain mandatory. This testing waiver does not approve
   remaining security findings, merge or tag. The v7.7.4 security exception does
   not carry forward; see the [current security disposition](docs/baselines/golden/v7.7.5-validation-matrix.md#security-disposition).
+
+- Require the Debian fix for CVE-2026-124851 in both stages of the Local AI CPU image. Builds stop if the installed `libzstd1` is older than `1.5.7+dfsg-1+deb13u1`.
 
 - Mask numeric credential echoes in HTTP tool tests, short Bearer credentials in templates, and embedded credentials shared through YAML aliases. MCP password rotation can retain other credentials for the same command.
 

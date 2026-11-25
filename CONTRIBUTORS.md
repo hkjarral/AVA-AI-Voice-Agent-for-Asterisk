@@ -55,9 +55,9 @@ Thanks to all the people who have contributed to the Asterisk AI Voice Agent!
   and [#895](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/895).
   Fax code was integrated/hardened by the maintainer; no final live fax acceptance
   is implied by this credit.
-- **hkjarral:** all eight merged PRs' implementation/integration, provider catalog,
+- **hkjarral:** all nine merged PRs' implementation/integration, provider catalog,
   credential/history hardening, Grok/fax/inactivity and cleanup lifecycle fixes,
-  automated verification, guides and release preparation.
+  CPU libzstd hardening (#903), automated verification, guides and release preparation.
 
 ### v7.7.4 contribution updates
 

@@ -23,10 +23,12 @@ WORKDIR /usr/src/app
 
 # Some optional backends require native builds (e.g., llama-cpp-python) or git installs (MeloTTS).
 # Install build tooling only when those backends are enabled to keep CI "ci-min" builds lean.
-# Explicitly upgrade both glibc packages even when the base tag still contains
-# deb13u4; fail closed if the configured mirror cannot supply the fixed version.
+# Upgrade glibc and libzstd1 even when the base image predates the security fixes.
 RUN apt-get -o Acquire::Retries=5 update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libc6 libc-bin && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libc6 libc-bin libzstd1 && \
+    AAVA_ZSTD_VERSION="$(dpkg-query -W -f='${Version}' libzstd1)" && \
+    echo "libzstd1=$AAVA_ZSTD_VERSION" && \
+    dpkg --compare-versions "$AAVA_ZSTD_VERSION" ge '1.5.7+dfsg-1+deb13u1' && \
     for AAVA_GLIBC_PACKAGE in libc6 libc-bin; do \
         AAVA_GLIBC_VERSION="$(dpkg-query -W -f='${Version}' "$AAVA_GLIBC_PACKAGE")" || exit 1; \
         echo "$AAVA_GLIBC_PACKAGE=$AAVA_GLIBC_VERSION"; \
@@ -192,7 +194,7 @@ FROM python:3.11-slim-trixie
 # Build argument to optionally include Kroko embedded server
 ARG INCLUDE_KROKO_EMBEDDED=false
 
-# Install runtime dependencies and enforce the fixed Trixie glibc/zlib floors.
+# Install runtime dependencies and enforce the fixed Trixie glibc, zlib and libzstd1 floors.
 RUN apt-get -o Acquire::Retries=5 update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     libc6 \
     libc-bin \
@@ -206,6 +208,10 @@ RUN apt-get -o Acquire::Retries=5 update && DEBIAN_FRONTEND=noninteractive apt-g
     wget \
     espeak-ng \
     zlib1g \
+    libzstd1 \
+    && AAVA_ZSTD_VERSION="$(dpkg-query -W -f='${Version}' libzstd1)" \
+    && echo "libzstd1=$AAVA_ZSTD_VERSION" \
+    && dpkg --compare-versions "$AAVA_ZSTD_VERSION" ge '1.5.7+dfsg-1+deb13u1' \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge '1:1.3.dfsg+really1.3.1-1+deb13u1' \
     && for AAVA_GLIBC_PACKAGE in libc6 libc-bin; do \
         AAVA_GLIBC_VERSION="$(dpkg-query -W -f='${Version}' "$AAVA_GLIBC_PACKAGE")" || exit 1; \

@@ -172,7 +172,7 @@ The core services are `ai_engine` and `admin_ui`; `local_ai_server` and
 ### v7.7.5 highlights
 
 - Synchronized provider/model/voice catalogs and opt-in speech workflows.
-- Stored-credential protection, safer backups and resilient Call History upgrades.
+- Stored-credential protection, resilient Call History upgrades and CPU image security fixes.
 - Inbound inactivity destinations, fax handoff preservation and Grok call fixes.
 - Background Docker cleanup with progress and recoverable job status.
 

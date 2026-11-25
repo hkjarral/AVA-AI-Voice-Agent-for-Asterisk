@@ -10,10 +10,10 @@ Asterisk AI Voice Agent (AAVA) aims to be the definitive open-source AI voice ag
 
 ### v7.7.5 — Provider catalogs, credential protection and inbound recovery
 
-Prepared from main `b3d12951`, covering eight merged PRs after v7.7.4. Includes
+Prepared from main `408407d4`, covering nine merged PRs after v7.7.4. Includes
 provider/model/voice catalogs, Admin credential and Call History hardening,
 Grok greeting/transfer fixes, inbound fax/inactivity handling and background
-Docker cleanup. See [migration](MIGRATION.md#v774-to-v775) and the
+Docker cleanup and the CPU libzstd package floor. See [migration](MIGRATION.md#v774-to-v775) and the
 [validation matrix](baselines/golden/v7.7.5-validation-matrix.md). v7.7.4 remains
 the published release during preparation. Supported trains remain 7.7.x and 7.6.x.
 

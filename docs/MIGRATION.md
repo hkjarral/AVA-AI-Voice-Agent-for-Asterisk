@@ -26,6 +26,11 @@ Admin UI so an old client does not interpret the new credential/API shapes.
   limits. Google Extended Thinking has tool restrictions; a setup/API pass is
   not telephone-call acceptance. Install Kokoro voice/G2P assets before selecting
   those languages. Retain original Local AI backend flags and model volumes.
+- **CPU Local AI security.** Rebuild installed CPU profiles to receive the
+  `libzstd1` fix for CVE-2026-124851. Both builder/runtime explicitly install it
+  and fail below `1.5.7+dfsg-1+deb13u1`, while retaining glibc/zlib floors. A stale
+  security mirror blocks the build. This does not patch Bookworm services, GPU
+  images or vendored Python dependencies. See [CPU package floors](LOCAL_ONLY_SETUP.md#cpu-image-security-updates).
 - **Inbound inactivity fallback.** Hangup remains the default. An Agent can
   explicitly route timeout handling to a scoped extension, queue or ring group;
   changes apply to new calls. Outbound opt-in still hangs up. A missing or deleted

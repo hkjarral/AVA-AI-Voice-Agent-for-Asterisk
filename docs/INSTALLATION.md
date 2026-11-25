@@ -74,7 +74,8 @@ Hard-refresh Admin UI. Credential reads now expose stored-state projections,
 backup downloads require a password-confirmed POST, and Docker cleanup returns
 an asynchronous job. Review proxy/login origins and Call History rollback before
 rollout. Follow intervening migration notes for earlier installs, including the
-v7.7.4 Local AI dependency and CPU glibc floors.
+v7.7.4 Local AI dependency/glibc floors. v7.7.5 additionally requires CPU
+`libzstd1` at least `1.5.7+dfsg-1+deb13u1` in both stages; stale mirrors fail closed.
 Read the [v7.7.5 migration notes](MIGRATION.md#v774-to-v775) before rollout.
 
 Existing Agents and configuration are retained. Include
