@@ -6,6 +6,8 @@ import asyncio
 
 from structlog import get_logger
 
+from src.core.transfer_handoff import origin_spoke_handoff
+
 logger = get_logger(__name__)
 
 class AIProviderInterface(ABC):
@@ -49,10 +51,12 @@ class AIProviderInterface(ABC):
             await self.on_event({"type": "HandoffPrepared", "call_id": call_id,
                                  "action_id": action["id"], "origin": origin})
 
-    async def handoff_result_sent(self, result, call_id, *, success=True):
+    async def handoff_result_sent(self, result, call_id, *, success=True, origin_id=None):
+        """Report delivery and return True if a supplied native parent spoke the handoff."""
         action = result.get("deferred_transfer") if isinstance(result, dict) else None
         if not isinstance(action, dict) or not self.on_event:
             return
+        origin = self._handoff_evidence.result_origin(call_id, action, origin_id) if success and origin_id else None
         if not action.get("handoff"):
             # No announcement bounds the wait for the reply turn that commits
             # this action, so let the engine time it from here: the model has
@@ -62,13 +66,21 @@ class AIProviderInterface(ABC):
             flags = self._handoff_evidence.deferred_flags(call_id)
             flags["result_sent"] = True
             await self.on_event({"type": "DeferredTransferArmed", "call_id": call_id,
-                                 "action_id": action.get("id"), "success": success})
+                                 "action_id": action.get("id"), "success": success,
+                                 **({"origin": origin, "message": result["message"]} if origin else {})})
             if flags["caller_speaking"]:
                 await self.emit_caller_speech(call_id, started=True)  # Still talking.
-            return
-        await self.on_event({"type": "HandoffToolResultSent", "call_id": call_id,
-                             "action_id": action["id"], "sent_at": time.monotonic(),
-                             "success": success})
+            origin = self._handoff_evidence.result_origin(call_id, action, origin_id) if success and origin_id else None
+            return bool(origin and origin_spoke_handoff(origin, result["message"]))
+        event = {"type": "HandoffToolResultSent", "call_id": call_id,
+                 "action_id": action["id"], "sent_at": time.monotonic(), "success": success}
+        if origin:
+            # Keep this in-process record live across the engine's session lookup.
+            # Caller interruption must be visible when it admits the notification.
+            event["origin"] = origin
+        await self.on_event(event)
+        origin = self._handoff_evidence.result_origin(call_id, action, origin_id) if success and origin_id else None
+        return bool(origin and origin_spoke_handoff(origin, result["message"]))
 
     async def emit_caller_speech(self, call_id, *, started):
         """Report a provider VAD caller-speech start or end to the engine.
@@ -106,22 +118,27 @@ class AIProviderInterface(ABC):
         if self._handoff_evidence.state(call_id)["active"] and self.on_event:
             await self.on_event(enriched)
 
-    async def flush_handoff_pacer(self):
+    async def flush_handoff_pacer(self, *, transfer_parent=False):
         """Admit the selected response's remaining bytes before sealing it.
 
-        Only used for an opted-in announcement. The transport already paces
+        Used for an opted-in announcement or a known transfer parent. The transport already paces
         queued audio; don't leave bytes in a provider pacer after completion.
         """
         call_id = getattr(self, "_call_id", None)
-        if not call_id or not self._handoff_evidence.state(call_id)["active"] or not getattr(self, "_egress_pacer_enabled", False):
+        if not call_id or not getattr(self, "_egress_pacer_enabled", False):
+            return True
+        if not transfer_parent and not self._handoff_evidence.state(call_id)["active"]:
             return True
         self._pacer_running = False
         task = getattr(self, "_pacer_task", None)
         if task and not task.done() and task is not asyncio.current_task():
-            try:
-                await asyncio.wait_for(asyncio.shield(task), 0.25)
-            except asyncio.TimeoutError:
+            # A segment-end event may have already cancelled the pacer. Waiting
+            # on its termination must not cancel the provider receive loop.
+            _, pending = await asyncio.wait({task}, timeout=0.25)
+            if pending:
                 return False
+            if not task.cancelled():
+                task.result()
         async with self._pacer_lock:
             tail = bytes(self._outbuf)
             self._outbuf.clear()

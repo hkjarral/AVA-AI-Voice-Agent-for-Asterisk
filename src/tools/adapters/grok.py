@@ -144,6 +144,7 @@ class GrokToolAdapter:
             config=context.get('config'),
             tool_registry=self.registry,
             tool_call_id=function_call_id,
+            tool_response_id=event.get("response_id"),
             provider_name="grok",
             user_input=context.get('user_input'),
         )
@@ -239,13 +240,15 @@ class GrokToolAdapter:
             await websocket.send(json.dumps(output_event))
             output_sent = True
             notify = context.get("handoff_result_sent")
-            if notify:
-                await notify(result, context.get("call_id"), success=True)
+            origin_already_spoken = await notify(result, context.get("call_id"), success=True) if notify else False
             logger.info(
                 f"✅ Sent function output to Grok: {safe_result.get('status')}",
                 call_id=context.get("call_id"),
                 function_call_id=call_id,
             )
+
+            if origin_already_spoken is True:
+                return
 
             if function_name == "hangup_call" and bool(safe_result.get("will_hangup", False)):
                 return

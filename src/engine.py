@@ -15377,7 +15377,20 @@ class Engine:
             if etype in {"HandoffPrepared", "HandoffToolResultSent", "HandoffTranscript", "HandoffAudioComplete"}:
                 return
             if etype == "DeferredTransferArmed":
-                self._arm_deferred_transfer_watchdog(call_id, session, event.get("action_id"))
+                action_id = event.get("action_id")
+                from .core.transfer_handoff import origin_spoke_handoff
+                if (event.get("success") and action_id
+                        and origin_spoke_handoff(event.get("origin") or {}, event.get("message") or "")):
+                    # The parent may have finished before the tool armed the transfer.
+                    # There will be no reply-turn audio completion to start the drain.
+                    if not self._deferred_transfer_commit_in_flight(call_id, action_id):
+                        self._fire_and_forget_for_call(
+                            call_id, self._commit_pending_deferred_transfer_for_call(
+                                call_id, session, expected_action_id=action_id,
+                            ), name=f"deferred-transfer-spoken-{call_id}",
+                        )
+                else:
+                    self._arm_deferred_transfer_watchdog(call_id, session, action_id)
                 return
             if call_id in (getattr(self, "_deferred_transfer_watchdogs", None) or {}):
                 self._note_deferred_transfer_caller_speech(call_id, etype, event)
@@ -16418,6 +16431,11 @@ class Engine:
                     try:
                         session = await self.session_store.get_by_call_id(call_id)
                         if session and isinstance(getattr(session, "pending_deferred_transfer", None), dict):
+                            parent_id = session.pending_deferred_transfer.get("_tool_response_id")
+                            if parent_id and event.get("audio_response_id") == parent_id:
+                                # Grok still owes this tool its result. Only its post-result
+                                # decision can use parent speech to start the transfer.
+                                return
                             if self._handoff_owns_pending(call_id, session):
                                 return
                             # Provider callbacks such as Deepgram's receive loop

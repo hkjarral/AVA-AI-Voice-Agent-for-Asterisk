@@ -1,5 +1,7 @@
 """Announcement readiness and admission regressions for #743 and #702."""
 import asyncio
+import base64
+import json
 import copy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -582,6 +584,143 @@ async def test_grok_native_tool_execution_preserves_private_handoff_until_wire(m
     assert "deferred_transfer" not in json.loads(wire["item"]["output"])
     assert json.loads(wire["item"]["output"])["message"] == MESSAGE
     assert any(e["type"] == "response.create" for e in payloads)
+
+
+@pytest.mark.parametrize("configured", [False, True], ids=["default", "configured"])
+@pytest.mark.parametrize("sequence", ["tool-first", "speech-first", "slow-tool", "paced", "filler", "interrupted", "interrupted-at-send", "interrupted-at-notification", "failed"])
+async def test_grok_blind_transfer_result_and_drain(configured, sequence, monkeypatch):
+    from src.config import GrokProviderConfig
+    from src.tools.adapters.grok import GrokToolAdapter
+    from src.tools.registry import ToolRegistry
+    from src.tools.telephony import deferred_transfer
+    from src.tools.telephony.unified_transfer import UnifiedTransferTool
+
+    engine = _build_engine()
+    transfer = engine.config.tools["transfer"]
+    transfer["deferred_silent_commit_timeout_sec"] = 0
+    if configured:
+        transfer["handoff"] = {"enabled": True, **CFG}
+    message = MESSAGE if configured else "Transferring you to Support agent now."
+    session = await _armed_session(engine, "grok-transfer")
+    session.pending_deferred_transfer = None
+    _record_stream_starts(engine, monkeypatch)
+    draining = asyncio.Event()
+    release = asyncio.Event()
+
+    async def drain(call_id):
+        draining.set()
+        await release.wait()
+        return True
+
+    monkeypatch.setattr(engine, "_wait_for_deferred_transfer_audio_drain", drain)
+    monkeypatch.setattr(engine, "_play_deferred_transfer_local_handoff", AsyncMock(return_value=False))
+    commit = AsyncMock(return_value={"status": "success"})
+    monkeypatch.setattr(deferred_transfer, "commit_pending_deferred_transfer", commit)
+
+    async def on_event(event):
+        if (sequence == "interrupted-at-notification"
+                and event["type"] in {"DeferredTransferArmed", "HandoffToolResultSent"}):
+            # Model a caller interruption while the result callback awaits admission.
+            await asyncio.sleep(0)
+            await provider.handle_local_barge_in()
+        await engine.on_provider_event(event)
+        if event["type"] == "AgentAudioDone":
+            # Let both the tool task and any premature commit run before response finalization.
+            await asyncio.sleep(0)
+
+    provider = GrokProvider(GrokProviderConfig(api_key="test", egress_pacer_enabled=sequence == "paced"), on_event)
+    provider._call_id = session.call_id
+    provider._session_store = engine.session_store
+    provider._full_config = {"tools": engine.config.tools}
+    provider._greeting_completed = True
+    provider._allowed_tools = ["blind_transfer"]
+    registry = ToolRegistry()
+    registry.register(UnifiedTransferTool)
+    if sequence == "slow-tool":
+        tool_started = asyncio.Event()
+        release_tool = asyncio.Event()
+        tool = registry.get("blind_transfer")
+        execute = tool.execute
+
+        async def delayed_execute(parameters, context):
+            tool_started.set()
+            await release_tool.wait()
+            return await execute(parameters, context)
+
+        monkeypatch.setattr(tool, "execute", delayed_execute)
+    provider.tool_adapter = GrokToolAdapter(registry)
+    async def send_payload(payload):
+        if sequence == "interrupted-at-send" and json.loads(payload)["type"] == "conversation.item.create":
+            await provider.handle_local_barge_in()
+
+    send = AsyncMock(side_effect=send_payload)
+    provider.websocket = SimpleNamespace(state=SimpleNamespace(name="OPEN"), send=send)
+    waiting = asyncio.Event()
+    wait_for_parent = provider._await_parent_response_done
+
+    async def wait(*args, **kwargs):
+        waiting.set()
+        await wait_for_parent(*args, **kwargs)
+
+    monkeypatch.setattr(provider, "_await_parent_response_done", wait)
+
+    async def speech(response_id, words):
+        await provider._handle_event({"type": "response.output_item.added", "response_id": response_id,
+                                      "item": {"id": "audio-" + response_id, "role": "assistant", "type": "message"}})
+        await provider._handle_event({"type": "response.output_audio.delta", "response_id": response_id,
+                                      "delta": base64.b64encode(bytes(960)).decode()})
+        await provider._handle_event({"type": "response.output_audio_transcript.delta",
+                                      "response_id": response_id, "delta": words})
+
+    await provider._handle_event({"type": "response.created", "response": {"id": "parent"}})
+    if sequence != "tool-first":
+        await speech("parent", "One moment." if sequence == "filler" else message)
+    destination = "missing" if sequence == "failed" else "support_agent"
+    # Grok can omit response_id on the function event. The receiver has it at dispatch.
+    await provider._handle_event({"type": "response.output_item.done", "item": {
+        "type": "function_call", "name": "blind_transfer", "call_id": "fc",
+        "arguments": json.dumps({"destination": destination}),
+    }})
+    tool_tasks = list(provider._background_tasks)
+    await asyncio.wait_for((tool_started if sequence == "slow-tool" else waiting).wait(), 1)
+    send.assert_not_awaited()
+    if sequence == "paced":
+        # Segment completion pauses the pacer before the authoritative response boundary.
+        await provider._handle_event({"type": "response.output_audio.done", "response_id": "parent"})
+    await provider._handle_event({"type": "response.done", "response": {
+        "id": "parent", "status": "cancelled" if sequence == "interrupted" else "completed",
+    }})
+    if sequence == "slow-tool":
+        assert session.pending_deferred_transfer is None
+        send.assert_not_awaited()
+        release_tool.set()
+    await asyncio.wait_for(asyncio.gather(*tool_tasks), 1)
+    wire = [json.loads(call.args[0]) for call in send.await_args_list]
+    needs_reply = sequence not in {"speech-first", "slow-tool", "paced"}
+    assert [event["type"] for event in wire] == (
+        ["conversation.item.create", "response.create"] if needs_reply else ["conversation.item.create"]
+    )
+    output = wire[0]["item"]
+    assert (output["type"], output["call_id"]) == ("function_call_output", "fc")
+    result = json.loads(output["output"])
+    assert "deferred_transfer" not in result
+    if sequence == "failed":
+        assert result["status"] == "failed" and result["message"] in wire[1]["response"]["instructions"]
+        assert session.pending_deferred_transfer is None
+        commit.assert_not_awaited()
+        return
+    assert result["message"] == message
+    if needs_reply:
+        assert message in wire[1]["response"]["instructions"]
+        assert not draining.is_set()
+        await provider._handle_event({"type": "response.created", "response": {"id": "reply"}})
+        await speech("reply", message)
+        await provider._handle_event({"type": "response.done", "response": {"id": "reply"}})
+    await asyncio.wait_for(draining.wait(), 1)
+    commit.assert_not_awaited()
+    release.set()
+    await asyncio.gather(*engine._call_bg_tasks.get(session.call_id, ()))
+    commit.assert_awaited_once()
 
 
 @pytest.mark.parametrize("case,expected", [("missing", False), ("other", False), ("cancelled", False), ("owned", True)])

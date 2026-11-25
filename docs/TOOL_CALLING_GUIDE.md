@@ -1168,7 +1168,13 @@ announcement, which use `handoff.start_timeout_sec`, or to modular pipelines,
 which commit after their own announcement. When it fires the engine logs
 `deferred_transfer_watchdog_commit` with the call id and action id.
 
-The provider can still generate the repeated turn, so its transcript may show
+Grok always sends the deferred blind-transfer result. If the completed, uninterrupted
+parent response began with the full handoff message, Grok skips the follow-up
+speech request and the engine drains the existing playback. This applies to
+the default transfer message and custom announcements. A tool-first response,
+partial match, or transfer error keeps the usual spoken reply.
+
+Other providers can still generate the repeated turn, so their transcripts may show
 the handoff twice. With opt-in Google Developer long-response playback, repeats
 queued before the commit begins can still be heard.
 
