@@ -65,7 +65,7 @@ class HandoffEvidence:
         return dict(turn)
 
     def result_origin(self, call_id, action, native_id):
-        """Snapshot only a native tool parent's evidence belonging to this action."""
+        """Return the live native parent record only while it belongs to this action."""
         state = self.state(call_id)
         turn = state["turns"].get(native_id)
         if not turn or turn.get("owner_action_id") not in (None, action["id"]):
@@ -73,7 +73,7 @@ class HandoffEvidence:
         if action.get("handoff") and (state["active"] != action["id"] or state.get("origin_id") != native_id):
             return None
         turn["owner_action_id"] = action["id"]
-        return dict(turn)
+        return turn
 
     def event(self, event, native_id=None):
         call_id = event.get("call_id")

@@ -15307,7 +15307,9 @@ class Engine:
                 return
             if etype == "DeferredTransferArmed":
                 action_id = event.get("action_id")
-                if event.get("origin_already_spoken") and event.get("success") and action_id:
+                from .core.transfer_handoff import origin_spoke_handoff
+                if (event.get("success") and action_id
+                        and origin_spoke_handoff(event.get("origin") or {}, event.get("message") or "")):
                     # The parent may have finished before the tool armed the transfer.
                     # There will be no reply-turn audio completion to start the drain.
                     if not self._deferred_transfer_commit_in_flight(call_id, action_id):

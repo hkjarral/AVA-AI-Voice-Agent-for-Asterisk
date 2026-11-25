@@ -587,7 +587,7 @@ async def test_grok_native_tool_execution_preserves_private_handoff_until_wire(m
 
 
 @pytest.mark.parametrize("configured", [False, True], ids=["default", "configured"])
-@pytest.mark.parametrize("sequence", ["tool-first", "speech-first", "slow-tool", "paced", "filler", "interrupted", "interrupted-at-send", "failed"])
+@pytest.mark.parametrize("sequence", ["tool-first", "speech-first", "slow-tool", "paced", "filler", "interrupted", "interrupted-at-send", "interrupted-at-notification", "failed"])
 async def test_grok_blind_transfer_result_and_drain(configured, sequence, monkeypatch):
     from src.config import GrokProviderConfig
     from src.tools.adapters.grok import GrokToolAdapter
@@ -618,6 +618,11 @@ async def test_grok_blind_transfer_result_and_drain(configured, sequence, monkey
     monkeypatch.setattr(deferred_transfer, "commit_pending_deferred_transfer", commit)
 
     async def on_event(event):
+        if (sequence == "interrupted-at-notification"
+                and event["type"] in {"DeferredTransferArmed", "HandoffToolResultSent"}):
+            # Model a caller interruption while the result callback awaits admission.
+            await asyncio.sleep(0)
+            await provider.handle_local_barge_in()
         await engine.on_provider_event(event)
         if event["type"] == "AgentAudioDone":
             # Let both the tool task and any premature commit run before response finalization.

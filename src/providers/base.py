@@ -57,7 +57,6 @@ class AIProviderInterface(ABC):
         if not isinstance(action, dict) or not self.on_event:
             return
         origin = self._handoff_evidence.result_origin(call_id, action, origin_id) if success and origin_id else None
-        spoken = bool(origin and origin_spoke_handoff(origin, result["message"]))
         if not action.get("handoff"):
             # No announcement bounds the wait for the reply turn that commits
             # this action, so let the engine time it from here: the model has
@@ -68,17 +67,20 @@ class AIProviderInterface(ABC):
             flags["result_sent"] = True
             await self.on_event({"type": "DeferredTransferArmed", "call_id": call_id,
                                  "action_id": action.get("id"), "success": success,
-                                 **({"origin_already_spoken": True} if spoken else {})})
+                                 **({"origin": origin, "message": result["message"]} if origin else {})})
             if flags["caller_speaking"]:
                 await self.emit_caller_speech(call_id, started=True)  # Still talking.
-            return spoken
+            origin = self._handoff_evidence.result_origin(call_id, action, origin_id) if success and origin_id else None
+            return bool(origin and origin_spoke_handoff(origin, result["message"]))
         event = {"type": "HandoffToolResultSent", "call_id": call_id,
                  "action_id": action["id"], "sent_at": time.monotonic(), "success": success}
         if origin:
-            # The parent can be interrupted after preparation, while its result is in flight.
+            # Keep this in-process record live across the engine's session lookup.
+            # Caller interruption must be visible when it admits the notification.
             event["origin"] = origin
         await self.on_event(event)
-        return spoken
+        origin = self._handoff_evidence.result_origin(call_id, action, origin_id) if success and origin_id else None
+        return bool(origin and origin_spoke_handoff(origin, result["message"]))
 
     async def emit_caller_speech(self, call_id, *, started):
         """Report a provider VAD caller-speech start or end to the engine.
