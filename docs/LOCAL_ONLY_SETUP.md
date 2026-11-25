@@ -181,9 +181,12 @@ and venv at the same paths, without requiring uv or host Python. Both stages
 point Python TLS at Ubuntu's maintained CA bundle. Native GPU
 inference still requires the NVIDIA driver/toolkit and separate hardware testing.
 
-#### v7.7.4 dependency and GPU compatibility
+<a id="v774-dependency-and-gpu-compatibility"></a>
 
-Rebuild installed Local AI images with the original backend flags to receive
+#### v7.7.5 dependency and GPU compatibility
+
+The dependency set introduced in v7.7.4 remains in v7.7.5. Rebuild installed
+Local AI images with the original backend flags when upgrading from an older image to receive
 Torch 2.13.0, TorchAudio 2.11.0, Transformers 5.10.1 and Hugging Face Hub 1.27.0.
 Both Dockerfiles constrain optional installs to the shared pins. MeloTTS includes
 SoXR for its BERT path, and the existing T-one source revision is adapted to Hub
@@ -196,7 +199,7 @@ packaging checks cover installed versions, imports, cuDNN loading, resampling
 and llama.cpp linkage on a CPU runner. They do not establish physical-GPU
 inference or compatibility with every installed NVIDIA driver. Preserve your
 previous image/model set and qualify the selected hardware/backends before
-rollout. The [v7.7.4 matrix](baselines/golden/v7.7.4-validation-matrix.md) records
+rollout. The [v7.7.5 matrix](baselines/golden/v7.7.5-validation-matrix.md) records
 existing evidence and the maintainer's waiver of additional deployment, runtime,
 live-call and upgrade testing only. Required CI, image and security checks remain
 mandatory publication gates; this waiver does not satisfy or waive them.

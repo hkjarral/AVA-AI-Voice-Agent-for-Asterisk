@@ -2,7 +2,94 @@
 
 This guide covers upgrading between releases of Asterisk AI Voice Agent.
 
-For changes currently under review, see [Upcoming Admin API changes](#upcoming-admin-api-changes).
+Read the release-specific compatibility and recovery notes before upgrading.
+The [Admin API changes](#upcoming-admin-api-changes) apply from v7.7.5.
+
+## v7.7.4 to v7.7.5
+
+Use the [v7.7.5 upgrade procedure](INSTALLATION.md#upgrade-to-v775-existing-checkout)
+after the tag and artifacts are published. Stop new admissions, drain calls and
+replace Engine and Admin UI together. Update the host CLI/updater and installed
+Local AI application images with their original profiles; keep models, managed
+credentials, configuration overlays and intentionally stopped services. Hard-refresh
+Admin UI so an old client does not interpret the new credential/API shapes.
+
+- **Call History and private state.** Take coherent snapshots of the actual
+  configured Agent/History stores and integration/privacy state before upgrade.
+  Call History now uses transactional migration bookkeeping, retries concurrent
+  startup and can keep recording compatible columns after an optional migration
+  fails. Required privacy/erasure guards still fail closed. This is not a reason
+  to skip backups or remove the Calendly marker. See [integration backups](INTEGRATION_BACKUPS.md).
+- **Provider/model catalogs.** Explicit operator model/voice pins remain; new
+  provider defaults and optional workflows change. Use the [catalog compatibility
+  guide](Provider-Catalog-Updates.md) and its account/credential qualification
+  limits. Google Extended Thinking has tool restrictions; a setup/API pass is
+  not telephone-call acceptance. Install Kokoro voice/G2P assets before selecting
+  those languages. Retain original Local AI backend flags and model volumes.
+- **CPU Local AI security.** Rebuild installed CPU profiles to receive the
+  `libzstd1` fix for CVE-2026-124851. Both builder/runtime explicitly install it
+  and fail below `1.5.7+dfsg-1+deb13u1`, while retaining glibc/zlib floors. A stale
+  security mirror blocks the build. This does not patch Bookworm services, GPU
+  images or vendored Python dependencies. See [CPU package floors](LOCAL_ONLY_SETUP.md#cpu-image-security-updates).
+- **Inbound inactivity fallback.** Hangup remains the default. An Agent can
+  explicitly route timeout handling to a scoped extension, queue or ring group;
+  changes apply to new calls. Outbound opt-in still hangs up. A missing or deleted
+  destination never fuzzy-matches another route; uncertain handoffs are not
+  replayed and can require PBX inspection. See [Agent controls](AGENTS.md#inbound-inactivity-fallback).
+- **Fax and short acoustic bursts.** Confirmed inbound fax redirects preserve the
+  caller while AVA releases its resources; transferred status does not prove fax
+  reception. Short raw acoustic bursts preserve inbound inactivity budget rather
+  than repeatedly renewing it. Sustained speech and recognized caller turns retain
+  protection. See [FreePBX fax routing](FreePBX-Integration-Guide.md).
+- **Grok calls.** A zero-audio cancelled greeting can retry once after quiet within
+  its original recovery window; a real caller/new response wins. Deferred blind
+  transfer skips duplicate speech only for the same completed, uninterrupted
+  full handoff sentence and still waits for caller-facing audio drain.
+- **Docker cleanup API.** `POST /api/system/docker/prune` returns HTTP 202 and
+  `{job}`, replacing the old synchronous success response. Poll GET on the same
+  route for active/latest progress; reload reconnects to the job. Do not submit a
+  new deletion to recover a lost response. Volumes are protected; timeouts and
+  nonzero exits retain partial results rather than claiming full reclamation.
+  See [cleanup API](contributing/api-reference.md#docker-cleanup-jobs).
+- **Rollback.** Retain the previous coherent image/configuration/database set.
+  Restore compatible Engine/Admin/Local AI together and restore the intended
+  inactivity behavior before downgrading: older engines do not implement fallback.
+  Do not persist signed credential placeholders as real secrets or send the new
+  presence-object API format to an older client/server. Downgrading does not
+  reverse a fax/transfer, cleanup deletion or external side effect. Review the
+  original schema/privacy contracts before restoring old database snapshots.
+
+The maintainer approved a fresh [v7.7.5-only testing waiver](baselines/golden/v7.7.5-validation-matrix.md#scoped-acceptance-of-existing-evidence).
+Live fax, fallback/watchdog, Grok transfer and Docker cleanup gaps remain explicit.
+Required CI, image/security checks and review are not waived. The previous
+security exception does not carry forward. The maintainer separately approved the
+[fresh v7.7.5-only exception](baselines/golden/v7.7.5-validation-matrix.md#approved-v775-only-exception),
+with release-maintainer remediation review due November 29, 2026 or before the
+following stable tag, whichever comes first. The maintainer separately authorized
+merge after final checks/reviews and tag publication only after exact-main
+verification; release workflow/artifact verification remains required.
+Supported trains remain 7.7.x and 7.6.x.
+
+<a id="upcoming-admin-api-changes"></a>
+
+### Admin API and credential compatibility
+
+- Environment clients reading `GET /api/config/env` receive `{"set": true}` for a populated credential and `{"set": false}` for an empty one. An absent variable can still be absent from the response. Read ordinary settings as strings. To preserve a credential, omit it from the patch or echo its presence object. To replace it, send the new string in `POST /api/config/env`. Send JSON `null` to delete a credential. The API rejects the legacy `__DELETE__` string for credentials. Credential file paths remain editable as ordinary strings. If the configuration or credential-reference store cannot be read, the Environment page shows presence for every value. You can still replace or clear a setting while repairing the configuration.
+- Tool and webhook URLs show only their scheme, host and port. Leave a stored URL untouched to keep it, or replace the entire URL. A URL supplied by an environment variable can have no visible origin. Raw Configuration uses signed placeholders for saved values. Renaming, cloning or reordering can preserve a stored credential at its saved destination while the value remains current. Enter a new credential when changing the destination. Reload the editor after a signing-key change. AVA masks passwords in connection URLs. Prompts, greetings, descriptions, lead variables and call metadata otherwise contain operator-supplied text. AVA does not scan that text for arbitrary credentials. Store credentials in their designated fields. Environment settings are classified by name and by password userinfo in connection URLs. Within Agent prompt and greeting text, a space after `«secret:` denotes a literal label, such as `«secret: example»`.
+- To repair a damaged `config/ai-agent.local.yaml`, open **Raw Configuration → Repair override**. The editor retains simple settings it can mask safely. For an ambiguous document, enter a complete replacement override, or `{}` to use the shipped defaults. Saving requires confirmation, validates the resulting configuration and backs up the damaged bytes. Concurrent edits require a reload. For a damaged shipped `config/ai-agent.yaml`, repair that file on the server and reload.
+- Switch backup scripts from `GET /api/config/export` to `POST /api/config/export` with a valid bearer session and the current operator password in the JSON body. Read the password from a protected input. The optional `include_secrets=true` query parameter adds the environment file. Treat every downloaded ZIP as sensitive because operator YAML may also contain credentials. A rejected password returns HTTP 401 and repeated failures can return HTTP 429 with a retry time.
+
+### Login origins and lockout recovery
+
+Behind a reverse proxy, set `AAVA_TRUSTED_PROXIES` to the IP addresses or CIDRs of the proxies that supply the client address. With it unset, login uses the socket peer. If a same-host proxy connects from `127.0.0.1`, every client shares that origin. Once the administrator signs in, strangers using that proxy can also attempt the account’s password during protected mode. Five failures lock the shared account and origin for 15 minutes.
+
+For that topology, configure the proxy to supply the correct `X-Forwarded-For` chain, set `AAVA_TRUSTED_PROXIES=127.0.0.1` and recreate the Admin UI container to load the setting. Uvicorn’s redirects and access logs use `AAVA_TRUSTED_PROXIES` when set, otherwise `FORWARDED_ALLOW_IPS` or its default `127.0.0.1`.
+
+Twenty failed logins to one account within 15 minutes put it in protected mode for 15 minutes. The account can still sign in from an address it used successfully in the past 30 days, subject to that account and address pair’s own five-failure limit. On first login, from a new address, or after 30 days without a successful login from that address, repeated batches of 20 failures every 15 minutes can keep the administrator locked out. Export password retries are counted separately for each signed-in session.
+
+1. Try a known origin, or use a separately configured recovery administrator.
+2. If neither is available, restrict access to the Admin UI to your management connection. Run `docker restart admin_ui` from the host to clear the in-memory limits and preserve the accounts. Sign in before reopening access.
+3. If you also lost the password, follow the host password recovery procedure. [Password Management](../admin_ui/UI_Setup_Guide.md#password-management)
 
 ## v7.7.3 to v7.7.4
 
@@ -74,26 +161,9 @@ Required CI/security checks remain mandatory. The approved
 records the remaining findings, exposure controls and release-maintainer
 remediation review due 2026-11-29 or before the next stable tag, whichever comes
 first. This is not package remediation, and the historical v7.7.3 approval is not
-carried forward. The v7.7.4 tag remains held for separate authorization.
-
-## Upcoming Admin API changes
-
-- Environment clients reading `GET /api/config/env` receive `{"set": true}` for a populated credential and `{"set": false}` for an empty one. An absent variable can still be absent from the response. Read ordinary settings as strings. To preserve a credential, omit it from the patch or echo its presence object. To replace it, send the new string in `POST /api/config/env`. Send JSON `null` to delete a credential. The API rejects the legacy `__DELETE__` string for credentials. Credential file paths remain editable as ordinary strings. If the configuration or credential-reference store cannot be read, the Environment page shows presence for every value. You can still replace or clear a setting while repairing the configuration.
-- Tool and webhook URLs show only their scheme, host and port. Leave a stored URL untouched to keep it, or replace the entire URL. A URL supplied by an environment variable can have no visible origin. Raw Configuration uses signed placeholders for saved values. Renaming, cloning or reordering can preserve a stored credential at its saved destination while the value remains current. Enter a new credential when changing the destination. Reload the editor after a signing-key change. AVA masks passwords in connection URLs. Prompts, greetings, descriptions, lead variables and call metadata otherwise contain operator-supplied text. AVA does not scan that text for arbitrary credentials. Store credentials in their designated fields. Environment settings are classified by name and by password userinfo in connection URLs. Within Agent prompt and greeting text, a space after `«secret:` denotes a literal label, such as `«secret: example»`.
-- To repair a damaged `config/ai-agent.local.yaml`, open **Raw Configuration → Repair override**. The editor retains simple settings it can mask safely. For an ambiguous document, enter a complete replacement override, or `{}` to use the shipped defaults. Saving requires confirmation, validates the resulting configuration and backs up the damaged bytes. Concurrent edits require a reload. For a damaged shipped `config/ai-agent.yaml`, repair that file on the server and reload.
-- Switch backup scripts from `GET /api/config/export` to `POST /api/config/export` with a valid bearer session and the current operator password in the JSON body. Read the password from a protected input. The optional `include_secrets=true` query parameter adds the environment file. Treat every downloaded ZIP as sensitive because operator YAML may also contain credentials. A rejected password returns HTTP 401 and repeated failures can return HTTP 429 with a retry time.
-
-### Login origins and lockout recovery
-
-Behind a reverse proxy, set `AAVA_TRUSTED_PROXIES` to the IP addresses or CIDRs of the proxies that supply the client address. With it unset, login uses the socket peer. If a same-host proxy connects from `127.0.0.1`, every client shares that origin. Once the administrator signs in, strangers using that proxy can also attempt the account’s password during protected mode. Five failures lock the shared account and origin for 15 minutes.
-
-For that topology, configure the proxy to supply the correct `X-Forwarded-For` chain, set `AAVA_TRUSTED_PROXIES=127.0.0.1` and recreate the Admin UI container to load the setting. Uvicorn’s redirects and access logs use `AAVA_TRUSTED_PROXIES` when set, otherwise `FORWARDED_ALLOW_IPS` or its default `127.0.0.1`.
-
-Twenty failed logins to one account within 15 minutes put it in protected mode for 15 minutes. The account can still sign in from an address it used successfully in the past 30 days, subject to that account and address pair’s own five-failure limit. On first login, from a new address, or after 30 days without a successful login from that address, repeated batches of 20 failures every 15 minutes can keep the administrator locked out. Export password retries are counted separately for each signed-in session.
-
-1. Try a known origin, or use a separately configured recovery administrator.
-2. If neither is available, restrict access to the Admin UI to your management connection. Run `docker restart admin_ui` from the host to clear the in-memory limits and preserve the accounts. Sign in before reopening access.
-3. If you also lost the password, follow the host password recovery procedure. [Password Management](../admin_ui/UI_Setup_Guide.md#password-management)
+carried forward. v7.7.4 was subsequently published from `329661ea`; its
+[release record](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v7.7.4)
+records the later tag authorization and artifact verification.
 
 ## v7.7.2 to v7.7.3
 

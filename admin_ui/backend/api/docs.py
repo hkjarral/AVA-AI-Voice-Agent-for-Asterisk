@@ -36,9 +36,10 @@ DOC_CATEGORIES = {
         "icon": "🔌",
         "description": "Configure AI service providers",
         "docs": [
-            {"file": "Provider-OpenAI-Setup.md", "title": "OpenAI Realtime", "description": "GPT-4o Realtime integration"},
+            {"file": "Provider-Catalog-Updates.md", "title": "Provider Catalog Updates", "description": "Model/voice compatibility, migration and qualification limits"},
+            {"file": "Provider-OpenAI-Setup.md", "title": "OpenAI Realtime", "description": "Native realtime audio and tool setup"},
             {"file": "Provider-Deepgram-Setup.md", "title": "Deepgram", "description": "Deepgram Voice Agent setup"},
-            {"file": "Provider-Google-Setup.md", "title": "Google Live", "description": "Google Cloud Speech integration"},
+            {"file": "Provider-Google-Setup.md", "title": "Google Live", "description": "Gemini Live and Vertex AI setup"},
             {"file": "Provider-ElevenLabs-Setup.md", "title": "ElevenLabs", "description": "Premium voice synthesis"},
         ]
     },

@@ -120,8 +120,8 @@ For end-user and operator documentation, see the parent [/docs](../) directory:
 
 ## 📅 Project Status
 
-- **Latest Stable Version:** 7.7.4 after publication
-- **Current published version during preparation:** 7.7.3 (see the [roadmap](../ROADMAP.md))
+- **Latest Stable Version:** 7.7.5 after publication
+- **Current published version during preparation:** 7.7.4 (see the [roadmap](../ROADMAP.md))
 - **Active Branch:** `main` (feature branches → PR to `main`)
 - **Roadmap:** See [/docs/ROADMAP.md](../ROADMAP.md)
 - **Community Features:** GitHub Issues + Discussions

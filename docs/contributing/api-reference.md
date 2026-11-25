@@ -386,6 +386,8 @@ curl -H "Authorization: Bearer your-token" http://localhost:15000/reload -X POST
 - Engine source: [`src/engine.py`](../../src/engine.py)
 - Configuration: [`src/config.py`](../../src/config.py)
 
+<a id="docker-cleanup-jobs"></a>
+
 ### Docker cleanup jobs
 
 Docker Services polls cleanup status every two seconds and reconnects on navigation

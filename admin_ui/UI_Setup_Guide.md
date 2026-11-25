@@ -1,6 +1,6 @@
 # Admin UI Setup Guide
 
-**Applies to**: v7.7.4 (Admin UI introduced in v4.4.1)
+**Applies to**: v7.7.5 (Admin UI introduced in v4.4.1)
 
 **Last reviewed**: November 2026
 **Quick Start**: 5 minutes to get running
@@ -30,7 +30,7 @@ their immediate behavior. Tool hot reload affects new calls; process changes
 still need an explicit restart.
 See the [Admin UI guide](../docs/ADMIN_UI_GUIDE.md),
 [Tools guide](Tools_Setup_Guide.md), [Agents rollout](../docs/AGENTS_EXPERIENCE_ROLLOUT.md)
-and [upgrade instructions](../docs/INSTALLATION.md#upgrade-to-v774-existing-checkout).
+and [upgrade instructions](../docs/INSTALLATION.md#upgrade-to-v775-existing-checkout).
 
 ## 🚀 Quick Start (Docker)
 
@@ -38,7 +38,7 @@ and [upgrade instructions](../docs/INSTALLATION.md#upgrade-to-v774-existing-chec
 
 ### 1. Start the Admin UI
 
-From a v7.7.4 checkout:
+From a v7.7.5 checkout:
 
 ```bash
 # From the project root; review preflight findings before proceeding.
@@ -92,7 +92,7 @@ configuration. Saved incomplete setup resumes at the first-call step; unsaved
 connection, provider and model selections survive a refresh within the same tab.
 Unsaved greeting, AI name, AI role and Kokoro voice are not retained; keys/passwords
 must be reentered. “Configuration saved” and “First call verified” are separate states.
-The guided first-call flow introduced in v7.7.2 is available in v7.7.4.
+The guided first-call flow introduced in v7.7.2 is available in v7.7.5.
 
 ---
 
@@ -401,7 +401,7 @@ If you've been using `install.sh` and the Agent CLI, the Admin UI works alongsid
 
 1. **Follow the supported upgrade and backup procedure**:
 
-   Read the [Installation and Upgrade Guide](../docs/INSTALLATION.md#upgrade-to-v774-existing-checkout),
+   Read the [Installation and Upgrade Guide](../docs/INSTALLATION.md#upgrade-to-v775-existing-checkout),
    especially when upgrading from v7.3.0–v7.3.3 or when the updater reports
    `Failed to compute update plan`. Preserve configuration and local overlays,
    `.env`, managed secrets and the actual configured Agent/Call History databases
@@ -787,21 +787,18 @@ echo $! > admin_ui.pid
 
 ### Backup Recommendations
 
-**Before making changes**:
-```bash
-# Backup configuration
-cp config/ai-agent.yaml config/ai-agent.yaml.$(date +%Y%m%d)
-cp .env .env.$(date +%Y%m%d)
+Before upgrade, take a private recovery set following [integration backups](../docs/INTEGRATION_BACKUPS.md).
+Use coherent snapshots of the actual configured Agent/Call History/integration
+SQLite stores, retain privacy markers, managed secrets, `config/users.json`, `.env`
+and local overrides. A configuration-only archive is not a complete state backup.
+Use owner-only directories/files and verify every required snapshot before rollout.
 
-# Backup user data
-cp config/users.json config/users.json.$(date +%Y%m%d)
-```
-
-**Automated backup** (add to crontab):
-```bash
-# Daily backup at 2 AM
-0 2 * * * cd /path/to/project && tar czf backups/config-$(date +\%Y\%m\%d).tar.gz config/ .env
-```
+Admin configuration downloads require the signed-in operator's current password
+in a POST request; ordinary credential reads expose only stored-state projections.
+See [backup API and login recovery](../docs/MIGRATION.md#upcoming-admin-api-changes).
+Keep downloaded ZIPs sensitive even without `include_secrets=true`: operator YAML
+and arbitrary business text can still contain credentials. Do not use signed
+editor placeholders as substitutes for a private restorable credential backup.
 
 ---
 

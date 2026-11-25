@@ -4,7 +4,7 @@ The Admin UI is a web-based interface for configuring, monitoring, and managing 
 
 ## Quick Start
 
-For v7.7.4, read [migration](MIGRATION.md#v773-to-v774),
+For v7.7.5, read [migration](MIGRATION.md#v774-to-v775),
 [Agents workspace](AGENTS_EXPERIENCE_ROLLOUT.md), and [integration backups](INTEGRATION_BACKUPS.md).
 Hard-refresh after rebuilding Admin UI. Agents now use searchable cards/list,
 a routed four-section editor and changed-field saves. Visual avatars do not
@@ -18,11 +18,31 @@ steps for [Calendly](Calendly-calendar-tool.md), [Pushover](Pushover.md),
 Preview/verification is not a booking/send; explicitly approved setup tests can
 create real external effects.
 
-For a fresh install, follow the [v7.7.4 installer](INSTALLATION.md#path-a-admin-ui-setup-wizard-recommended)
+For a fresh install, follow the [v7.7.5 installer](INSTALLATION.md#path-a-admin-ui-setup-wizard-recommended)
 and [first-call walkthrough](FIRST_CALL.md). The installer prepares and starts
 Admin UI at port 3003. Engine startup and PBX routing follow in the wizard.
 
 **First login**: a one-time password is printed to the admin_ui logs on first start (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`); you must change it at first login. `admin`/`admin` no longer works.
+
+## v7.7.5 credential and cleanup changes
+
+Stored credentials display **Stored** rather than their old value. Leave them
+untouched to preserve them; use Replace for a new credential or complete tool URL.
+Moving to a different destination requires a new credential. Raw Configuration
+uses signed placeholders: reload after a signing-key change and use the explicit
+repair flow for a damaged local override. Download backups with your current
+operator password and keep ZIPs private. See [API and login recovery](MIGRATION.md#upcoming-admin-api-changes).
+
+Docker Services cleanup runs in the background. Select build cache or unused
+images, start once, and follow its progress and per-step results. Reloading the
+page reconnects; a second request shares an active cleanup. A timeout/error can
+include completed steps and unknown reclaimed space. Disk refresh failures are
+separate from cleanup results; reconcile status before starting another deletion.
+The job does not prune volumes. See [cleanup API/recovery](contributing/api-reference.md#docker-cleanup-jobs).
+
+Agents → Advanced → Caller Inactivity Overrides can select a scoped inbound
+fallback destination. Hangup remains the default, outbound behavior is unchanged,
+and Save affects new calls. See [inbound inactivity fallback](AGENTS.md#inbound-inactivity-fallback).
 
 ## Pages Overview
 

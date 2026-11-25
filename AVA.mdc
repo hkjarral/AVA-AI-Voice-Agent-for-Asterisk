@@ -16,7 +16,7 @@ You do not need to understand the whole codebase or already know Git to get help
 Try: “Read AVA.mdc. I want to [understand / build / fix / investigate] ___. Help me
 through the relevant steps and explain unfamiliar terms.”
 
-> Reviewed for v7.7.4 preparation against `main` cutoff `15cc1e7e` on 2026-11-22.
+> Reviewed for v7.7.5 preparation against `main` cutoff `408407d4` on 2026-11-25.
 > Check the actual checkout and deployed revision before relying on any behavior.
 
 ## Assistant: Establish Context First
@@ -93,11 +93,18 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
 
 ### Architecture Contracts
 
+- **Admin credentials and cleanup:** reads expose credential presence/projections;
+  signed placeholders retain credentials only at their saved destination. Backup
+  exports require the current operator password. Trust login proxy origins
+  explicitly. Docker cleanup is an asynchronous, persisted job; a lost response
+  requires status reconciliation rather than replay. See [v7.7.5 migration](docs/MIGRATION.md#v774-to-v775)
+  and [cleanup API](docs/contributing/api-reference.md#docker-cleanup-jobs).
+
 - **Local speech:** Sherpa offline supports the documented SenseVoice export,
   language and ITN controls. Model switches own apply/verification/rollback;
   environment edits can require container recreation. Shared Torch/Transformers
   pins constrain optional installs; CUDA packaging checks do not prove hardware
-  inference. See [Local AI compatibility](docs/LOCAL_ONLY_SETUP.md#v774-dependency-and-gpu-compatibility).
+  inference. See [Local AI compatibility](docs/LOCAL_ONLY_SETUP.md#v775-dependency-and-gpu-compatibility).
 - **Batch transcription:** Admin's optional [speech facade](docs/OpenAI-Compatible-Transcription.md)
   uses independent Basic/Bearer credentials and bounded private FFmpeg decoding.
   It bridges to one killable Local AI worker, with live-call setup priority and
