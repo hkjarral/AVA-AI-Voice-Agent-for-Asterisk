@@ -633,3 +633,133 @@ async def test_grok_farewell_boundaries_and_transfer_priority(provider, user_tex
     await provider._track_conversation("assistant", "Goodbye!")
     updated = await provider._session_store.get_by_call_id(provider._call_id)
     assert updated.cleanup_after_tts is expected
+
+
+async def _start_greeting_at_pickup(provider):
+    provider.websocket = _RecordingWebSocket()
+    await provider._send_explicit_greeting()
+    await provider._handle_event({"type": "response.created", "response": {"id": "greeting"}})
+    await provider._handle_event({"type": "input_audio_buffer.speech_started"})
+    return provider.websocket
+
+
+def _greeting_requests(ws):
+    return [event["response"] for event in ws.parsed_events() if event["type"] == "response.create"]
+
+
+@pytest.mark.asyncio
+async def test_pickup_noise_retries_silent_greeting_once_after_quiet(provider, monkeypatch):
+    monkeypatch.setattr(provider, "_GREETING_QUIET_SECONDS", 0.015)
+    ws = await _start_greeting_at_pickup(provider)
+    try:
+        await provider._handle_event({"type": "response.done", "response": {"id": "greeting", "status": "cancelled"}})
+        await asyncio.sleep(0.04)
+        assert len(_greeting_requests(ws)) == 1  # The caller still owns the turn.
+        await provider._handle_event({"type": "input_audio_buffer.speech_stopped"})
+        await asyncio.wait_for(provider._greeting_retry_task, timeout=1)
+        first, retry = _greeting_requests(ws)
+        assert first == retry
+        await provider._handle_event({"type": "response.created", "response": {"id": "retry"}})
+        await provider._handle_event({"type": "response.done", "response": {"id": "retry", "status": "cancelled"}})
+        await asyncio.sleep(0.04)
+        assert len(_greeting_requests(ws)) == 2
+    finally:
+        await provider.stop_session()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("signal", ["answer_started", "caller_transcript", "caller_still_speaking", "hangup", "reconnect"])
+async def test_silent_greeting_yields_to_immediate_caller_or_teardown(provider, monkeypatch, signal):
+    monkeypatch.setattr(provider, "_GREETING_QUIET_SECONDS", 0.01)
+    monkeypatch.setattr(provider, "_GREETING_RECOVERY_SECONDS", 0.05)
+    ws = await _start_greeting_at_pickup(provider)
+    try:
+        await provider._handle_event({"type": "response.done", "response": {"id": "greeting", "status": "cancelled"}})
+        if signal != "caller_still_speaking":
+            await provider._handle_event({"type": "input_audio_buffer.speech_stopped"})
+        if signal == "answer_started":
+            await provider._handle_event({"type": "response.created", "response": {"id": "answer"}})
+            await provider._handle_event({"type": "response.done", "response": {"id": "answer", "status": "completed"}})
+        elif signal == "caller_transcript":
+            await provider._handle_event({
+                "type": "conversation.item.input_audio_transcription.completed", "transcript": "Are you open today?",
+            })
+        elif signal == "hangup":
+            await provider.stop_session()
+        elif signal == "reconnect":
+            new_ws = _RecordingWebSocket()
+            monkeypatch.setattr("src.providers.grok.websockets.connect", AsyncMock(return_value=new_ws))
+            monkeypatch.setattr(provider, "_receive_loop", AsyncMock())
+            monkeypatch.setattr(provider, "_keepalive_loop", AsyncMock())
+            await provider._reconnect_with_backoff()
+        await asyncio.sleep(0.08)
+        assert len(_greeting_requests(ws)) == 1
+        if signal == "reconnect":
+            assert not _greeting_requests(new_ws)
+    finally:
+        await provider.stop_session()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,with_audio", [("cancelled", True), ("failed", False), ("completed", False)])
+async def test_greeting_recovery_only_for_silent_cancellation(provider, status, with_audio):
+    ws = await _start_greeting_at_pickup(provider)
+    try:
+        if with_audio:
+            await provider._handle_event({
+                "type": "response.output_audio.delta", "delta": base64.b64encode(b"\xff" * 160).decode("ascii"),
+            })
+        await provider._handle_event({"type": "response.done", "response": {"id": "greeting", "status": status}})
+        assert provider._greeting_retry_task is None
+        assert len(_greeting_requests(ws)) == 1
+    finally:
+        await provider.stop_session()
+
+
+@pytest.mark.asyncio
+async def test_caller_already_answered_during_session_ack_gets_no_late_greeting(provider):
+    provider.websocket = ws = _RecordingWebSocket()
+    await provider._handle_event({"type": "response.created", "response": {"id": "first-answer"}})
+    await provider._handle_event({"type": "response.done", "response": {"id": "first-answer", "status": "completed"}})
+    await provider._send_explicit_greeting()
+    assert not _greeting_requests(ws)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["quiet", "caller_speaking", "noise_burst", "new_response", "deadline"])
+async def test_greeting_retry_rechecks_call_after_waiting_for_send_lock(provider, monkeypatch, change):
+    ws = await _start_greeting_at_pickup(provider)
+    monkeypatch.setattr(provider, "_GREETING_QUIET_SECONDS", 0.02)
+    budget = 0.10 if change in {"deadline", "caller_speaking"} else 5.0
+    monkeypatch.setattr(provider, "_GREETING_RECOVERY_SECONDS", budget)
+
+    # Signal exactly when the recovery is queued, before any competing event.
+    waiting = asyncio.Event()
+
+    class ObservedLock(asyncio.Lock):
+        async def acquire(self):
+            if self.locked():
+                waiting.set()
+            return await super().acquire()
+
+    provider._send_lock = ObservedLock()
+    try:
+        async with provider._send_lock:
+            await provider._handle_event({"type": "response.done", "response": {"id": "greeting", "status": "cancelled"}})
+            await provider._handle_event({"type": "input_audio_buffer.speech_stopped"})
+            await asyncio.wait_for(waiting.wait(), timeout=1)
+            if change in {"caller_speaking", "noise_burst"}:
+                await provider._handle_event({"type": "input_audio_buffer.speech_started"})
+                if change == "noise_burst":
+                    await provider._handle_event({"type": "input_audio_buffer.speech_stopped"})
+            elif change == "new_response":
+                await provider._handle_event({"type": "response.created", "response": {"id": "answer"}})
+            elif change == "deadline":
+                await asyncio.sleep(budget)
+        result, = await asyncio.gather(provider._greeting_retry_task, return_exceptions=True)
+        assert result is None or isinstance(result, asyncio.CancelledError)
+        assert len(_greeting_requests(ws)) == (2 if change in {"quiet", "noise_burst"} else 1)
+        if change == "new_response":
+            assert provider._greeting_response_id != "answer"
+    finally:
+        await provider.stop_session()
