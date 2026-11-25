@@ -7,6 +7,8 @@ import { ConfigCard } from '../../components/ui/ConfigCard';
 import axios from 'axios';
 import { ApiErrorInfo, buildDockerAccessHints, describeApiError } from '../../utils/apiErrors';
 
+import { useDockerCleanup } from '../../hooks/useDockerCleanup';
+
 interface ContainerInfo {
     id: string;
     name: string;
@@ -51,7 +53,7 @@ const DockerPage = () => {
     const [toasts, setToasts] = useState<Toast[]>([]);
     const [diskUsage, setDiskUsage] = useState<DiskUsage | null>(null);
     const [diskLoading, setDiskLoading] = useState(false);
-    const [pruning, setPruning] = useState(false);
+    const [diskError, setDiskError] = useState(false);
     const [expandedMounts, setExpandedMounts] = useState<Record<string, boolean>>({});
 
     const mountSourceLabel = (m: MountInfo) => {
@@ -76,10 +78,12 @@ const DockerPage = () => {
 
     const fetchDiskUsage = async () => {
         setDiskLoading(true);
+        setDiskError(false);
         try {
-            const res = await axios.get('/api/system/docker/disk-usage');
+            const res = await axios.get('/api/system/docker/disk-usage', { timeout: 65000 });
             setDiskUsage(res.data);
         } catch (err: any) {
+            setDiskError(true);
             console.error('Failed to fetch Docker disk usage', err);
         } finally {
             setDiskLoading(false);
@@ -88,41 +92,20 @@ const DockerPage = () => {
 
     const { confirm } = useConfirmDialog();
 
-    const handlePrune = async (type: 'build_cache' | 'images' | 'all') => {
-        const message = type === 'all' 
-            ? 'This will clean up build cache and unused images. Continue?' 
-            : type === 'build_cache'
-                ? 'This will clear the Docker build cache. Builds will take longer next time but this is safe. Continue?'
-                : 'This will remove unused Docker images. Continue?';
-        
+    const cleanup = useDockerCleanup(() => { void fetchDiskUsage(); });
+    const pruning = cleanup.busy;
+
+    const handlePrune = async (type: 'build_cache' | 'images') => {
+        if (pruning) return;
         const confirmed = await confirm({
-            title: type === 'all' ? 'Clean All?' : type === 'build_cache' ? 'Clean Build Cache?' : 'Clean Unused Images?',
-            description: message,
+            title: type === 'build_cache' ? 'Clean Build Cache?' : 'Clean Unused Images?',
+            description: type === 'build_cache'
+                ? 'This will clear unused Docker build cache. Future builds may take longer. Continue?'
+                : 'This will remove Docker images unused by any container. Continue?',
             confirmText: 'Clean',
             variant: 'destructive'
         });
-        if (!confirmed) return;
-
-        setPruning(true);
-        try {
-            const res = await axios.post('/api/system/docker/prune', {
-                prune_build_cache: type === 'build_cache' || type === 'all',
-                prune_images: type === 'images' || type === 'all',
-                prune_containers: type === 'all',
-                prune_volumes: false  // Never auto-prune volumes
-            });
-            
-            if (res.data.success) {
-                showToast(`Cleanup complete: ${res.data.space_reclaimed || 'Space freed'}`, 'success');
-                fetchDiskUsage();
-            } else {
-                showToast('Cleanup failed', 'error');
-            }
-        } catch (err: any) {
-            showToast('Cleanup failed: ' + (err.response?.data?.detail || err.message), 'error');
-        } finally {
-            setPruning(false);
-        }
+        if (confirmed) await cleanup.start(type);
     };
 
     const fetchContainers = async () => {
@@ -214,6 +197,22 @@ const DockerPage = () => {
             {/* Docker Disk Usage Section */}
             <ConfigSection title="Docker Disk Usage" description="Monitor and clean up Docker storage to prevent disk space issues.">
                 <ConfigCard className="p-4">
+                    {cleanup.error && <p role="alert" className="text-sm text-destructive mb-3">{cleanup.error}</p>}
+                    {cleanup.job && (
+                        <div role="status" className="text-sm space-y-1 mb-4">
+                            <p>Cleanup {cleanup.job.status.replace('_', ' ')} · {Math.floor(cleanup.job.elapsed_seconds)}s elapsed</p>
+                            {cleanup.job.status === 'running' && <p>Large cleanups can take up to {cleanup.job.timeout_seconds / 60} minutes.</p>}
+                            {cleanup.job.steps.map(step => (
+                                <p key={step.resource}>
+                                    {({ build_cache: 'Build cache', images: 'Unused images', containers: 'Stopped containers' } as Record<string, string>)[step.resource]} — {step.status.replace('_', ' ')}
+                                    {step.reclaimed ? ` · ${step.reclaimed} reclaimed` : step.status !== 'pending' && step.status !== 'running' ? ' · Reclaimed space unavailable' : ''}
+                                </p>
+                            ))}
+                            {cleanup.job.error && <p className="text-destructive">{cleanup.job.error}</p>}
+                        </div>
+                    )}
+                    {diskError && <p role="alert" className="text-sm text-destructive mb-3">Disk usage refresh failed. Displayed values may be outdated.</p>}
+
                     {diskLoading && !diskUsage ? (
                         <div className="text-center py-4 text-muted-foreground">Loading disk usage...</div>
                     ) : diskUsage ? (
@@ -296,12 +295,7 @@ const DockerPage = () => {
                                 </button>
                             </div>
                             
-                            {pruning && (
-                                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                    <RefreshCw className="w-4 h-4 animate-spin" />
-                                    Cleaning up Docker resources...
-                                </div>
-                            )}
+
                         </div>
                     ) : (
                         <div className="text-center py-4 text-muted-foreground">

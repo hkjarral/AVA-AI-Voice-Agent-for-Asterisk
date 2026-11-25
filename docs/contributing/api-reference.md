@@ -88,7 +88,8 @@ curl -H "Authorization: Bearer eyJ..." \
 | GET | `/api/system/directories` | Check directory health |
 | POST | `/api/system/directories/fix` | Fix directory permissions |
 | GET | `/api/system/docker/disk-usage` | Get Docker disk usage |
-| POST | `/api/system/docker/prune` | Clean up Docker resources |
+| POST | `/api/system/docker/prune` | Start or attach to cleanup, returning HTTP 202 and `{job}` |
+| GET | `/api/system/docker/prune` | Read the active or most recent cleanup as `{job}` |
 | GET | `/api/system/platform` | Get platform detection results |
 | POST | `/api/system/preflight` | Run preflight checks |
 | POST | `/api/system/test-ari` | Test Asterisk ARI connection |
@@ -384,3 +385,29 @@ curl -H "Authorization: Bearer your-token" http://localhost:15000/reload -X POST
 - Architecture deep dive: [`architecture-deep-dive.md`](architecture-deep-dive.md)
 - Engine source: [`src/engine.py`](../../src/engine.py)
 - Configuration: [`src/config.py`](../../src/config.py)
+
+### Docker cleanup jobs
+
+Docker Services polls cleanup status every two seconds and reconnects on navigation
+or reload. Cache cleanup selects only unused build cache. Image cleanup selects
+only images unused by containers. Volumes are protected by API validation.
+Existing API clients must consume the asynchronous `{job}` response in place of
+waiting for the former synchronous `success` response. Stopped-container cleanup
+remains available through `prune_containers`. Empty selections are rejected.
+
+One cleanup worker owns a shared file lock and atomically journals the latest job
+under `data/operator/docker-cleanup/`. A short submission lock serializes creation
+across API processes. Request disconnects and API restarts leave the worker running.
+If the worker and Docker CLI disappear during a container restart, the next status
+read marks unfinished work interrupted. Cleanup is never automatically replayed.
+The Docker CLI inherits the operation lock so a surviving CLI keeps ownership if
+the worker exits unexpectedly. All deployments sharing a Docker daemon must share
+this operator state directory to coordinate cleanup.
+
+The cleanup budget is 15 minutes across selected steps. Nonzero exits and timeouts
+stop subsequent steps. Each step reports its state and Docker's measured reclaimed
+space when available. A missing total means unknown, including partial deletion
+before a failure. A timeout kills and reaps the CLI. Docker may still be finishing
+deletions on the daemon, so refresh usage before choosing to retry. Disk usage is
+queried separately with bounded commands off the API event loop. Its failure leaves
+the cleanup result intact and the page labels displayed usage as potentially stale.
