@@ -27,6 +27,51 @@ beforeEach(() => {
 });
 
 describe('Agent settings', () => {
+    it.each(['deleted', 'disabled'])('allows unrelated saves when the fallback is %s', async unavailable => {
+        const originalGet = vi.mocked(axios.get).getMockImplementation()!;
+        vi.mocked(axios.get).mockImplementation((url, config) => String(url).endsWith('/yaml')
+            ? Promise.resolve({ data: { content: `providers:\n  managed:\n    type: elevenlabs_agent\n    enabled: true\ntools:\n  transfer:\n    enabled: ${unavailable !== 'disabled'}\n    destinations: {}\n` } })
+            : originalGet(url, config));
+        const savedFallback = { ...agent, extra_json: JSON.stringify({
+            no_input: { timeout_action: 'transfer', fallback_destination: 'sales' },
+        }) };
+        render(<AgentForm isOpen agent={savedFallback} onClose={vi.fn()} onSaved={vi.fn()} />);
+        await userEvent.click(screen.getByRole('button', { name: 'Female' }));
+        await userEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+        await waitFor(() => expect(axios.patch).toHaveBeenCalledWith('/api/agents/sales', { avatar_preset: 'female' }));
+    });
+
+    it('rejects an unavailable fallback when its settings change', async () => {
+        const savedFallback = { ...agent, extra_json: JSON.stringify({
+            no_input: { timeout_action: 'transfer', fallback_destination: 'deleted' },
+        }) };
+        render(<AgentForm isOpen agent={savedFallback} initialSection="advanced" onClose={vi.fn()} onSaved={vi.fn()} />);
+        await userEvent.click(screen.getByText('Caller Inactivity Overrides'));
+        await userEvent.type(screen.getByLabelText('Transfer message'), 'Please hold.');
+        await userEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+        expect(axios.patch).not.toHaveBeenCalled();
+    });
+
+    it('saves inbound fallback settings without enabling an AI transfer tool', async () => {
+        vi.mocked(axios.get).mockImplementation(async url => ({ data: String(url).endsWith('/yaml')
+            ? { content: 'providers:\n  managed:\n    type: elevenlabs_agent\n    enabled: true\ntools:\n  transfer:\n    destinations:\n      sales:\n        type: queue\n        target: "600"\n' }
+            : String(url).endsWith('/meta') ? { providers: [] }
+            : { tools: [{ name: 'hangup_call', phase: 'in_call', source: 'builtin' }] } }));
+        const saved = vi.fn();
+        render(<AgentForm isOpen agent={agent} initialSection="advanced" onClose={vi.fn()} onSaved={saved} />);
+        await userEvent.click(screen.getByText('Caller Inactivity Overrides'));
+        await userEvent.selectOptions(screen.getByLabelText('Inbound timeout action'), 'transfer');
+        await userEvent.selectOptions(screen.getByLabelText('Fallback destination'), 'sales');
+        expect(screen.getByLabelText('Transfer message')).toBeVisible();
+        expect(screen.queryByLabelText('Final Message')).not.toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+        await waitFor(() => expect(saved).toHaveBeenCalledOnce());
+        const payload = vi.mocked(axios.patch).mock.calls[0][1] as Record<string, unknown>;
+        const extra = JSON.parse(payload.extra_json as string);
+        expect(extra.no_input).toEqual({ initial_timeout_sec: 42, timeout_action: 'transfer', fallback_destination: 'sales' });
+        expect(extra.future_setting).toEqual({ keep: true });
+        expect(payload.tools_json).toBeUndefined();
+    });
     it.each([true, false])('shows loading instead of zero counts until the catalog resolves (has tools: %s)', async hasTools => {
         let complete!: (response: { data: { tools: { name: string; phase: string; source: string }[] } }) => void;
         const pending = new Promise<{ data: { tools: { name: string; phase: string; source: string }[] } }>(resolve => { complete = resolve; });

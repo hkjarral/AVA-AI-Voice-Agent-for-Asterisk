@@ -81,6 +81,34 @@ class SessionStore:
         async with self._lock:
             return self._sessions_by_call_id.get(call_id)
 
+    async def claim_no_input_transfer(self, session: CallSession, changes: dict) -> bool:
+        """Atomically claim the timeout action after asynchronous validation."""
+        async with self._lock:
+            action = session.current_action or {}
+            if (self._sessions_by_call_id.get(session.call_id) is not session
+                    or session.cleanup_in_progress or session.cleanup_completed
+                    or getattr(session, "transfer_active", False)
+                    or getattr(session, "transfer_state", None)
+                    or session.transfer_destination
+                    or (isinstance(action, dict) and action.get("type") in {
+                        "attended_transfer", "predial_transfer", "blind_transfer",
+                        "queue_transfer", "ring_group_transfer", "voicemail",
+                    })):
+                return False
+            for name in ("transfer_active", "transfer_state", "transfer_target"):
+                setattr(session, name, changes[name])
+            return True
+
+    async def restore_no_input_transfer(self, session: CallSession, previous: dict) -> bool:
+        """An explicit rejection releases only this call's timeout handoff."""
+        async with self._lock:
+            if (self._sessions_by_call_id.get(session.call_id) is not session
+                    or getattr(session, "transfer_state", None) != "no_input_fallback"):
+                return False
+            for name in ("transfer_active", "transfer_state", "transfer_target"):
+                setattr(session, name, previous[name])
+            return True
+
     async def append_tool_call_if_active(self, call_id: str, record: dict) -> bool:
         """Append history only while the call is registered, under one lock."""
         return await self.append_tool_call_and_bind_deferred_origin_if_active(

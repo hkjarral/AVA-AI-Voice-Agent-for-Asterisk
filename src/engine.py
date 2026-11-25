@@ -1515,6 +1515,11 @@ class Engine:
             override = getattr(context_config, "no_input", None) if context_config else None
             if isinstance(override, dict):
                 merged.update({k: v for k, v in override.items() if v is not None})
+            # Routing is per-agent and inbound-only; it never inherits globally.
+            merged["timeout_action"] = (
+                override.get("timeout_action", "hangup")
+                if isinstance(override, dict) and not session.is_outbound else "hangup"
+            )
             # Outbound protection is intentionally per-agent/context opt-in.
             # A global outbound_enabled value must never change active campaigns.
             if bool(getattr(session, "is_outbound", False)):
@@ -11332,7 +11337,10 @@ class Engine:
             # Determine call outcome based on session state
             call_outcome = str(getattr(session, "call_outcome", "") or "").strip() or "caller_hangup"
             try:
-                if getattr(session, "voicemail_handoff_outcome", None) in {"pending", "indeterminate"}:
+                if (session.no_input_state.get("action_result") in {"pending", "indeterminate"}
+                        and getattr(session, "transfer_active", False)):
+                    call_outcome = "error"  # Handoff was not confirmed before cleanup.
+                elif getattr(session, "voicemail_handoff_outcome", None) in {"pending", "indeterminate"}:
                     call_outcome = "error"
                 elif call_outcome == "caller_hangup" and self._session_was_transferred(session):
                     call_outcome = "transferred"
@@ -15527,8 +15535,8 @@ class Engine:
             # Provider transport died mid-call (e.g. Google Live WebSocket 1008/1011).
             # Avoid dead air by terminating the call promptly (or allow future live-agent routing).
             if etype == "ProviderDisconnected":
-                if session.caller_stasis_ended or session.fax_handoff:
-                    return  # The caller has left AVA; cleanup owns provider teardown.
+                if session.caller_stasis_ended or self._session_was_transferred(session):
+                    return  # Transfer or cleanup owns caller teardown.
                 provider = event.get("provider") or session.provider_name
                 code = event.get("code")
                 reason = event.get("reason")
@@ -15540,7 +15548,7 @@ class Engine:
                     reason=reason,
                 )
                 await self._stop_connection_audio(session, reason="provider-disconnected")
-                if session.caller_stasis_ended or session.fax_handoff:
+                if session.caller_stasis_ended or self._session_was_transferred(session):
                     return
                 google_disconnect_drain = bool(self._google_long_audio_provider(session))
                 if not google_disconnect_drain:
@@ -15549,6 +15557,9 @@ class Engine:
                         await self._save_session(session)
                     except Exception:
                         logger.debug("Failed to mark provider_session_active=false", call_id=call_id, exc_info=True)
+
+                if session.caller_stasis_ended or self._session_was_transferred(session):
+                    return  # Persistence may have yielded to a transfer owner.
 
                 if google_disconnect_drain:
                     # Do not block the provider's serial event dispatcher during
@@ -15587,7 +15598,7 @@ class Engine:
                     logger.debug("Provider-disconnect fallback playback failed", call_id=call_id, exc_info=True)
 
                 # Hang up immediately to avoid long dead-air stretches.
-                if session.caller_stasis_ended or session.fax_handoff:
+                if session.caller_stasis_ended or self._session_was_transferred(session):
                     return
                 try:
                     await self.ari_client.hangup_channel(session.caller_channel_id)
@@ -17462,13 +17473,18 @@ class Engine:
                 )
 
     async def _hangup_for_no_input(self, call_id: str) -> None:
-        """Record the terminal reason, then use normal ARI/Stasis cleanup."""
+        """Commit the captured inactivity policy once after announcement drain."""
         session = await self.session_store.get_by_call_id(call_id)
-        if not session:
+        if not session or session.cleanup_in_progress:
             return
         if self._session_was_transferred(session) or self._session_has_pending_attended_transfer(session):
             logger.info("No-input hangup skipped during transfer", call_id=call_id)
             return
+        if await self._no_input_should_pause(call_id):
+            return
+        if session.no_input_state.get("terminal_action_started"):
+            return
+        session.no_input_state["terminal_action_started"] = True
         session.call_outcome = "no_input_timeout"
         session.no_input_state.update(
             {
@@ -17477,6 +17493,11 @@ class Engine:
             }
         )
         await self._save_session(session)
+        if (not session.is_outbound and not session.external_platform
+                and session.no_input_policy.get("timeout_action") == "transfer"):
+            transferred = await self._transfer_for_no_input(session)
+            if transferred:
+                return
         logger.info(
             "Hanging up inactive caller",
             call_id=call_id,
@@ -17491,6 +17512,102 @@ class Engine:
             # _speak_no_input_announcement already completed the transport drain.
             audio_already_drained=True,
         )
+
+    async def _transfer_for_no_input(self, session: CallSession) -> bool:
+        """Reuse guarded blind handoff without exposing or invoking an LLM tool."""
+        from .core.no_input_fallback import fallback_destination
+        from .tools.context import ToolExecutionContext
+        from .tools.telephony.unified_transfer import UnifiedTransferTool
+
+        key = session.no_input_policy.get("fallback_destination", "")
+        state = session.no_input_state
+        state.update({"timeout_action": "transfer", "fallback_destination": key, "action_result": "pending"})
+        config = self._tool_config_for_session(session)
+        try:
+            destination = fallback_destination(config, key)
+        except (ValueError, TypeError, AttributeError):
+            state["action_result"] = "unavailable"
+            return False
+        current = await self.session_store.get_by_call_id(session.call_id)
+        if current is not session or session.cleanup_in_progress or self._session_was_transferred(session):
+            return True  # Another lifecycle owner won; never follow with hangup.
+        tool = UnifiedTransferTool()
+        context = ToolExecutionContext(
+            call_id=session.call_id, caller_channel_id=session.caller_channel_id,
+            session_store=self.session_store, ari_client=self.ari_client, config=config,
+        )
+        transfer_config = (config.get("tools") or {}).get("transfer") or {}
+        state["handoff_context"] = tool._resolve_dialplan_context(destination["type"], destination, transfer_config)
+        state["handoff_extension"] = str(destination["target"])
+        try:
+            result = await asyncio.wait_for(tool._continue_to_dialplan(
+                context=context,
+                target=str(destination["target"]),
+                description=str(destination.get("description") or key),
+                transfer_type=destination["type"],
+                dialplan_context=state["handoff_context"],
+                transfer_state="no_input_fallback",
+                claim_ownership=lambda changes: self.session_store.claim_no_input_transfer(session, changes),
+                release_ownership=lambda previous: self.session_store.restore_no_input_transfer(session, previous),
+            ), timeout=10.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            result = {"status": "failed", "handoff_indeterminate": bool(getattr(session, "transfer_active", False))}
+        current = await self.session_store.get_by_call_id(session.call_id)
+        if current is not session or session.cleanup_in_progress:
+            return True  # Never act on a replacement or a cleanup-owned caller.
+        if result.get("status") == "success":
+            state["action_result"] = "handed_off"
+            if not session.cleanup_in_progress:
+                session.call_outcome = "transferred"
+            return True
+        if result.get("ownership_lost"):
+            state["action_result"] = "superseded"
+            return True
+        if result.get("handoff_indeterminate"):
+            state["action_result"] = "indeterminate"
+            session.call_outcome = "error"
+            logger.warning("Inactivity handoff indeterminate; retaining caller ownership guard", call_id=session.call_id)
+            self._fire_and_forget_for_call(
+                session.call_id, self._reconcile_no_input_handoff(session), name=f"no-input-reconcile-{session.call_id}",
+            )
+            return True
+        state["action_result"] = "rejected"
+        return False
+
+    async def _reconcile_no_input_handoff(self, session: CallSession) -> None:
+        """Observe an uncertain request without replaying it or deleting the caller."""
+        for _ in range(3):
+            await asyncio.sleep(0.5)
+            if await self.session_store.get_by_call_id(session.call_id) is not session or session.cleanup_in_progress:
+                return
+            try:
+                channel = await asyncio.wait_for(self.ari_client.send_command(
+                    "GET", f"channels/{session.caller_channel_id}", tolerate_statuses=[404],
+                ), timeout=0.5)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                continue
+            if await self.session_store.get_by_call_id(session.call_id) is not session or session.cleanup_in_progress:
+                return
+            if not isinstance(channel, dict):
+                continue
+            if channel.get("status") == 404:
+                await self._cleanup_call(session.call_id)
+                return
+            dp = channel.get("dialplan") or {}
+            state = session.no_input_state
+            if (channel.get("id") == session.caller_channel_id
+                    and dp.get("context") == state.get("handoff_context")
+                    and dp.get("exten") == state.get("handoff_extension")
+                    and str(dp.get("app_name") or "").lower() not in {"", "stasis"}):
+                state["action_result"] = "confirmed_by_lookup"
+                session.call_outcome = "transferred"
+                await self._cleanup_call(session.call_id)
+                return
+        logger.warning("Inactivity handoff unresolved; manual PBX inspection required", call_id=session.call_id)
 
     def _as_to_pcm16_16k(self, audio_bytes: bytes) -> bytes:
         """Convert AudioSocket inbound bytes to PCM16 @ 16 kHz for pipeline STT.

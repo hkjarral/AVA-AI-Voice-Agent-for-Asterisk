@@ -1,9 +1,27 @@
 import { describe, expect, it } from 'vitest';
 
-import { transferDestinationsFromConfig } from './agentToolInventory';
+import { transferDestinationsFromConfig, inactivityFallbackDestinations } from './agentToolInventory';
 
 
 describe('Agent transfer destination inventory', () => {
+    it.each([0, '0'])('keeps operator extension %s available for inactivity fallback', target => {
+        const destinations = transferDestinationsFromConfig({ operator: { type: 'extension', target } });
+        expect(inactivityFallbackDestinations(destinations, 'inherit', [])).toEqual([
+            expect.objectContaining({ key: 'operator', target: '0' }),
+        ]);
+    });
+
+    it('limits inactivity fallback to supported destinations within the agent scope', () => {
+        const destinations = transferDestinationsFromConfig({
+            reception: { type: 'queue', target: '600' },
+            internal: { type: 'extension', target: '100' },
+            dialer: { type: 'vicidial_ingroup', target: 'sales' },
+        });
+        expect(inactivityFallbackDestinations(destinations, 'selected', ['reception']).map(d => d.key)).toEqual(['reception']);
+        expect(inactivityFallbackDestinations(destinations, 'none', [])).toEqual([]);
+        expect(inactivityFallbackDestinations(destinations, 'future-policy', [])).toEqual([]);
+        expect(inactivityFallbackDestinations(destinations, 'inherit', []).map(d => d.key)).toEqual(['reception', 'internal']);
+    });
     it('exposes only executable object destinations', () => {
         expect(transferDestinationsFromConfig({
             sales_queue: null,
