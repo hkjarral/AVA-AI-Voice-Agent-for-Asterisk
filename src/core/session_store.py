@@ -99,6 +99,16 @@ class SessionStore:
                 setattr(session, name, changes[name])
             return True
 
+    async def restore_no_input_transfer(self, session: CallSession, previous: dict) -> bool:
+        """An explicit rejection releases only this call's timeout handoff."""
+        async with self._lock:
+            if (self._sessions_by_call_id.get(session.call_id) is not session
+                    or getattr(session, "transfer_state", None) != "no_input_fallback"):
+                return False
+            for name in ("transfer_active", "transfer_state", "transfer_target"):
+                setattr(session, name, previous[name])
+            return True
+
     async def append_tool_call_if_active(self, call_id: str, record: dict) -> bool:
         """Append history only while the call is registered, under one lock."""
         return await self.append_tool_call_and_bind_deferred_origin_if_active(

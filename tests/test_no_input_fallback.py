@@ -148,3 +148,21 @@ async def test_reconciliation_observes_target_without_reissuing_transfer():
     engine._cleanup_call.assert_awaited_once_with(session.call_id)
     engine.ari_client.continue_in_dialplan.assert_awaited_once()
     engine._terminate_call_after_audio.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejected_response_cannot_restore_flags_or_hang_up_a_replacement_call():
+    engine, session = await setup_call()
+    replacement = CallSession(call_id=session.call_id, caller_channel_id=session.call_id)
+    replacement.transfer_active = True
+    replacement.transfer_state = "other-owner"
+
+    async def replace_during_request(*args, **kwargs):
+        await engine.session_store.upsert_call(replacement)
+        return False
+
+    engine.ari_client.continue_in_dialplan.side_effect = replace_during_request
+    await engine._hangup_for_no_input(session.call_id)
+    assert replacement.transfer_active is True
+    assert replacement.transfer_state == "other-owner"
+    engine._terminate_call_after_audio.assert_not_awaited()

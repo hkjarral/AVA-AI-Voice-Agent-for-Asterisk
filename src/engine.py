@@ -17545,11 +17545,15 @@ class Engine:
                 dialplan_context=state["handoff_context"],
                 transfer_state="no_input_fallback",
                 claim_ownership=lambda changes: self.session_store.claim_no_input_transfer(session, changes),
+                release_ownership=lambda previous: self.session_store.restore_no_input_transfer(session, previous),
             ), timeout=10.0)
         except asyncio.CancelledError:
             raise
         except Exception:
             result = {"status": "failed", "handoff_indeterminate": bool(getattr(session, "transfer_active", False))}
+        current = await self.session_store.get_by_call_id(session.call_id)
+        if current is not session or session.cleanup_in_progress:
+            return True  # Never act on a replacement or a cleanup-owned caller.
         if result.get("status") == "success":
             state["action_result"] = "handed_off"
             if not session.cleanup_in_progress:

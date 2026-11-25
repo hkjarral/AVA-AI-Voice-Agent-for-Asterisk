@@ -699,6 +699,7 @@ class UnifiedTransferTool(Tool):
         dialplan_context: str,
         transfer_state: str,
         claim_ownership: Optional[Callable[[dict], Awaitable[bool]]] = None,
+        release_ownership: Optional[Callable[[dict], Awaitable[bool]]] = None,
     ) -> Dict[str, Any]:
         """Validate and hand caller ownership to a concrete dialplan target."""
         priority = 1
@@ -805,7 +806,11 @@ class UnifiedTransferTool(Tool):
         restore_ownership = handed_off is False
         if restore_ownership:
             try:
-                await context.update_session(**previous_transfer_state)
+                if release_ownership is not None:
+                    if not await release_ownership(previous_transfer_state):
+                        return {"status": "failed", "ownership_lost": True}
+                else:
+                    await context.update_session(**previous_transfer_state)
             except Exception:
                 logger.error(
                     "Failed to restore transfer ownership after unconfirmed handoff",
