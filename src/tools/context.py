@@ -82,6 +82,7 @@ class ToolExecutionContext:
     detected_intent: Optional[str] = None
     confidence: Optional[float] = None
     tool_call_id: Optional[str] = None  # Upstream invocation ID; private runtime metadata
+    tool_response_id: Optional[str] = None  # Native parent response, when available
 
     @staticmethod
     def is_pending_attended_transfer(session: Any) -> bool:

@@ -148,6 +148,8 @@ class UnifiedTransferTool(Tool):
         )
 
         if transfer_deferral_enabled(context):
+            if source_tool == "blind_transfer" and context.tool_response_id:
+                action["_tool_response_id"] = context.tool_response_id
             await self._maybe_start_predial_transfer(context, action)
             await store_pending_deferred_transfer(context, action)
             return build_deferred_transfer_result(

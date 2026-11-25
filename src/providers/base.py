@@ -49,7 +49,7 @@ class AIProviderInterface(ABC):
             await self.on_event({"type": "HandoffPrepared", "call_id": call_id,
                                  "action_id": action["id"], "origin": origin})
 
-    async def handoff_result_sent(self, result, call_id, *, success=True):
+    async def handoff_result_sent(self, result, call_id, *, success=True, origin_already_spoken=False):
         action = result.get("deferred_transfer") if isinstance(result, dict) else None
         if not isinstance(action, dict) or not self.on_event:
             return
@@ -62,7 +62,8 @@ class AIProviderInterface(ABC):
             flags = self._handoff_evidence.deferred_flags(call_id)
             flags["result_sent"] = True
             await self.on_event({"type": "DeferredTransferArmed", "call_id": call_id,
-                                 "action_id": action.get("id"), "success": success})
+                                 "action_id": action.get("id"), "success": success,
+                                 **({"origin_already_spoken": True} if origin_already_spoken else {})})
             if flags["caller_speaking"]:
                 await self.emit_caller_speech(call_id, started=True)  # Still talking.
             return
@@ -106,22 +107,27 @@ class AIProviderInterface(ABC):
         if self._handoff_evidence.state(call_id)["active"] and self.on_event:
             await self.on_event(enriched)
 
-    async def flush_handoff_pacer(self):
+    async def flush_handoff_pacer(self, *, transfer_parent=False):
         """Admit the selected response's remaining bytes before sealing it.
 
-        Only used for an opted-in announcement. The transport already paces
+        Used for an opted-in announcement or a known transfer parent. The transport already paces
         queued audio; don't leave bytes in a provider pacer after completion.
         """
         call_id = getattr(self, "_call_id", None)
-        if not call_id or not self._handoff_evidence.state(call_id)["active"] or not getattr(self, "_egress_pacer_enabled", False):
+        if not call_id or not getattr(self, "_egress_pacer_enabled", False):
+            return True
+        if not transfer_parent and not self._handoff_evidence.state(call_id)["active"]:
             return True
         self._pacer_running = False
         task = getattr(self, "_pacer_task", None)
         if task and not task.done() and task is not asyncio.current_task():
-            try:
-                await asyncio.wait_for(asyncio.shield(task), 0.25)
-            except asyncio.TimeoutError:
+            # A segment-end event may have already cancelled the pacer. Waiting
+            # on its termination must not cancel the provider receive loop.
+            _, pending = await asyncio.wait({task}, timeout=0.25)
+            if pending:
                 return False
+            if not task.cancelled():
+                task.result()
         async with self._pacer_lock:
             tail = bytes(self._outbuf)
             self._outbuf.clear()

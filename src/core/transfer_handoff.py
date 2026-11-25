@@ -16,6 +16,13 @@ def normalized_words(text: str) -> str:
     return " ".join("".join(c if c.isalnum() else " " for c in unicodedata.normalize("NFKC", text).casefold()).split())
 
 
+def origin_spoke_handoff(origin: dict, message: str) -> bool:
+    text = normalized_words(origin.get("text", ""))
+    sentence = normalized_words(message)
+    return bool(sentence and f"{text} ".startswith(f"{sentence} ") and origin.get("completed")
+                and origin.get("started_at") is not None and not origin.get("interrupted"))
+
+
 @dataclass
 class Announcement:
     action_id: str
@@ -42,12 +49,6 @@ class Announcement:
         self.cancelled = True
         self.changed.set()
 
-    def _origin_satisfied(self) -> bool:
-        text = normalized_words(self.origin.get("text", ""))
-        sentence = normalized_words(self.config["message"])
-        return bool(sentence and f"{text} ".startswith(f"{sentence} ") and self.origin.get("completed")
-                    and self.origin.get("started_at") is not None and not self.origin.get("interrupted"))
-
     def observe(self, event: dict) -> None:
         if self.cancelled or self.sealed:
             return
@@ -64,7 +65,7 @@ class Announcement:
         turn_id = evidence.get("id")
         if turn_id and turn_id == self.origin_id:
             self.origin.update(evidence)
-        if self.sent_at is not None and self._origin_satisfied():
+        if self.sent_at is not None and origin_spoke_handoff(self.origin, self.config["message"]):
             self.seal("origin_sentence_matched")
             return
         started = evidence.get("started_at")

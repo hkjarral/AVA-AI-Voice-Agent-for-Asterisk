@@ -20,6 +20,7 @@ import os
 import time
 import uuid
 import audioop
+from functools import partial
 from typing import Any, Dict, Optional, List
 
 import websockets
@@ -37,6 +38,7 @@ from ..audio import (
     resample_audio,
     resolve_output_resampler_policy,
 )
+from ..core.transfer_handoff import origin_spoke_handoff
 from ..config import GrokProviderConfig
 from ..utils.voice_catalog import GROK_BUILTIN_IDS
 
@@ -789,6 +791,21 @@ class GrokProvider(AIProviderInterface):
                 timeout_s=timeout,
             )
 
+    async def _blind_transfer_result_sent(self, result, call_id, *, success, origin_id):
+        """Decide about a second turn only after the function output is on the wire."""
+        state = self._handoff_evidence.state(call_id)
+        origin = state["turns"].get(origin_id, {})
+        action = result["deferred_transfer"]
+        action_id = action["id"]
+        same_action = origin.get("owner_action_id") in (None, action_id)
+        if action.get("handoff"):
+            same_action = state["active"] == action_id and state.get("origin_id") == origin_id
+        spoken = bool(success and same_action and origin_spoke_handoff(origin, result["message"]))
+        if spoken:
+            origin["owner_action_id"] = action_id
+        await self.handoff_result_sent(result, call_id, success=success, origin_already_spoken=spoken)
+        return spoken
+
     async def _handle_function_call(self, event_data: Dict[str, Any]):
         """
         Handle function call request from Grok Voice Agent API.
@@ -860,6 +877,15 @@ class GrokProvider(AIProviderInterface):
             # _await_parent_response_done for the full rationale).
             await self.prepare_handoff_result(result, self._call_id, handoff_origin)
             context["handoff_result_sent"] = self.handoff_result_sent
+            action = result.get("deferred_transfer")
+            parent_id = event_data.get("response_id")
+            if (
+                parent_id and tool_registry.canonicalize_tool_name(function_name) == "blind_transfer"
+                and result.get("status") == "success" and isinstance(action, dict)
+                and action.get("source_tool") == "blind_transfer" and action.get("id")
+                and result.get("message") and result.get("ai_should_speak", True)
+            ):
+                context["handoff_result_sent"] = partial(self._blind_transfer_result_sent, origin_id=parent_id)
 
             await self._await_parent_response_done(event_data, function_name=function_name)
 
@@ -1579,6 +1605,9 @@ class GrokProvider(AIProviderInterface):
     async def handle_local_barge_in(self) -> int:
         """Flush provider-side egress after AVA's local VAD interrupts playback."""
         dropped = 0
+        response_id = self._current_response_id or self._assistant_audio_response_id
+        if response_id:
+            self._handoff_evidence.turn(self._call_id, response_id)["interrupted"] = True
         self._drop_output_until_next_response = True
         try:
             async with self._pacer_lock:
@@ -1617,6 +1646,7 @@ class GrokProvider(AIProviderInterface):
             await self.on_event(
                 {
                     "type": "ProviderBargeIn",
+                    "audio_response_id": self._current_response_id or self._assistant_audio_response_id,
                     "call_id": self._call_id,
                     "provider": self.provider_event_name(),
                     "event": event_type,
@@ -2036,25 +2066,11 @@ class GrokProvider(AIProviderInterface):
             return
 
         if event_type in ("response.completed", "response.error", "response.cancelled", "response.done"):
-            response_status = (event.get("response") or {}).get("status")
-            if event_type in {"response.error", "response.cancelled"} or response_status in {"cancelled", "failed", "incomplete"}:
-                self.interrupt_handoff(self._call_id)
-            # Signal any function_call handler waiting on this response. The server
-            # commits output items to the conversation on response finalization, so
-            # this is the earliest point a function_call_output can be safely submitted.
-            # Cleanup happens here (not in the waiter) so a single response with
-            # multiple function_call items doesn't have one handler pop the sentinel
-            # before its siblings observe it.
-            try:
-                ev_resp = event.get("response") or {}
-                done_resp_id = ev_resp.get("id") or self._current_response_id
-                if done_resp_id:
-                    done_evt = self._response_done_events.pop(done_resp_id, None)
-                    if done_evt:
-                        done_evt.set()
-            except Exception:
-                logger.debug("Failed to signal response.done event", exc_info=True)
-
+            response = event.get("response") or {}
+            done_resp_id = response.get("id") or self._current_response_id
+            origin = self._handoff_evidence.turn(self._call_id, done_resp_id)
+            if event_type in {"response.error", "response.cancelled"} or response.get("status") in {"cancelled", "failed", "incomplete"}:
+                origin["interrupted"] = True
             # Track whether ANY audio was emitted during this response (not just "currently emitting").
             current_response_id = self._current_response_id
             had_audio_for_response = bool(
@@ -2067,11 +2083,24 @@ class GrokProvider(AIProviderInterface):
             # Note: Turn latency timer now starts on input_audio_buffer.speech_stopped
             # (moved from here for standardized measurement across providers)
             
-            handoff_flushed = await self.flush_handoff_pacer()
-            await self._emit_audio_done()
-            if had_audio_for_response and handoff_flushed:
-                await self.complete_handoff_audio(self._call_id, current_response_id)
-            
+            # Complete speech evidence before releasing the parent-result gate.
+            # A tool can finish while the last paced bytes or transcript are being emitted.
+            try:
+                transfer_parent = bool(origin.get("blind_transfer_parent") and done_resp_id == current_response_id)
+                if transfer_parent and origin["interrupted"]:
+                    async with self._pacer_lock:
+                        self._outbuf.clear()
+                handoff_flushed = await self.flush_handoff_pacer(transfer_parent=transfer_parent)
+                await self._emit_audio_done()
+                if (had_audio_for_response and current_response_id == done_resp_id
+                        and handoff_flushed and not self._outbuf):
+                    await self.complete_handoff_audio(self._call_id, current_response_id)
+                await self._emit_assistant_transcript(event, "", is_final=True)
+            finally:
+                done_evt = self._response_done_events.pop(done_resp_id, None)
+                if done_evt:
+                    done_evt.set()
+
             # Only emit additional audio_done if this response actually had audio output
             # This prevents premature hangup when tool responses complete (no audio yet)
             # The farewell response will emit audio_done when IT completes with audio
@@ -2184,7 +2213,6 @@ class GrokProvider(AIProviderInterface):
                 pass
 
             self._pending_response = False
-            await self._emit_assistant_transcript(event, "", is_final=True)
             self._current_response_id = None  # Clear response ID after completion
             return
 
@@ -2427,6 +2455,8 @@ class GrokProvider(AIProviderInterface):
                 # conversation on the server side. Without this, fast tools race ahead of
                 # response.done and Grok rejects the output with invalid_tool_call_id.
                 resp_id = event.get("response_id") or self._current_response_id
+                if resp_id and tool_registry.canonicalize_tool_name(function_name) == "blind_transfer":
+                    self._handoff_evidence.turn(self._call_id, resp_id)["blind_transfer_parent"] = True
                 if resp_id and resp_id not in self._response_done_events:
                     self._response_done_events[resp_id] = asyncio.Event()
                 # Track the call_id so the error handler can correlate a later
@@ -2441,7 +2471,7 @@ class GrokProvider(AIProviderInterface):
                     response_id=resp_id,
                 )
                 # Handle function call via tool adapter
-                task = asyncio.create_task(self._handle_function_call(event))
+                task = asyncio.create_task(self._handle_function_call({**event, "response_id": resp_id}))
                 task.add_done_callback(_log_provider_task_exception)
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
@@ -2611,6 +2641,7 @@ class GrokProvider(AIProviderInterface):
                     {
                         "type": "AgentAudioDone",
                         "streaming_done": True, "_handoff_complete": False,
+                        "audio_response_id": self._current_response_id,
                         "call_id": self._call_id,
                     }
                 )

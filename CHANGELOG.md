@@ -81,6 +81,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Grok sends the blind-transfer result once and skips the extra spoken turn when the parent response has already completed the handoff sentence. Transfer still waits for caller-facing playback to drain.
+
 - Persist confirmed VICIdial terminal results before retrying a late Call History write. Clearing the log file path while file logging is enabled restores the standard path.
 
 - The setup wizard resolves environment references in the ARI port and preserves credential edits made while saving. SMTP verification accepts equivalent numeric ports.
