@@ -62,6 +62,7 @@ const sanitizeNoInputOverrides = (raw: Record<string, unknown>): Record<string, 
         'enabled', 'inbound_enabled', 'outbound_enabled',
         'initial_timeout_sec', 'grace_timeout_sec', 'max_check_ins',
         'check_in_message', 'final_message',
+        'timeout_action', 'fallback_destination', 'transfer_message',
     ]);
     const unsafePassthroughKeys = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -86,6 +87,10 @@ const sanitizeNoInputOverrides = (raw: Record<string, unknown>): Record<string, 
         if (typeof value === 'string' && value.trim() && value.trim().length <= 500) {
             sanitized[key] = value.trim();
         }
+    }
+    for (const key of ['timeout_action', 'fallback_destination', 'transfer_message']) {
+        // Preserve unsupported/stale values visibly; the API remains authoritative.
+        if (typeof raw[key] === 'string' && raw[key].trim()) sanitized[key] = raw[key].trim();
     }
     return sanitized;
 };

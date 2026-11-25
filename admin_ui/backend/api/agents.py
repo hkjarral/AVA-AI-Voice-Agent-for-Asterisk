@@ -477,6 +477,27 @@ def _engine_ok(provider, extra_json) -> bool:
         extra = {}
     return bool(isinstance(extra, dict) and str(extra.get("pipeline") or "").strip())
 
+
+def _validate_agent_inactivity(data: dict) -> None:
+    """Validate restored values and the same resource scope used by new calls."""
+    from src.core.no_input_fallback import validate_fallback_policy, fallback_destination
+    from src.tools.runtime_config import resolve_agent_tool_config
+    from services.onboarding import effective_config
+    try:
+        extra = json.loads(data.get("extra_json") or "{}")
+    except (ValueError, TypeError):
+        return  # Preserve existing opaque/legacy JSON behavior.
+    raw = extra.get("no_input") if isinstance(extra, dict) else None
+    if not isinstance(raw, dict) or not {"timeout_action", "fallback_destination", "transfer_message"}.intersection(raw):
+        return
+    try:
+        validate_fallback_policy(raw)
+        if raw.get("timeout_action") == "transfer":
+            config = resolve_agent_tool_config(effective_config(), data.get("tool_configs_json")).config
+            fallback_destination(config, raw["fallback_destination"].strip())
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(422, "Invalid inactivity fallback: choose an available destination within this Agent's transfer scope and a valid message") from None
+
 @router.post("/agents", status_code=201, response_model=AgentOut)
 def create_agent(body: AgentIn, request: Request):
     try:
@@ -485,6 +506,7 @@ def create_agent(body: AgentIn, request: Request):
         raise HTTPException(422, str(exc)) from exc
     if not _engine_ok(data.get("provider"), data.get("extra_json")):
         raise HTTPException(422, "agent must have a provider or a pipeline")
+    _validate_agent_inactivity(data)
     data["provider"] = (data.get("provider") or "").strip()
     try:
         return _store_for_agent_write().create(**data)
@@ -524,6 +546,8 @@ def _apply_agent_patch(store, slug, body):
             raise HTTPException(422, "agent must have a provider or a pipeline")
     if "provider" in fields:
         fields["provider"] = (fields["provider"] or "").strip()
+    if "extra_json" in fields or "tool_configs_json" in fields:
+        _validate_agent_inactivity({**existing, **fields})
     # Write restored fields while the connection still holds its initial lock.
     # AgentsStore's public mutators commit their own transactions.
     active = fields.pop("is_active", None)

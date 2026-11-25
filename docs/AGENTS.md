@@ -17,6 +17,41 @@ Agents are managed in the Admin UI **Agents** tab and stored in `agents.db`. v7.
 
 ## Source of truth: agents.db
 
+### Inbound inactivity fallback
+
+Under **Agents → Advanced → Caller Inactivity Overrides**, choose an **Inbound
+timeout action**. **Hang up** retains the existing default. **Transfer to
+destination** requires a configured extension, queue, or ring group within this
+Agent's transfer destination scope. Configure inventory in Tools first; the
+transfer service must be enabled. This engine-owned action does not enable an
+AI-invoked transfer tool or widen the Agent's resource permissions.
+
+The fallback runs after the initial silence period, configured check-ins and
+reply grace. Caller activity during the final announcement cancels that timeout.
+Transfer mode has a separate **Transfer message**; blank uses its default and
+does not replace the Agent's saved hangup message. Save takes effect on new calls.
+Existing calls retain their captured policy and tool generation.
+
+Settings persist in `extra_json.no_input` as `timeout_action` (`hangup` or
+`transfer`), `fallback_destination` (an exact destination key), and optional
+`transfer_message` (1–500 characters). This is a per-Agent, inbound-only action;
+outbound watchdog opt-in remains supported but still ends inactive calls.
+Missing action fields and older engines retain hangup behavior. A rollback to
+an older engine does not implement the fallback, so restore the intended
+operator behavior before downgrading.
+
+Invalid settings are rejected by the UI and API. An unavailable destination or
+explicitly rejected handoff ends the call through normal cleanup. A missing key
+is never fuzzy-matched to another route. An uncertain response retains ownership
+protection: AVA does not repeat the transfer or automatically delete the caller.
+Bounded current-channel checks can confirm the target or observe channel removal;
+otherwise the engine logs that manual PBX inspection is required. A handoff that
+was still unconfirmed when cleanup froze the record reports an error, not a
+successful transfer. Call diagnostics retain the timeout action and result.
+
+Fax detection and repeated-tone watchdog hardening are separate. A fallback
+cannot run while activity keeps the watchdog from reaching its deadline.
+
 ### v7.7 workspace and integration access
 
 Searchable cards/list views lead to a routed General, Conversation, Tools and

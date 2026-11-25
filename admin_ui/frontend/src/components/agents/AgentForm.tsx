@@ -10,6 +10,7 @@ import { isFullAgentProvider } from '../../utils/providerNaming';
 import AgentToolPicker from './AgentToolPicker';
 import {
     transferDestinationsFromConfig,
+    inactivityFallbackDestinations,
     type TransferDestination,
 } from './agentToolInventory';
 import type { AgentResourceOption } from './ResourceAccessEditor';
@@ -103,6 +104,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, 
     const [catalogError, setCatalogError] = useState(false);
     const [disabledTools, setDisabledTools] = useState<Set<string>>(new Set());
     const [transferDestinations, setTransferDestinations] = useState<TransferDestination[]>([]);
+    const [fallbackTransferEnabled, setFallbackTransferEnabled] = useState(false);
     const [googleCalendars, setGoogleCalendars] = useState<AgentResourceOption[]>([]);
     const [microsoftAccounts, setMicrosoftAccounts] = useState<AgentResourceOption[]>([]);
     const [calendlyAppointments, setCalendlyAppointments] = useState<AgentResourceOption[]>([]);
@@ -188,6 +190,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, 
     }, [isOpen, agent]);
 
     const loadConfig = async () => {
+        setFallbackTransferEnabled(false);
         setTransferDestinations([]);
         setGoogleCalendars([]);
         setMicrosoftAccounts([]);
@@ -210,6 +213,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, 
             setAvailableProfiles(profileNames);
 
             const toolsBlock = (parsed.tools as Record<string, unknown>) || {};
+            setFallbackTransferEnabled((toolsBlock.transfer as Record<string, unknown> | undefined)?.enabled !== false);
             const transferBlock = (toolsBlock.transfer as Record<string, unknown>) || {};
             setTransferDestinations(
                 transferDestinationsFromConfig(transferBlock.destinations)
@@ -347,6 +351,18 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, 
         if (!toolState.provider && !toolState.pipeline) {
             toast.error('Choose an AI engine (a provider or a pipeline)'); return;
         }
+        const timeoutAction = noInputString('timeout_action') || 'hangup';
+        if (!['hangup', 'transfer'].includes(timeoutAction)) {
+            toast.error('Choose a supported inbound timeout action'); return;
+        }
+        if (timeoutAction === 'transfer' && (!fallbackTransferEnabled || !fallbackDestinations.some(
+            destination => destination.key === noInputString('fallback_destination'),
+        ))) {
+            toast.error('Choose an available fallback destination within this Agent’s transfer scope'); return;
+        }
+        if (noInputString('transfer_message').trim().length > 500) {
+            toast.error('Keep the transfer message within 500 characters'); return;
+        }
         if (
             toolState.hangupMarkerStrategy !== 'inherit'
             && !toolState.hangupEndCallMarkers.some((marker) => marker.trim())
@@ -436,6 +452,9 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, 
 
     const noInputString = (key: string): string =>
         typeof toolState.noInput[key] === 'string' ? (toolState.noInput[key] as string) : '';
+    const fallbackDestinations = inactivityFallbackDestinations(
+        transferDestinations, toolState.transferDestinationPolicy, toolState.transferDestinationKeys,
+    );
 
     const profileOptions = [
         { value: '', label: '— default —' },
@@ -880,14 +899,51 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, 
                             onChange={(e) => updateNoInputOverride('check_in_message', e.target.value)}
                             tooltip="Spoken through the selected provider or pipeline in this agent's configured voice."
                         />
-                        <FormInput
+                        <FormSelect
+                            id="agent-no-input-action"
+                            label="Inbound timeout action"
+                            value={noInputString('timeout_action') || 'hangup'}
+                            options={[
+                                { value: 'hangup', label: 'Hang up (default)' },
+                                { value: 'transfer', label: 'Transfer to destination' },
+                                ...(!['', 'hangup', 'transfer'].includes(noInputString('timeout_action'))
+                                    ? [{ value: noInputString('timeout_action'), label: 'Unsupported saved action — choose an option' }] : []),
+                            ]}
+                            onChange={e => updateNoInputOverride('timeout_action', e.target.value)}
+                            tooltip="Runs after the check-ins and reply grace are exhausted. Applies to inbound calls only; outbound inactivity behavior is unchanged. Saved changes apply to new calls."
+                        />
+                        {noInputString('timeout_action') === 'transfer' ? <>
+                            <FormSelect
+                                id="agent-no-input-destination"
+                                label="Fallback destination"
+                                value={noInputString('fallback_destination')}
+                                options={[
+                                    { value: '', label: 'Choose a destination' },
+                                    ...fallbackDestinations.map(destination => ({ value: destination.key,
+                                        label: `${destination.description || destination.key} (${destination.type}: ${destination.target})` })),
+                                    ...(noInputString('fallback_destination') && !fallbackDestinations.some(d => d.key === noInputString('fallback_destination'))
+                                        ? [{ value: noInputString('fallback_destination'), label: `${noInputString('fallback_destination')} (unavailable or outside scope)` }] : []),
+                                ]}
+                                onChange={e => updateNoInputOverride('fallback_destination', e.target.value)}
+                                tooltip="Choose a configured extension, queue or ring group permitted by this Agent’s transfer destination policy. Configure destinations in Tools. This does not enable AI-invoked transfers."
+                            />
+                            {!fallbackTransferEnabled && <p role="alert" className="text-sm text-destructive">Enable the transfer service in Tools before saving a fallback.</p>}
+                            <FormInput
+                                id="agent-no-input-transfer-message"
+                                label="Transfer message"
+                                value={noInputString('transfer_message')}
+                                placeholder="I still can't hear you. I'll transfer your call now."
+                                onChange={e => updateNoInputOverride('transfer_message', e.target.value)}
+                                tooltip="Spoken before the inbound fallback transfer. Leave blank for the default. A rejected or unavailable destination ends the call; an uncertain handoff is protected from an automatic hangup."
+                            />
+                        </> : <FormInput
                             id="agent-no-input-final"
                             label="Final Message"
                             value={noInputString('final_message')}
                             placeholder="Inherit global final message"
                             onChange={(e) => updateNoInputOverride('final_message', e.target.value)}
                             tooltip="Spoken immediately before the engine ends an inactive call."
-                        />
+                        />}
                     </div>
                 </details>
 

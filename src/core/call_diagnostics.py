@@ -235,7 +235,8 @@ def build_call_diagnostics_snapshot(
                 "tool_config_hash": _get(session, "tool_config_hash"),
                 "no_input_policy": _pick(
                     _get(session, "no_input_policy", {}),
-                    ("enabled", "initial_timeout_sec", "grace_timeout_sec", "max_check_ins"),
+                    ("enabled", "initial_timeout_sec", "grace_timeout_sec", "max_check_ins",
+                     "timeout_action", "fallback_destination"),
                 ),
             },
         }
@@ -248,6 +249,10 @@ def build_call_diagnostics_snapshot(
     resolved["pipeline_name"] = _get(session, "pipeline_name")
     resolved["pipeline_components"] = deepcopy(dict(_get(session, "pipeline_components", {}) or {}))
     resolved["allowed_tools"] = sorted(str(name) for name in (_get(session, "allowed_tools", []) or []))
+    resolved["no_input_result"] = _pick(
+        _get(session, "no_input_state", {}),
+        ("timed_out", "timeout_action", "fallback_destination", "action_result"),
+    )
 
     existing["runtime"] = {
         "media_transport_kind": _get(session, "media_transport_kind"),

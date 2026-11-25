@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Dict, Mapping, Optional
 
 import structlog
 from prometheus_client import Counter, Gauge
+from .no_input_fallback import DEFAULT_TRANSFER_MESSAGE
 
 logger = structlog.get_logger(__name__)
 
@@ -94,11 +95,16 @@ class NoInputPolicy:
     max_check_ins: int = 1
     check_in_message: str = _DEFAULT_CHECK_IN_MESSAGE
     final_message: str = _DEFAULT_FINAL_MESSAGE
+    timeout_action: str = "hangup"
+    fallback_destination: str = ""
 
     @classmethod
     def from_mapping(cls, value: Optional[Mapping[str, Any]]) -> "NoInputPolicy":
         """Build a safe policy from merged global and per-agent values."""
         raw = dict(value or {})
+        action = "transfer" if raw.get("timeout_action") == "transfer" else "hangup"
+        destination = raw.get("fallback_destination")
+        destination = destination.strip() if isinstance(destination, str) else ""
         return cls(
             enabled=_coerce_bool(raw.get("enabled", True), True),
             inbound_enabled=_coerce_bool(raw.get("inbound_enabled", True), True),
@@ -107,7 +113,12 @@ class NoInputPolicy:
             grace_timeout_sec=_coerce_float(raw.get("grace_timeout_sec", 15.0), 15.0, 1.0, 3600.0),
             max_check_ins=_coerce_int(raw.get("max_check_ins", 1), 1, 0, 10),
             check_in_message=_coerce_message(raw.get("check_in_message"), _DEFAULT_CHECK_IN_MESSAGE),
-            final_message=_coerce_message(raw.get("final_message"), _DEFAULT_FINAL_MESSAGE),
+            final_message=(
+                _coerce_message(raw.get("transfer_message"), DEFAULT_TRANSFER_MESSAGE)
+                if action == "transfer" else _coerce_message(raw.get("final_message"), _DEFAULT_FINAL_MESSAGE)
+            ),
+            timeout_action=action,
+            fallback_destination=destination,
         )
 
     def applies_to(self, *, is_outbound: bool) -> bool:
@@ -501,9 +512,9 @@ class NoInputWatchdog:
             return
 
         state.terminal = True
-        state.phase = "hangup"
-        _NO_INPUT_EVENTS.labels("hangup").inc()
-        logger.info("Caller inactivity timeout reached", call_id=state.call_id)
+        state.phase = state.policy.timeout_action
+        _NO_INPUT_EVENTS.labels(state.policy.timeout_action).inc()
+        logger.info("Caller inactivity timeout reached", call_id=state.call_id, action=state.policy.timeout_action)
         try:
             await self._hangup(state.call_id)
         except Exception:

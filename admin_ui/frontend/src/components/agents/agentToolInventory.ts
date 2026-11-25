@@ -7,6 +7,15 @@ export interface TransferDestination {
     liveAgent?: boolean;
 }
 
+export function inactivityFallbackDestinations(
+    destinations: TransferDestination[], policy: string, keys: string[],
+): TransferDestination[] {
+    return destinations.filter(destination =>
+        ['extension', 'queue', 'ringgroup'].includes(destination.type) && !!destination.target.trim()
+        && (policy === 'inherit' || (policy === 'selected' && keys.includes(destination.key))),
+    );
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
     !!value && typeof value === 'object' && !Array.isArray(value);
 
