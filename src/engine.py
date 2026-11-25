@@ -15558,6 +15558,9 @@ class Engine:
                     except Exception:
                         logger.debug("Failed to mark provider_session_active=false", call_id=call_id, exc_info=True)
 
+                if session.caller_stasis_ended or self._session_was_transferred(session):
+                    return  # Persistence may have yielded to a transfer owner.
+
                 if google_disconnect_drain:
                     # Do not block the provider's serial event dispatcher during
                     # playback drain or an attended transfer's routing decision.
