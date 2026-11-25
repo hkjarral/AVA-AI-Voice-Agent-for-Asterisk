@@ -371,3 +371,36 @@ def test_temporary_storage_failure_marks_running_step_failed(root, monkeypatch):
     assert result['status'] == 'failed'
     assert result['steps'][0]['status'] == 'failed'
     assert result['steps'][0]['error']
+
+
+@pytest.mark.asyncio
+async def test_missing_journal_with_active_lock_is_retryable(root, monkeypatch):
+    from fastapi import HTTPException
+    lock, owned = cleanup._lock(root)
+    assert owned
+    monkeypatch.setattr(cleanup.subprocess, 'Popen', lambda *a, **k: pytest.fail('active lock prevents a second worker'))
+    with lock:
+        with pytest.raises(HTTPException) as error:
+            await system.prune_docker_resources(system.PruneRequest())
+    assert error.value.status_code == 409
+
+
+def test_initial_journal_and_worker_launch_share_start_deadline(root, monkeypatch):
+    clock = {'now': 100}
+    original_write = cleanup._write
+    captured = []
+    def slow_write(root, job):
+        original_write(root, job)
+        clock['now'] = 1001
+    def spawn(command, **kwargs):
+        captured.append(command)
+        return SimpleNamespace(wait=lambda: None)
+    monkeypatch.setattr(cleanup, 'time', SimpleNamespace(time=lambda: 1000, monotonic=lambda: clock['now']))
+    monkeypatch.setattr(cleanup, '_write', slow_write)
+    monkeypatch.setattr(cleanup.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(cleanup, '_run_command', lambda *a, **k: pytest.fail('initial journal consumed the budget'))
+    cleanup.start(['images'])
+    deadline = float(captured[0][-1])
+    assert deadline == 1000
+    cleanup.run(root, 10, deadline=deadline)
+    assert cleanup.latest()['status'] == 'timed_out'

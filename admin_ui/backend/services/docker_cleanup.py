@@ -110,7 +110,7 @@ def _start(resources):
         if not owned:
             job = _read(root)
             if job is None:
-                raise RuntimeError("Cleanup is starting. Check status again.")
+                raise BlockingIOError("Cleanup is active but its progress is unavailable. Retry shortly.")
             if job["status"] != "running":
                 raise BlockingIOError("Cleanup is releasing its lock. Retry shortly.")
             return snapshot(job)
@@ -119,12 +119,13 @@ def _start(resources):
                "finished_at": None, "error": None, "timeout_seconds": TIMEOUT_SECONDS,
                "steps": [{"resource": resource, "status": "pending", "reclaimed": None,
                           "error": None} for resource in resources]}
+        deadline = time.monotonic() + TIMEOUT_SECONDS
         _write(root, job)
         try:
             # The worker inherits the lock's open file description. Closing our copy
             # does not unlock it. It survives request disconnects and API restarts.
             worker = subprocess.Popen(
-                [sys.executable, "-m", "services.docker_cleanup", str(root), str(lock.fileno())],
+                [sys.executable, "-m", "services.docker_cleanup", str(root), str(lock.fileno()), str(deadline)],
                 cwd=str(Path(__file__).resolve().parents[1]), pass_fds=(lock.fileno(),),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 start_new_session=True,
@@ -171,9 +172,10 @@ def _run_bounded_command(command, *, stdout, stderr, timeout, pass_fds, deadline
         raise
 
 
-def run(root, lock_fd):
+def run(root, lock_fd, deadline=None):
     job = _read(root)
-    deadline = time.monotonic() + min(TIMEOUT_SECONDS, job.get("timeout_seconds", TIMEOUT_SECONDS))
+    if deadline is None:
+        deadline = time.monotonic() + min(TIMEOUT_SECONDS, job.get("timeout_seconds", TIMEOUT_SECONDS))
     try:
         for step in job["steps"]:
             remaining = deadline - time.monotonic()
@@ -234,4 +236,4 @@ if __name__ == "__main__":
         except subprocess.TimeoutExpired:
             sys.exit(124)
     else:
-        run(Path(sys.argv[1]), int(sys.argv[2]))
+        run(Path(sys.argv[1]), int(sys.argv[2]), float(sys.argv[3]) if len(sys.argv) > 3 else None)
