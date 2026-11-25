@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Prepared from verified main `408407d4`, covering nine merged PRs after v7.7.4:
 #892, #893, #896, #897, #898, #899, #900, #901 and #903. The staged date remains
-provisional until explicit publication approval. See the [upgrade and API migration
+provisional until publication completes. See the [upgrade and API migration
 notes](docs/MIGRATION.md#v774-to-v775) and [validation matrix](docs/baselines/golden/v7.7.5-validation-matrix.md).
 Thanks to `hkjarral` for implementation/integration, `Andrew-Engelbrecht` for the
 inactivity-fallback proposal, and `MVECoder` for the fax patch/reproduction and
@@ -31,7 +31,8 @@ Grok/noise reports. See [verified contributor roles](CONTRIBUTORS.md).
   results and the disclosed Bookworm exposure/inventory limits. Release
   maintainers review remediation by **2026-11-29 or before the following stable
   tag**, whichever comes first. This is risk acceptance, not remediation or alert
-  dismissal. Merge/tag remain held; the targeted CPU libzstd issue is fixed below.
+  dismissal. The maintainer separately authorized merge/tag after final review and
+  exact-main checks; the targeted CPU libzstd issue is fixed below.
 
 - Require the Debian fix for CVE-2026-124851 in both stages of the Local AI CPU image. Builds stop if the installed `libzstd1` is older than `1.5.7+dfsg-1+deb13u1`.
 

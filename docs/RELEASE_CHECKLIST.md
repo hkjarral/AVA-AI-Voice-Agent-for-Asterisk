@@ -27,7 +27,9 @@ The v7.7.4 security exception does not carry forward. The maintainer separately
 approved the [v7.7.5-only exception](baselines/golden/v7.7.5-validation-matrix.md#approved-v775-only-exception)
 for the recorded residual baseline. Release maintainers review remediation by
 November 29, 2026 or before the following stable tag, whichever comes first.
-New findings require separate assessment. Merge/tag remain held for approval.
+New findings require separate assessment. The maintainer separately authorized
+#902 merge after final checks/reviews, followed by exact-main verification and
+`v7.7.5` publication from that verified commit. Verify release workflows/artifacts.
 
 ### Historical v7.7.4 evidence acceptance
 

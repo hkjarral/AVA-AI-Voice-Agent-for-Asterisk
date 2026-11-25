@@ -65,7 +65,9 @@ Required CI, image/security checks and review are not waived. The previous
 security exception does not carry forward. The maintainer separately approved the
 [fresh v7.7.5-only exception](baselines/golden/v7.7.5-validation-matrix.md#approved-v775-only-exception),
 with release-maintainer remediation review due November 29, 2026 or before the
-following stable tag, whichever comes first. Merge/tag remain on HOLD.
+following stable tag, whichever comes first. The maintainer separately authorized
+merge after final checks/reviews and tag publication only after exact-main
+verification; release workflow/artifact verification remains required.
 Supported trains remain 7.7.x and 7.6.x.
 
 <a id="upcoming-admin-api-changes"></a>
