@@ -13,6 +13,7 @@ export interface CleanupJob {
 export function useDockerCleanup(onTerminal: () => void) {
     const [job, setJob] = useState<CleanupJob | null>(null);
     const [checking, setChecking] = useState(true);
+    const [awaitingStatus, setAwaitingStatus] = useState(false);
     const [starting, setStarting] = useState(false);
     const [pollError, setPollError] = useState<string | null>(null);
     const [submissionError, setSubmissionError] = useState<string | null>(null);
@@ -35,6 +36,7 @@ export function useDockerCleanup(onTerminal: () => void) {
         previousRunning.current = next?.status === 'running' ? next.job_id : null;
         setJob(next);
         setChecking(false);
+        setAwaitingStatus(false);
         setPollError(null);
         if (next && next.status !== 'running' && terminalRef.current !== next.job_id) {
             terminalRef.current = next.job_id;
@@ -70,7 +72,7 @@ export function useDockerCleanup(onTerminal: () => void) {
     }, [accept]);
 
     const start = async (type: 'build_cache' | 'images') => {
-        if (startingRef.current) return;
+        if (startingRef.current || awaitingStatus) return;
         const abort = controller.current;
         startingRef.current = true;
         setStarting(true);
@@ -94,6 +96,8 @@ export function useDockerCleanup(onTerminal: () => void) {
             }
         } catch (err) {
             if (!abort?.signal.aborted) {
+                const uncertain = !axios.isAxiosError(err) || !err.response || err.response.status === 504;
+                setAwaitingStatus(uncertain);
                 const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
                 setSubmissionError(typeof detail === 'string' ? detail : 'Cleanup request could not be confirmed. Check status before retrying.');
                 terminalCallback.current();
@@ -104,5 +108,5 @@ export function useDockerCleanup(onTerminal: () => void) {
         }
     };
 
-    return { job, error: [submissionError, pollError].filter(Boolean).join(' ') || null, notice, busy: checking || starting || !!pollError || job?.status === 'running', start };
+    return { job, error: [submissionError, pollError].filter(Boolean).join(' ') || null, notice, busy: checking || starting || awaitingStatus || !!pollError || job?.status === 'running', start };
 }

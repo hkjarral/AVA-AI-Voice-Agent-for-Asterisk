@@ -82,10 +82,12 @@ const DockerPage = () => {
         const abort = new AbortController();
         diskRequest.current = abort;
         setDiskLoading(true);
-        setDiskError(false);
         try {
             const res = await axios.get('/api/system/docker/disk-usage', { timeout: 65000, signal: abort.signal });
-            if (!abort.signal.aborted) setDiskUsage(res.data);
+            if (!abort.signal.aborted) {
+                setDiskUsage(res.data);
+                setDiskError(false);
+            }
         } catch (err: any) {
             if (abort.signal.aborted) return;
             setDiskError(true);

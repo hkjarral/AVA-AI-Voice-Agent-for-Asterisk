@@ -1636,6 +1636,8 @@ async def docker_prune_status():
         raise HTTPException(409, detail="Cleanup progress storage is busy. Retry shortly.") from None
     except asyncio.TimeoutError:
         raise HTTPException(503, detail="Cleanup progress storage timed out. Reconnecting is safe.") from None
+    except OSError:
+        raise HTTPException(503, detail="Cleanup progress storage is unavailable. Retry after restoring access.") from None
 
 
 @router.post("/docker/prune", status_code=202)

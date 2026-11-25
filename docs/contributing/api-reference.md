@@ -396,18 +396,26 @@ waiting for the former synchronous `success` response. Stopped-container cleanup
 remains available through `prune_containers`. Empty selections are rejected.
 
 One cleanup worker owns a shared file lock and atomically journals the latest job
-under `data/operator/docker-cleanup/`. A nonblocking submission lock coordinates creation across API processes.
-Cleanup storage I/O has one dedicated worker and a two-second request wait limit,
+under `data/operator/docker-cleanup/`. A nonblocking submission lock coordinates
+creation across API processes. Cleanup storage I/O admits one daemon thread at a
+time, with a two-second request wait limit,
 so stalled storage cannot exhaust the shared API executor. Busy status reads
 return retryable HTTP 409. A start request whose outcome is still unknown returns
-HTTP 504 and must be reconciled through status polling. Request disconnects and API restarts leave the worker running.
+HTTP 504. After HTTP 504 or a transport timeout, wait for a fresh status read
+before permitting a manual retry. Polling exposes only the active/latest journal
+record. If a later job has replaced the original record, the original request
+outcome cannot be recovered from polling. Keep that uncertainty visible and
+check current status and disk usage before an explicit operator retry. Automatic
+request replay is unsupported, and an explicit retry can repeat the cleanup.
+Request disconnects and API restarts leave the worker running.
 If the worker and Docker CLI disappear during a container restart, the next status
 read marks unfinished work interrupted. Cleanup is never automatically replayed.
 An independent command supervisor retains the deadline and operation lock if the
-journal worker exits unexpectedly. The Docker CLI also inherits the lock. The CLI and plugins share the supervisor
-process group. If the supervisor exits unexpectedly, the journal worker kills
-that group. On timeout, the supervisor reaps the CLI and terminates its group. All deployments sharing a Docker daemon must share
-this operator state directory to coordinate cleanup.
+journal worker exits unexpectedly. The Docker CLI also inherits the lock. The CLI
+and plugins share the supervisor process group. If the supervisor exits unexpectedly, the journal worker kills
+that group. On timeout, the supervisor attempts a bounded CLI reap and always
+signals its group. All deployments sharing a Docker daemon must share this
+operator state directory to coordinate cleanup.
 
 The cleanup budget is 15 minutes across selected steps, including journal and
 command startup time. The supervisor receives the absolute monotonic deadline. Nonzero exits and timeouts

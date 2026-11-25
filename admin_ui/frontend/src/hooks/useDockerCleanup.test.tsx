@@ -119,3 +119,18 @@ it('coalesces terminal refreshes when a completed job replaces an observed runni
     await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
     expect(terminal).toHaveBeenCalledTimes(1);
 });
+
+it('waits for a fresh GET after an uncertain start before allowing retry', async () => {
+    vi.mocked(axios.isAxiosError).mockReturnValue(true);
+    vi.mocked(axios.get).mockResolvedValue({ data: { job: null } });
+    vi.mocked(axios.post).mockRejectedValue({ response: { status: 504, data: { detail: 'Recheck status before retrying' } } });
+    const hook = renderHook(() => useDockerCleanup(vi.fn()));
+    await act(async () => {});
+    await act(async () => { await hook.result.current.start('images'); });
+    expect(hook.result.current.busy).toBe(true);
+    await act(async () => { await hook.result.current.start('images'); });
+    expect(axios.post).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(hook.result.current.busy).toBe(false);
+    expect(hook.result.current.error).toContain('Recheck status');
+});

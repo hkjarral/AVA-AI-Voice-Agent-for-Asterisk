@@ -1,7 +1,6 @@
 """One persisted Docker cleanup, owned by a detached worker and an inherited flock."""
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
+from concurrent.futures import Future
 from contextlib import contextmanager
 import fcntl
 import json
@@ -21,7 +20,6 @@ from services.fs import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
-_io_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="docker-cleanup-io")
 _io_available = threading.BoundedSemaphore(1)
 IO_TIMEOUT_SECONDS = 2
 
@@ -30,12 +28,22 @@ async def bounded_io(function, *args):
     """One storage operation, with prompt rejection while that operation is stalled."""
     if not _io_available.acquire(blocking=False):
         raise BlockingIOError("Cleanup progress storage is busy")
+    future = Future()
+    future.add_done_callback(lambda _, admission=_io_available: admission.release())
+
+    def operation():
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            future.set_result(function(*args))
+        except BaseException as exc:
+            future.set_exception(exc)
+
     try:
-        future = _io_executor.submit(partial(function, *args))
+        threading.Thread(target=operation, daemon=True, name="docker-cleanup-io").start()
     except BaseException:
-        _io_available.release()
+        future.cancel()
         raise
-    future.add_done_callback(lambda _: _io_available.release())
     return await asyncio.wait_for(asyncio.wrap_future(future), timeout=IO_TIMEOUT_SECONDS)
 
 
@@ -193,11 +201,13 @@ def _run_bounded_command(command, *, stdout, stderr, timeout, pass_fds, deadline
     try:
         return subprocess.CompletedProcess(command, process.wait(timeout=max(0, deadline - time.monotonic())))
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
-        # Reap the CLI first, then terminate any plugins and this supervisor.
-        # This also enforces the deadline after the journal worker has died.
-        os.killpg(os.getpgrp(), signal.SIGKILL)
+        try:
+            process.kill()
+            process.wait(timeout=5)
+        finally:
+            # Signal plugins even if the CLI cannot be reaped within the bound.
+            # This still runs after the journal worker has died.
+            os.killpg(os.getpgrp(), signal.SIGKILL)
         raise
 
 

@@ -176,8 +176,9 @@ def ready_timeout_fixture(root, lock_fd, plugin=False):
     fixture = root / 'ready_cli.py'
     fixture.write_text(
         'import os, time\nfrom pathlib import Path\n'
-        + (f'if os.fork() == 0:\n    Path({str(plugin_pid)!r}).write_text(str(os.getpid()))\n    time.sleep(30)\n    os._exit(0)\n' if plugin else '')
-        + f'Path({str(cli_pid)!r}).write_text(str(os.getpid()))\ntime.sleep(30)\n'
+        'def publish(name):\n    target = Path(name)\n    temporary = target.with_suffix(".tmp")\n    temporary.write_text(str(os.getpid()))\n    temporary.replace(target)\n'
+        + (f'if os.fork() == 0:\n    publish({str(plugin_pid)!r})\n    time.sleep(30)\n    os._exit(0)\n' if plugin else '')
+        + f'publish({str(cli_pid)!r})\ntime.sleep(30)\n'
     )
     wrapper = f"""
 import time
@@ -258,12 +259,22 @@ def test_worker_start_failure_is_terminal_and_retryable(root, monkeypatch):
 
 
 def test_worker_death_keeps_cli_lock_until_independent_deadline(root, monkeypatch):
-    monkeypatch.setattr(cleanup, 'TIMEOUT_SECONDS', 1)
+    import os
+    import signal
+    monkeypatch.setattr(cleanup, 'TIMEOUT_SECONDS', 10)
     binary = root / 'docker'
     marker = root / 'cli-started'
-    binary.write_text(f'#!{sys.executable}\nfrom pathlib import Path\nimport time\nPath({str(marker)!r}).touch()\ntime.sleep(30)\n')
+    supervisor_pid = root / 'supervisor.pid'
+    binary.write_text(
+        f'#!{sys.executable}\nfrom pathlib import Path\nimport os, signal, time\n'
+        f'target = Path({str(supervisor_pid)!r})\ntemporary = target.with_suffix(".tmp")\n'
+        'temporary.write_text(str(os.getppid()))\ntemporary.replace(target)\n'
+        # Freeze enforcement before publishing readiness. Ownership assertions
+        # remain valid even if the test is descheduled past the real deadline.
+        'os.kill(os.getppid(), signal.SIGSTOP)\n'
+        f'Path({str(marker)!r}).touch()\ntime.sleep(120)\n'
+    )
     binary.chmod(0o755)
-    import os
     monkeypatch.setenv('PATH', str(root) + os.pathsep + os.environ['PATH'])
     original_spawn = subprocess.Popen
     workers = []
@@ -273,14 +284,19 @@ def test_worker_death_keeps_cli_lock_until_independent_deadline(root, monkeypatc
         return worker
     monkeypatch.setattr(cleanup.subprocess, 'Popen', spawn)
     job = cleanup.start(['images'])
-    deadline = time.monotonic() + 5
-    while not marker.exists() and time.monotonic() < deadline:
-        time.sleep(.01)
-    assert marker.exists()
-    workers[0].kill()
-    workers[0].wait(timeout=1)
-    assert cleanup.latest()['status'] == 'running'
-    assert cleanup.start(['images'])['job_id'] == job['job_id']
+    try:
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert marker.exists(), 'CLI readiness must precede ownership assertions'
+        workers[0].kill()
+        workers[0].wait(timeout=1)
+        assert cleanup.latest()['status'] == 'running'
+        assert cleanup.start(['images'])['job_id'] == job['job_id']
+    finally:
+        if supervisor_pid.exists():
+            os.kill(int(supervisor_pid.read_text()), signal.SIGCONT)
+    deadline = time.monotonic() + 15
     while cleanup.latest()['status'] == 'running' and time.monotonic() < deadline:
         time.sleep(.02)
     assert cleanup.latest()['status'] == 'interrupted'
@@ -493,7 +509,7 @@ def test_supervisor_death_stops_its_cli_group(root, monkeypatch):
     import psutil
     marker = root / 'cli.pid'
     fixture = root / 'surviving_cli.py'
-    fixture.write_text(f'import os, time\nfrom pathlib import Path\nPath({str(marker)!r}).write_text(str(os.getpid()))\ntime.sleep(30)\n')
+    fixture.write_text(f'import os, time\nfrom pathlib import Path\ntarget = Path({str(marker)!r})\ntemporary = target.with_suffix(".tmp")\ntemporary.write_text(str(os.getpid()))\ntemporary.replace(target)\ntime.sleep(30)\n')
     original_spawn = subprocess.Popen
     supervisors = []
     def spawn(*args, **kwargs):
@@ -548,3 +564,57 @@ async def test_start_storage_timeout_reports_uncertain_outcome(root, monkeypatch
             await asyncio.sleep(.01)
         else:
             pytest.fail('cleanup storage admission was not released')
+
+
+@pytest.mark.asyncio
+async def test_status_storage_permission_error_is_unavailable(root, monkeypatch):
+    def denied():
+        raise PermissionError('fixture denied')
+    monkeypatch.setattr(cleanup, 'latest', denied)
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as error:
+        await system.docker_prune_status()
+    assert error.value.status_code == 503
+
+
+def test_supervisor_signals_group_when_cli_reap_times_out(monkeypatch):
+    import os
+    import signal
+    calls = []
+    class Process:
+        def wait(self, timeout):
+            raise subprocess.TimeoutExpired('fixture', timeout)
+        def kill(self):
+            calls.append('kill-cli')
+    monkeypatch.setattr(cleanup.subprocess, 'Popen', lambda *a, **k: Process())
+    monkeypatch.setattr(cleanup.os, 'killpg', lambda group, sig: calls.append((group, sig)))
+    with pytest.raises(subprocess.TimeoutExpired):
+        cleanup._run_bounded_command(['fixture'], stdout=None, stderr=None, timeout=1, pass_fds=())
+    assert calls == ['kill-cli', (os.getpgrp(), signal.SIGKILL)]
+
+
+def test_timed_out_storage_call_does_not_hold_interpreter_exit():
+    script = '''
+import asyncio, threading
+from services import docker_cleanup as cleanup
+cleanup.IO_TIMEOUT_SECONDS = .2
+entered = threading.Event()
+def stalled():
+    entered.set()
+    threading.Event().wait(60)
+async def main():
+    task = asyncio.create_task(cleanup.bounded_io(stalled))
+    limit = asyncio.get_running_loop().time() + 1
+    while not entered.is_set() and asyncio.get_running_loop().time() < limit:
+        await asyncio.sleep(.001)
+    assert entered.is_set(), 'storage fixture must be running before exit is tested'
+    try:
+        await task
+    except asyncio.TimeoutError:
+        pass
+asyncio.run(main())
+'''
+    result = subprocess.run([sys.executable, '-c', script],
+                            cwd=Path(cleanup.__file__).resolve().parents[1], timeout=3,
+                            capture_output=True)
+    assert result.returncode == 0
