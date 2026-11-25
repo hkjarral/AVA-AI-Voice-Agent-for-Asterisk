@@ -1447,6 +1447,10 @@ async def get_system_metrics():
 
 @router.get("/docker/disk-usage")
 async def get_docker_disk_usage():
+    return await asyncio.to_thread(_docker_disk_usage)
+
+
+def _docker_disk_usage():
     """
     Get Docker disk usage breakdown (images, containers, build cache, volumes).
     This helps identify what's consuming disk space.
@@ -1471,6 +1475,9 @@ async def get_docker_disk_usage():
                 timeout=30
             )
             
+            if result.returncode != 0:
+                raise HTTPException(status_code=500, detail="Docker disk usage is unavailable")
+
             # Parse the text output
             lines = result.stdout.strip().split('\n')
             usage = {
@@ -1620,111 +1627,38 @@ class PruneRequest(BaseModel):
     prune_volumes: bool = False  # Very dangerous - data loss
 
 
-class PruneResponse(BaseModel):
-    success: bool
-    space_reclaimed: str
-    details: dict
-
-
-@router.post("/docker/prune", response_model=PruneResponse)
-async def prune_docker_resources(request: PruneRequest):
-    """
-    Clean up Docker resources to free disk space.
-    
-    WARNING: This operation is destructive and cannot be undone.
-    - Build cache: Safe to prune (will rebuild as needed)
-    - Images: Removes unused images (tagged images in use are preserved)
-    - Containers: Removes stopped containers only
-    - Volumes: DANGEROUS - can cause data loss
-    """
-    import subprocess
-    
-    total_reclaimed = 0
-    details = {}
-    
+@router.get("/docker/prune")
+async def docker_prune_status():
+    from services import docker_cleanup
     try:
-        # Always prune build cache first (safest, often largest)
-        # Use -a to remove ALL build cache, not just unused layers
-        if request.prune_build_cache:
-            result = subprocess.run(
-                ["docker", "builder", "prune", "-a", "-f"],
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-            if result.returncode == 0:
-                # Parse reclaimed space from output
-                output = result.stdout + result.stderr
-                details["build_cache"] = "pruned"
-                # Try to extract size
-                for line in output.split('\n'):
-                    if 'reclaimed' in line.lower() or 'freed' in line.lower():
-                        details["build_cache_output"] = line.strip()
-            else:
-                details["build_cache"] = f"error: {result.stderr}"
-        
-        # Prune unused images (all images not used by containers)
-        # Use -a to remove ALL unused images, not just dangling ones
-        if request.prune_images:
-            result = subprocess.run(
-                ["docker", "image", "prune", "-a", "-f"],
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-            if result.returncode == 0:
-                details["images"] = "pruned"
-                for line in result.stdout.split('\n'):
-                    if 'reclaimed' in line.lower():
-                        details["images_output"] = line.strip()
-            else:
-                details["images"] = f"error: {result.stderr}"
-        
-        # Prune stopped containers
-        if request.prune_containers:
-            result = subprocess.run(
-                ["docker", "container", "prune", "-f"],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            if result.returncode == 0:
-                details["containers"] = "pruned"
-            else:
-                details["containers"] = f"error: {result.stderr}"
-        
-        # Prune unused volumes (DANGEROUS)
-        if request.prune_volumes:
-            result = subprocess.run(
-                ["docker", "volume", "prune", "-f"],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            if result.returncode == 0:
-                details["volumes"] = "pruned"
-            else:
-                details["volumes"] = f"error: {result.stderr}"
-        
-        # Run system prune to get total reclaimed (without volumes for safety)
-        result = subprocess.run(
-            ["docker", "system", "df"],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
-        return PruneResponse(
-            success=True,
-            space_reclaimed=details.get("build_cache_output", "Unknown"),
-            details=details
-        )
-        
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=500, detail="Timeout during Docker prune")
-    except Exception as e:
-        logger.error(f"Error pruning Docker resources: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"job": await docker_cleanup.bounded_io(docker_cleanup.latest)}
+    except BlockingIOError:
+        raise HTTPException(409, detail="Cleanup progress storage is busy. Retry shortly.") from None
+    except asyncio.TimeoutError:
+        raise HTTPException(503, detail="Cleanup progress storage timed out. Reconnecting is safe.") from None
+    except OSError:
+        raise HTTPException(503, detail="Cleanup progress storage is unavailable. Retry after restoring access.") from None
+
+
+@router.post("/docker/prune", status_code=202)
+async def prune_docker_resources(request: PruneRequest):
+    from services import docker_cleanup
+    if request.prune_volumes:
+        raise HTTPException(422, detail="Volume cleanup is protected")
+    resources = [name for name, selected in (
+        ("build_cache", request.prune_build_cache), ("images", request.prune_images),
+        ("containers", request.prune_containers),
+    ) if selected]
+    if not resources:
+        raise HTTPException(422, detail="Select at least one cleanup resource")
+    try:
+        return {"job": await docker_cleanup.bounded_io(docker_cleanup.start, resources)}
+    except BlockingIOError:
+        raise HTTPException(409, detail="Cleanup is finishing. Retry shortly.") from None
+    except asyncio.TimeoutError:
+        raise HTTPException(504, detail="Cleanup request is still being checked. Recheck status before retrying.") from None
+    except OSError:
+        raise HTTPException(503, detail="Cleanup progress storage is unavailable. No new cleanup was started.") from None
 
 
 @router.get("/health")

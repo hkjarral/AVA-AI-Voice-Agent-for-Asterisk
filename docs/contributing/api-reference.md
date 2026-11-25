@@ -88,7 +88,8 @@ curl -H "Authorization: Bearer eyJ..." \
 | GET | `/api/system/directories` | Check directory health |
 | POST | `/api/system/directories/fix` | Fix directory permissions |
 | GET | `/api/system/docker/disk-usage` | Get Docker disk usage |
-| POST | `/api/system/docker/prune` | Clean up Docker resources |
+| POST | `/api/system/docker/prune` | Start or attach to cleanup, returning HTTP 202 and `{job}` |
+| GET | `/api/system/docker/prune` | Read the active or most recent cleanup as `{job}` |
 | GET | `/api/system/platform` | Get platform detection results |
 | POST | `/api/system/preflight` | Run preflight checks |
 | POST | `/api/system/test-ari` | Test Asterisk ARI connection |
@@ -384,3 +385,50 @@ curl -H "Authorization: Bearer your-token" http://localhost:15000/reload -X POST
 - Architecture deep dive: [`architecture-deep-dive.md`](architecture-deep-dive.md)
 - Engine source: [`src/engine.py`](../../src/engine.py)
 - Configuration: [`src/config.py`](../../src/config.py)
+
+### Docker cleanup jobs
+
+Docker Services polls cleanup status every two seconds and reconnects on navigation
+or reload. Cache cleanup selects only unused build cache. Image cleanup selects
+only images unused by containers. Volumes are protected by API validation.
+Existing API clients must consume the asynchronous `{job}` response in place of
+waiting for the former synchronous `success` response. Stopped-container cleanup
+remains available through `prune_containers`. Empty selections are rejected.
+
+One cleanup worker owns a shared file lock and atomically journals the latest job
+under `data/operator/docker-cleanup/`. A nonblocking submission lock coordinates
+creation across API processes. Cleanup storage I/O admits one daemon thread at a
+time, with a two-second request wait limit,
+so stalled storage cannot exhaust the shared API executor. Busy status reads
+return retryable HTTP 409. A start request whose outcome is still unknown returns
+HTTP 504. After HTTP 504 or a transport timeout, wait for a fresh status read
+before permitting a manual retry. Polling exposes only the active/latest journal
+record. If a later job has replaced the original record, the original request
+outcome cannot be recovered from polling. Keep that uncertainty visible and
+check current status and disk usage before an explicit operator retry. Automatic
+request replay is unsupported, and an explicit retry can repeat the cleanup.
+Request disconnects and API restarts leave the worker running.
+If the worker and Docker CLI disappear during a container restart, the next status
+read marks unfinished work interrupted. Cleanup is never automatically replayed.
+An independent command supervisor retains the deadline and operation lock if the
+journal worker exits unexpectedly. The Docker CLI also inherits the lock. The CLI
+and plugins share the supervisor process group. If the supervisor exits unexpectedly, the journal worker kills
+that group. On timeout, the supervisor attempts a bounded CLI reap and always
+signals its group. All deployments sharing a Docker daemon must share this
+operator state directory to coordinate cleanup.
+
+The cleanup budget is 15 minutes across selected steps, including journal and
+command startup time. The supervisor receives the absolute monotonic deadline. Nonzero exits and timeouts
+stop subsequent steps. Each step reports its state and Docker's measured reclaimed
+space when available. A missing total means unknown, including partial deletion
+before a failure. Progress-storage failures stop further steps. If a full disk
+prevents saving completion, status reconciliation reports interrupted work with
+uncertain results. A failure to journal a new job returns HTTP 503 before launch.
+A request during terminal lock release returns a retryable HTTP 409. Explicit
+submission rejections remain visible while polling reconciles older job results. A timeout kills the CLI process group, including Docker CLI plugins, and reaps the CLI. Docker may still be finishing
+deletions on the daemon, so refresh usage before choosing to retry. Disk usage is
+queried separately with bounded commands off the API event loop. Cleanup buttons
+remain available if usage cannot be measured. Tabs refresh usage when a later job
+replaces an observed running job, and identify a requested resource that was not
+queued because another cleanup is active. Its failure leaves
+the cleanup result intact and the page labels displayed usage as potentially stale.
