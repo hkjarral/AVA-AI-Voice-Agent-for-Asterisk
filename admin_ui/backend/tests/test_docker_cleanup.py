@@ -40,7 +40,7 @@ def test_success_and_fixed_selection(root, monkeypatch):
     job = cleanup.latest()
     assert job['status'] == 'completed'
     assert [s['reclaimed'] for s in job['steps']] == ['2.5GB', '2.5GB']
-    assert commands == [cleanup.COMMANDS['build_cache'], cleanup.COMMANDS['images']]
+    assert commands == [['docker', 'builder', 'prune', '-a', '-f'], ['docker', 'image', 'prune', '-a', '-f']]
 
 
 @pytest.mark.parametrize('timeout', [False, True])
@@ -212,7 +212,8 @@ def test_worker_start_failure_is_terminal_and_retryable(root, monkeypatch):
     assert cleanup.start(['images'])['job_id'] != job['job_id']
 
 
-def test_worker_death_keeps_cli_lock_until_exit(root, monkeypatch):
+def test_worker_death_keeps_cli_lock_until_independent_deadline(root, monkeypatch):
+    monkeypatch.setattr(cleanup, 'TIMEOUT_SECONDS', 1)
     binary = root / 'docker'
     marker = root / 'cli-started'
     binary.write_text(f'#!{sys.executable}\nfrom pathlib import Path\nimport time\nPath({str(marker)!r}).touch()\ntime.sleep(.4)\n')
@@ -280,3 +281,58 @@ def test_total_budget_and_elapsed_use_controlled_clocks(root, monkeypatch):
     assert result['status'] == 'timed_out'
     assert result['elapsed_seconds'] == 960
     assert all(step['status'] == 'pending' for step in result['steps'])
+
+
+def test_terminal_job_with_held_lock_requires_retry(root):
+    job = seed(root)
+    job['status'] = 'completed'
+    cleanup._write(root, job)
+    lock, owned = cleanup._lock(root)
+    assert owned
+    with lock:
+        with pytest.raises(BlockingIOError):
+            cleanup.start(['images'])
+
+
+def test_full_disk_reconciliation_still_returns_status(root, monkeypatch):
+    seed(root)
+    def full(*args):
+        raise OSError('fixture full disk')
+    monkeypatch.setattr(cleanup, '_write', full)
+    result = cleanup.latest()
+    assert result['status'] == 'interrupted'
+    assert 'storage' in result['error']
+
+
+@pytest.mark.asyncio
+async def test_full_disk_prevents_start_with_clear_error(root, monkeypatch):
+    def full(*args):
+        raise OSError('fixture full disk')
+    monkeypatch.setattr(cleanup, '_write', full)
+    monkeypatch.setattr(cleanup.subprocess, 'Popen', lambda *a, **k: pytest.fail('must not prune without journal'))
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as error:
+        await system.prune_docker_resources(system.PruneRequest())
+    assert error.value.status_code == 503
+    assert 'No new cleanup was started' in error.value.detail
+
+
+def test_journal_failure_after_step_retains_completed_state(root, monkeypatch):
+    seed(root)
+    writes = []
+    original_write = cleanup._write
+    def write(root, job):
+        writes.append(__import__('copy').deepcopy(job))
+        if job['steps'][0]['status'] == 'completed':
+            raise OSError('fixture full disk')
+        original_write(root, job)
+    def run(command, **kwargs):
+        kwargs['stdout'].write(b'Total: 2GB\n')
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(cleanup, '_write', write)
+    monkeypatch.setattr(cleanup, '_run_command', run)
+    cleanup.run(root, 10)
+    assert writes[-1]['steps'][0]['status'] == 'completed'
+    assert writes[-1]['steps'][0]['reclaimed'] == '2GB'
+    assert writes[-1]['status'] == 'failed'
+    assert cleanup.latest()['status'] == 'interrupted'

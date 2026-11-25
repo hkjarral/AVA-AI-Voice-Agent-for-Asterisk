@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import fcntl
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -14,6 +15,8 @@ import time
 import uuid
 
 from services.fs import atomic_write_text
+
+logger = logging.getLogger(__name__)
 
 TIMEOUT_SECONDS = 900
 COMMANDS = {
@@ -56,7 +59,10 @@ def _reconcile(root, job):
         for step in job["steps"]:
             if step["status"] == "running":
                 step["status"] = "interrupted"
-        _write(root, job)
+        try:
+            _write(root, job)
+        except OSError:
+            job["error"] += " Progress storage is unavailable, so this status could not be saved."
     return job
 
 
@@ -105,6 +111,8 @@ def _start(resources):
             job = _read(root)
             if job is None:
                 raise RuntimeError("Cleanup is starting. Check status again.")
+            if job["status"] != "running":
+                raise BlockingIOError("Cleanup is releasing its lock. Retry shortly.")
             return snapshot(job)
         _reconcile(root, _read(root))
         job = {"job_id": uuid.uuid4().hex, "status": "running", "started_at": time.time(),
@@ -130,6 +138,20 @@ def _start(resources):
 
 
 def _run_command(command, *, stdout, stderr, timeout, pass_fds):
+    # A separate supervisor owns the deadline even if the journal worker dies.
+    lock_fd = pass_fds[0] if pass_fds else -1
+    process = subprocess.Popen(
+        [sys.executable, "-m", "services.docker_cleanup", "--command", str(timeout), str(lock_fd), *command],
+        stdout=stdout, stderr=stderr, stdin=subprocess.DEVNULL, pass_fds=pass_fds,
+        cwd=str(Path(__file__).resolve().parents[1]), start_new_session=True,
+    )
+    code = process.wait()
+    if code == 124:
+        raise subprocess.TimeoutExpired(command, timeout)
+    return subprocess.CompletedProcess(command, code)
+
+
+def _run_bounded_command(command, *, stdout, stderr, timeout, pass_fds):
     # Docker can invoke a CLI plugin. Keep its descendants in one killable group.
     process = subprocess.Popen(command, stdout=stdout, stderr=stderr, stdin=subprocess.DEVNULL,
                                pass_fds=pass_fds, start_new_session=True)
@@ -146,7 +168,7 @@ def _run_command(command, *, stdout, stderr, timeout, pass_fds):
 
 def run(root, lock_fd):
     job = _read(root)
-    deadline = time.monotonic() + TIMEOUT_SECONDS
+    deadline = time.monotonic() + min(TIMEOUT_SECONDS, job.get("timeout_seconds", TIMEOUT_SECONDS))
     try:
         for step in job["steps"]:
             remaining = deadline - time.monotonic()
@@ -177,6 +199,8 @@ def run(root, lock_fd):
             _write(root, job)
         else:
             job["status"] = "completed"
+    except OSError:
+        job.update(status="failed", error="Cleanup progress storage or Docker execution is unavailable. Some resources may have been removed.")
     except Exception:
         job.update(status="failed", error="Docker cleanup could not finish. Some resources may have been removed.")
         for step in job["steps"]:
@@ -184,8 +208,20 @@ def run(root, lock_fd):
                 step.update(status="failed", error=job["error"])
     finally:
         job["finished_at"] = time.time()
-        _write(root, job)
+        try:
+            _write(root, job)
+        except OSError:
+            logger.error("Docker cleanup result could not be saved to operator storage")
 
 
 if __name__ == "__main__":
-    run(Path(sys.argv[1]), int(sys.argv[2]))
+    if sys.argv[1] == "--command":
+        timeout, lock_fd = float(sys.argv[2]), int(sys.argv[3])
+        try:
+            result = _run_bounded_command(sys.argv[4:], stdout=None, stderr=None, timeout=timeout,
+                                          pass_fds=(lock_fd,) if lock_fd >= 0 else ())
+            sys.exit(result.returncode if result.returncode >= 0 else 1)
+        except subprocess.TimeoutExpired:
+            sys.exit(124)
+    else:
+        run(Path(sys.argv[1]), int(sys.argv[2]))

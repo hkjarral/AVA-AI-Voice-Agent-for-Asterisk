@@ -72,9 +72,10 @@ export function useDockerCleanup(onTerminal: () => void) {
                 prune_volumes: false,
             }, { signal: abort?.signal, timeout: 10000 });
             if (!abort?.signal.aborted) accept(response.data.job);
-        } catch {
+        } catch (err) {
             if (!abort?.signal.aborted) {
-                setError('Cleanup request could not be confirmed. Checking status...');
+                const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+                setError(typeof detail === 'string' ? detail : 'Cleanup request could not be confirmed. Checking status...');
                 terminalCallback.current();
             }
         } finally {

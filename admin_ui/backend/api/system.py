@@ -1644,7 +1644,12 @@ async def prune_docker_resources(request: PruneRequest):
     ) if selected]
     if not resources:
         raise HTTPException(422, detail="Select at least one cleanup resource")
-    return {"job": await asyncio.to_thread(docker_cleanup.start, resources)}
+    try:
+        return {"job": await asyncio.to_thread(docker_cleanup.start, resources)}
+    except BlockingIOError:
+        raise HTTPException(409, detail="Cleanup is finishing. Retry shortly.") from None
+    except OSError:
+        raise HTTPException(503, detail="Cleanup progress storage is unavailable. No new cleanup was started.") from None
 
 
 @router.get("/health")

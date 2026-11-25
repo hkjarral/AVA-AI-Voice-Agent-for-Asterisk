@@ -217,6 +217,16 @@ const DockerPage = () => {
                             {cleanup.job.error && <p className="text-destructive">{cleanup.job.error}</p>}
                         </div>
                     )}
+                    <div className="flex justify-end mb-2">
+                                <button
+                                    onClick={() => fetchDiskUsage()}
+                                    disabled={diskLoading}
+                                    className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-md bg-muted hover:bg-muted/80 disabled:opacity-50"
+                                >
+                                    <RefreshCw className={`w-3.5 h-3.5 ${diskLoading ? 'animate-spin' : ''}`} />
+                                    Refresh
+                                </button>
+                    </div>
                     {diskError && <p role="alert" className="text-sm text-destructive mb-3">Disk usage refresh failed. Displayed values may be outdated.</p>}
 
                     {diskLoading && !diskUsage ? (
@@ -291,14 +301,7 @@ const DockerPage = () => {
                                     <Trash2 className="w-3.5 h-3.5" />
                                     Clean Unused Images
                                 </button>
-                                <button
-                                    onClick={() => fetchDiskUsage()}
-                                    disabled={diskLoading}
-                                    className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-md bg-muted hover:bg-muted/80 disabled:opacity-50"
-                                >
-                                    <RefreshCw className={`w-3.5 h-3.5 ${diskLoading ? 'animate-spin' : ''}`} />
-                                    Refresh
-                                </button>
+
                             </div>
                             
 

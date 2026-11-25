@@ -400,14 +400,17 @@ under `data/operator/docker-cleanup/`. A short submission lock serializes creati
 across API processes. Request disconnects and API restarts leave the worker running.
 If the worker and Docker CLI disappear during a container restart, the next status
 read marks unfinished work interrupted. Cleanup is never automatically replayed.
-The Docker CLI inherits the operation lock so a surviving CLI keeps ownership if
-the worker exits unexpectedly. All deployments sharing a Docker daemon must share
+An independent command supervisor retains the deadline and operation lock if the
+journal worker exits unexpectedly. The Docker CLI also inherits the lock. All deployments sharing a Docker daemon must share
 this operator state directory to coordinate cleanup.
 
 The cleanup budget is 15 minutes across selected steps. Nonzero exits and timeouts
 stop subsequent steps. Each step reports its state and Docker's measured reclaimed
 space when available. A missing total means unknown, including partial deletion
-before a failure. A timeout kills the CLI process group, including Docker CLI plugins, and reaps the CLI. Docker may still be finishing
+before a failure. Progress-storage failures stop further steps. If a full disk
+prevents saving completion, status reconciliation reports interrupted work with
+uncertain results. A failure to journal a new job returns HTTP 503 before launch.
+A request during terminal lock release returns a retryable HTTP 409. A timeout kills the CLI process group, including Docker CLI plugins, and reaps the CLI. Docker may still be finishing
 deletions on the daemon, so refresh usage before choosing to retry. Disk usage is
 queried separately with bounded commands off the API event loop. Its failure leaves
 the cleanup result intact and the page labels displayed usage as potentially stale.
