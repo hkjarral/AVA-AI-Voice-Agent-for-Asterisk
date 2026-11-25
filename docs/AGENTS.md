@@ -52,6 +52,31 @@ successful transfer. Call diagnostics retain the timeout action and result.
 Fax detection and repeated-tone watchdog hardening are separate. A fallback
 cannot run while activity keeps the watchdog from reaching its deadline.
 
+### Caller inactivity and acoustic bursts
+
+For inbound calls, raw audio VAD and Asterisk TalkDetect pause inactivity timing
+while input is active. A detector active-input interval shorter than one second resumes the
+remaining idle or reply-grace budget instead of buying an entirely new timeout.
+TalkDetect barge-in during a watchdog prompt uses the same acoustic policy.
+There is at least a one-second recognition opportunity after a short burst
+(capped by the configured timeout/grace). Repeated fax-sized bursts therefore
+do not continually renew the full inactivity window or reset check-in attempts.
+
+Sustained acoustic input of at least one second and authoritative provider or
+pipeline activity still reset the policy. Transcripts are not the sole way to
+protect callers: the watchdog never counts idle time during active input.
+Brief input during the final warning gets another reply grace; unconfirmed
+bursts do not cause that warning to repeat indefinitely. A recognized response
+starts a fresh policy cycle. This is not fax detection and does not identify a
+sender or provision a receiver. Outbound watchdog opt-in retains its previous
+reset behavior.
+
+`Caller inactivity state changed` INFO events report pause/resume/reset reason,
+activity source, phase, check-in count, remaining time and processing/output
+state. They contain no audio or transcript and are emitted on state transitions,
+not individual media frames. Use these events to distinguish acoustic resets
+from processing, output or lifecycle pauses before changing detector thresholds.
+
 ### v7.7 workspace and integration access
 
 Searchable cards/list views lead to a routed General, Conversation, Tools and

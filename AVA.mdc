@@ -132,7 +132,10 @@ every service. Host `./data/` mounts at `/app/data/`; defaults include
   cleanup. `farewell_hangup_delay_sec` is deprecated/ignored. Keep Local AI's separate
   farewell policy compatible. `NoInputWatchdog` owns silence handling (30-second
   initial default for inbound; outbound requires opt-in), using the active voice
-  and shared drain path. Do not add competing provider silence hangups.
+  and shared drain path. Inbound short acoustic intervals resume the remaining
+  idle budget; sustained input and recognized caller activity renew it. See
+  [caller inactivity](docs/AGENTS.md#caller-inactivity-and-acoustic-bursts).
+  Do not add competing provider silence hangups.
   Preserve call-scoped global/Agent hangup-marker policies; Local AI receives them
   only after capability negotiation. Invalid or cross-call policy fails closed.
 - **Voice:** per-call override → Agent voice → provider default, with provider
