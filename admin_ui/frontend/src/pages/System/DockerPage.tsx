@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
 import { Container, RefreshCw, AlertCircle, Clock, CheckCircle2, XCircle, Trash2, Database, Layers, Box } from 'lucide-react';
 import { ConfigSection } from '../../components/ui/ConfigSection';
@@ -53,6 +53,7 @@ const DockerPage = () => {
     const [toasts, setToasts] = useState<Toast[]>([]);
     const [diskUsage, setDiskUsage] = useState<DiskUsage | null>(null);
     const [diskLoading, setDiskLoading] = useState(false);
+    const diskRequest = useRef<AbortController | null>(null);
     const [diskError, setDiskError] = useState(false);
     const [expandedMounts, setExpandedMounts] = useState<Record<string, boolean>>({});
 
@@ -77,16 +78,20 @@ const DockerPage = () => {
     };
 
     const fetchDiskUsage = async () => {
+        diskRequest.current?.abort();
+        const abort = new AbortController();
+        diskRequest.current = abort;
         setDiskLoading(true);
         setDiskError(false);
         try {
-            const res = await axios.get('/api/system/docker/disk-usage', { timeout: 65000 });
-            setDiskUsage(res.data);
+            const res = await axios.get('/api/system/docker/disk-usage', { timeout: 65000, signal: abort.signal });
+            if (!abort.signal.aborted) setDiskUsage(res.data);
         } catch (err: any) {
+            if (abort.signal.aborted) return;
             setDiskError(true);
             console.error('Failed to fetch Docker disk usage', err);
         } finally {
-            setDiskLoading(false);
+            if (!abort.signal.aborted) setDiskLoading(false);
         }
     };
 
@@ -126,6 +131,7 @@ const DockerPage = () => {
     useEffect(() => {
         fetchContainers();
         fetchDiskUsage();
+        return () => diskRequest.current?.abort();
     }, []);
 
     const handleRestart = async (id: string, name: string) => {

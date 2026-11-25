@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -113,7 +114,7 @@ def _start(resources):
         try:
             # The worker inherits the lock's open file description. Closing our copy
             # does not unlock it. It survives request disconnects and API restarts.
-            subprocess.Popen(
+            worker = subprocess.Popen(
                 [sys.executable, "-m", "services.docker_cleanup", str(root), str(lock.fileno())],
                 cwd=str(Path(__file__).resolve().parents[1]), pass_fds=(lock.fileno(),),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -122,6 +123,8 @@ def _start(resources):
         except Exception:
             job.update(status="failed", finished_at=time.time(), error="Unable to start Docker cleanup worker.")
             _write(root, job)
+        else:
+            threading.Thread(target=worker.wait, daemon=True, name="docker-cleanup-reaper").start()
         return snapshot(job)
 
 

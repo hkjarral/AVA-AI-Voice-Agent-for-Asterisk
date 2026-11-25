@@ -43,7 +43,7 @@ export function useDockerCleanup(onTerminal: () => void) {
                 const response = await axios.get('/api/system/docker/prune', { signal: abort.signal, timeout: 10000 });
                 if (!abort.signal.aborted && version === generation.current) accept(response.data.job);
             } catch {
-                if (!abort.signal.aborted) {
+                if (!abort.signal.aborted && version === generation.current) {
                     setChecking(false);
                     setError('Cleanup status unavailable. Reconnecting...');
                 }
