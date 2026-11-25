@@ -203,6 +203,7 @@ const DockerPage = () => {
             {/* Docker Disk Usage Section */}
             <ConfigSection title="Docker Disk Usage" description="Monitor and clean up Docker storage to prevent disk space issues.">
                 <ConfigCard className="p-4">
+                    {cleanup.notice && <p role="status" className="text-sm mb-3">{cleanup.notice}</p>}
                     {cleanup.error && <p role="alert" className="text-sm text-destructive mb-3">{cleanup.error}</p>}
                     {cleanup.job && (
                         <div role="status" className="text-sm space-y-1 mb-4">
@@ -282,35 +283,32 @@ const DockerPage = () => {
                                     </div>
                                 </div>
                             </div>
-                            
-                            {/* Cleanup Actions */}
-                            <div className="flex flex-wrap gap-2 pt-2 border-t">
-                                <button
-                                    onClick={() => handlePrune('build_cache')}
-                                    disabled={pruning}
-                                    className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-md bg-orange-500/10 text-orange-600 hover:bg-orange-500/20 disabled:opacity-50 border border-orange-500/20"
-                                >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                    Clean Build Cache
-                                </button>
-                                <button
-                                    onClick={() => handlePrune('images')}
-                                    disabled={pruning}
-                                    className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-md bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 disabled:opacity-50 border border-blue-500/20"
-                                >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                    Clean Unused Images
-                                </button>
-
-                            </div>
-                            
-
                         </div>
                     ) : (
                         <div className="text-center py-4 text-muted-foreground">
                             Unable to load Docker disk usage
                         </div>
                     )}
+                    {/* Cleanup Actions */}
+                    <div className="flex flex-wrap gap-2 pt-2 border-t">
+                        <button
+                            onClick={() => handlePrune('build_cache')}
+                            disabled={pruning}
+                            className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-md bg-orange-500/10 text-orange-600 hover:bg-orange-500/20 disabled:opacity-50 border border-orange-500/20"
+                        >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Clean Build Cache
+                        </button>
+                        <button
+                            onClick={() => handlePrune('images')}
+                            disabled={pruning}
+                            className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-md bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 disabled:opacity-50 border border-blue-500/20"
+                        >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Clean Unused Images
+                        </button>
+
+                    </div>
                 </ConfigCard>
             </ConfigSection>
 

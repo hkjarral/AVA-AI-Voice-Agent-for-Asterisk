@@ -216,7 +216,7 @@ def test_worker_death_keeps_cli_lock_until_independent_deadline(root, monkeypatc
     monkeypatch.setattr(cleanup, 'TIMEOUT_SECONDS', 1)
     binary = root / 'docker'
     marker = root / 'cli-started'
-    binary.write_text(f'#!{sys.executable}\nfrom pathlib import Path\nimport time\nPath({str(marker)!r}).touch()\ntime.sleep(.4)\n')
+    binary.write_text(f'#!{sys.executable}\nfrom pathlib import Path\nimport time\nPath({str(marker)!r}).touch()\ntime.sleep(30)\n')
     binary.chmod(0o755)
     import os
     monkeypatch.setenv('PATH', str(root) + os.pathsep + os.environ['PATH'])
@@ -336,3 +336,38 @@ def test_journal_failure_after_step_retains_completed_state(root, monkeypatch):
     assert writes[-1]['steps'][0]['reclaimed'] == '2GB'
     assert writes[-1]['status'] == 'failed'
     assert cleanup.latest()['status'] == 'interrupted'
+
+
+def test_slow_journal_exhausts_budget_before_command(root, monkeypatch):
+    seed(root)
+    clock = {'now': 0}
+    original_write = cleanup._write
+    def write(root, job):
+        original_write(root, job)
+        clock['now'] = 901
+    monkeypatch.setattr(cleanup, 'time', SimpleNamespace(time=lambda: 1000, monotonic=lambda: clock['now']))
+    monkeypatch.setattr(cleanup, '_write', write)
+    monkeypatch.setattr(cleanup, '_run_command', lambda *a, **k: pytest.fail('deadline passed during journaling'))
+    cleanup.run(root, 10)
+    result = cleanup.latest()
+    assert result['status'] == 'timed_out'
+    assert result['steps'][0]['status'] == 'timed_out'
+
+
+def test_supervisor_does_not_launch_command_after_absolute_deadline(monkeypatch):
+    monkeypatch.setattr(cleanup.subprocess, 'Popen', lambda *a, **k: pytest.fail('deadline already expired'))
+    with pytest.raises(subprocess.TimeoutExpired):
+        cleanup._run_bounded_command(['docker'], stdout=None, stderr=None, timeout=900,
+                                     pass_fds=(), deadline=time.monotonic() - 1)
+
+
+def test_temporary_storage_failure_marks_running_step_failed(root, monkeypatch):
+    seed(root)
+    def full():
+        raise OSError('fixture temporary storage unavailable')
+    monkeypatch.setattr(cleanup.tempfile, 'TemporaryFile', full)
+    cleanup.run(root, 10)
+    result = cleanup.latest()
+    assert result['status'] == 'failed'
+    assert result['steps'][0]['status'] == 'failed'
+    assert result['steps'][0]['error']

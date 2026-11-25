@@ -65,3 +65,30 @@ it('aborts polling and clears its timer on unmount', async () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
     expect(axios.get).toHaveBeenCalledTimes(1);
 });
+
+it('refreshes usage when another client replaces a running job between polls', async () => {
+    const second = { ...running, job_id: 'two' };
+    vi.mocked(axios.get).mockResolvedValueOnce({ data: { job: running } })
+        .mockResolvedValueOnce({ data: { job: second } })
+        .mockResolvedValue({ data: { job: { ...second, status: 'completed' } } });
+    const terminal = vi.fn();
+    renderHook(() => useDockerCleanup(terminal));
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(terminal).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+    expect(terminal).toHaveBeenCalledTimes(2);
+});
+
+it('explains when an existing cleanup does not include the requested resource', async () => {
+    vi.mocked(axios.get).mockResolvedValue({ data: { job: null } });
+    vi.mocked(axios.post).mockResolvedValue({ data: { job: {
+        ...running, steps: [{ resource: 'build_cache', status: 'running', reclaimed: null, error: null }],
+    } } });
+    const hook = renderHook(() => useDockerCleanup(vi.fn()));
+    await act(async () => {});
+    await act(async () => { await hook.result.current.start('images'); });
+    expect(hook.result.current.notice).toContain('Unused images cleanup was not queued');
+    expect(hook.result.current.job?.job_id).toBe('one');
+    expect(hook.result.current.busy).toBe(true);
+});

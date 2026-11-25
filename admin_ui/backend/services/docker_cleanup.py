@@ -137,11 +137,12 @@ def _start(resources):
         return snapshot(job)
 
 
-def _run_command(command, *, stdout, stderr, timeout, pass_fds):
+def _run_command(command, *, stdout, stderr, timeout, pass_fds, deadline=None):
     # A separate supervisor owns the deadline even if the journal worker dies.
+    deadline = deadline if deadline is not None else time.monotonic() + timeout
     lock_fd = pass_fds[0] if pass_fds else -1
     process = subprocess.Popen(
-        [sys.executable, "-m", "services.docker_cleanup", "--command", str(timeout), str(lock_fd), *command],
+        [sys.executable, "-m", "services.docker_cleanup", "--command", str(deadline), str(lock_fd), *command],
         stdout=stdout, stderr=stderr, stdin=subprocess.DEVNULL, pass_fds=pass_fds,
         cwd=str(Path(__file__).resolve().parents[1]), start_new_session=True,
     )
@@ -151,12 +152,16 @@ def _run_command(command, *, stdout, stderr, timeout, pass_fds):
     return subprocess.CompletedProcess(command, code)
 
 
-def _run_bounded_command(command, *, stdout, stderr, timeout, pass_fds):
+def _run_bounded_command(command, *, stdout, stderr, timeout, pass_fds, deadline=None):
+    # Charge interpreter and process startup to the same absolute job deadline.
+    deadline = deadline if deadline is not None else time.monotonic() + timeout
+    if deadline <= time.monotonic():
+        raise subprocess.TimeoutExpired(command, timeout)
     # Docker can invoke a CLI plugin. Keep its descendants in one killable group.
     process = subprocess.Popen(command, stdout=stdout, stderr=stderr, stdin=subprocess.DEVNULL,
                                pass_fds=pass_fds, start_new_session=True)
     try:
-        return subprocess.CompletedProcess(command, process.wait(timeout=timeout))
+        return subprocess.CompletedProcess(command, process.wait(timeout=max(0, deadline - time.monotonic())))
     except subprocess.TimeoutExpired:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -177,11 +182,16 @@ def run(root, lock_fd):
                 break
             step["status"] = "running"
             _write(root, job)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                step.update(status="timed_out", error="Cleanup time limit reached before this command started.")
+                job.update(status="timed_out", error=step["error"])
+                break
             # Spool Docker's potentially large list of deleted layers to disk.
             with tempfile.TemporaryFile() as output:
                 try:
                     result = _run_command(COMMANDS[step["resource"]], stdout=output, stderr=output,
-                                            timeout=remaining, pass_fds=(lock_fd,))
+                                            timeout=remaining, pass_fds=(lock_fd,), deadline=deadline)
                     step["exit_code"] = result.returncode
                     step["status"] = "completed" if result.returncode == 0 else "failed"
                 except subprocess.TimeoutExpired:
@@ -199,10 +209,10 @@ def run(root, lock_fd):
             _write(root, job)
         else:
             job["status"] = "completed"
-    except OSError:
-        job.update(status="failed", error="Cleanup progress storage or Docker execution is unavailable. Some resources may have been removed.")
-    except Exception:
-        job.update(status="failed", error="Docker cleanup could not finish. Some resources may have been removed.")
+    except Exception as exc:
+        error = ("Cleanup progress storage or Docker execution is unavailable. Some resources may have been removed."
+                 if isinstance(exc, OSError) else "Docker cleanup could not finish. Some resources may have been removed.")
+        job.update(status="failed", error=error)
         for step in job["steps"]:
             if step["status"] == "running":
                 step.update(status="failed", error=job["error"])
@@ -216,9 +226,9 @@ def run(root, lock_fd):
 
 if __name__ == "__main__":
     if sys.argv[1] == "--command":
-        timeout, lock_fd = float(sys.argv[2]), int(sys.argv[3])
+        deadline, lock_fd = float(sys.argv[2]), int(sys.argv[3])
         try:
-            result = _run_bounded_command(sys.argv[4:], stdout=None, stderr=None, timeout=timeout,
+            result = _run_bounded_command(sys.argv[4:], stdout=None, stderr=None, timeout=0, deadline=deadline,
                                           pass_fds=(lock_fd,) if lock_fd >= 0 else ())
             sys.exit(result.returncode if result.returncode >= 0 else 1)
         except subprocess.TimeoutExpired:

@@ -15,6 +15,8 @@ export function useDockerCleanup(onTerminal: () => void) {
     const [checking, setChecking] = useState(true);
     const [starting, setStarting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [notice, setNotice] = useState<string | null>(null);
+    const previousRunning = useRef<string | null>(null);
     const controller = useRef<AbortController | null>(null);
     const generation = useRef(0);
     const startingRef = useRef(false);
@@ -22,13 +24,23 @@ export function useDockerCleanup(onTerminal: () => void) {
     const terminalCallback = useRef(onTerminal);
     terminalCallback.current = onTerminal;
 
+    const reportTerminal = (id: string) => {
+        if (terminalRef.current !== id) {
+            terminalRef.current = id;
+            terminalCallback.current();
+        }
+    };
+
     const accept = (next: CleanupJob | null) => {
+        if (previousRunning.current && previousRunning.current !== next?.job_id) {
+            reportTerminal(previousRunning.current);
+        }
+        previousRunning.current = next?.status === 'running' ? next.job_id : null;
         setJob(next);
         setChecking(false);
         setError(null);
         if (next && next.status !== 'running' && terminalRef.current !== next.job_id) {
-            terminalRef.current = next.job_id;
-            terminalCallback.current();
+            reportTerminal(next.job_id);
         }
     };
 
@@ -63,6 +75,7 @@ export function useDockerCleanup(onTerminal: () => void) {
         const abort = controller.current;
         startingRef.current = true;
         setStarting(true);
+        setNotice(null);
         generation.current += 1;
         try {
             const response = await axios.post('/api/system/docker/prune', {
@@ -71,7 +84,14 @@ export function useDockerCleanup(onTerminal: () => void) {
                 prune_containers: false,
                 prune_volumes: false,
             }, { signal: abort?.signal, timeout: 10000 });
-            if (!abort?.signal.aborted) accept(response.data.job);
+            if (!abort?.signal.aborted) {
+                const active = response.data.job as CleanupJob;
+                accept(active);
+                if (!active.steps.some(step => step.resource === type)) {
+                    const label = type === 'images' ? 'Unused images' : 'Build cache';
+                    setNotice(`${label} cleanup was not queued. Another cleanup is running. Retry when it finishes.`);
+                }
+            }
         } catch (err) {
             if (!abort?.signal.aborted) {
                 const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
@@ -84,5 +104,5 @@ export function useDockerCleanup(onTerminal: () => void) {
         }
     };
 
-    return { job, error, busy: checking || starting || !!error || job?.status === 'running', start };
+    return { job, error, notice, busy: checking || starting || !!error || job?.status === 'running', start };
 }
