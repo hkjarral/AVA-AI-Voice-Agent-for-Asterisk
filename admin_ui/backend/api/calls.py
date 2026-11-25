@@ -4,6 +4,7 @@ Call History API endpoints (Milestone 21).
 Provides REST API for viewing, searching, and managing call history records.
 """
 
+import asyncio
 import csv
 import io
 import json
@@ -346,6 +347,9 @@ def _resolve_agent(record, agent_names: Optional[Dict[str, str]]):
     return context_name, agent_name
 
 
+from src.core.credential_fields import mask_business_data
+
+
 def _record_to_response(record, agent_names: Optional[Dict[str, str]] = None) -> CallRecordResponse:
     """Convert a CallRecord to a response model."""
     agent_slug, agent_name = _resolve_agent(record, agent_names)
@@ -375,9 +379,9 @@ def _record_to_response(record, agent_names: Optional[Dict[str, str]] = None) ->
         external_call_id=getattr(record, "external_call_id", None),
         external_direction=getattr(record, "external_direction", None),
         external_disposition=getattr(record, "external_disposition", None),
-        external_metadata=getattr(record, "external_metadata", {}) or {},
-        call_metadata=getattr(record, "call_metadata", {}) or {},
-        call_metadata_updates=getattr(record, "call_metadata_updates", []) or [],
+        external_metadata=mask_business_data(getattr(record, "external_metadata", {}) or {}),
+        call_metadata=mask_business_data(getattr(record, "call_metadata", {}) or {}),
+        call_metadata_updates=mask_business_data(getattr(record, "call_metadata_updates", []) or []),
         tool_calls=_normalize_tool_calls(record.tool_calls or []),
         pre_call_tool_calls=_normalize_phase_tool_calls(
             getattr(record, "pre_call_tool_calls", None) or [], "pre_call"
@@ -435,7 +439,7 @@ async def get_providers_health():
     Returns a map of provider name -> health status.
     Status values: healthy, degraded, error, no_data.
     """
-    store = _get_call_history_store()
+    store = await asyncio.to_thread(_get_call_history_store)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
 
     provider_stats: dict[str, dict] = {}
@@ -550,7 +554,7 @@ async def list_calls(
     """
     List call history records with pagination and filtering.
     """
-    store = _get_call_history_store()
+    store = await asyncio.to_thread(_get_call_history_store)
 
     # Get total count (with all filters for accurate pagination)
     total = await store.count(**filters)
@@ -588,7 +592,7 @@ async def get_call_stats(
     Accepts the same filters as the call list so the summary cards describe
     exactly the calls the operator is looking at.
     """
-    store = _get_call_history_store()
+    store = await asyncio.to_thread(_get_call_history_store)
 
     stats = await store.get_stats(**filters)
 
@@ -627,7 +631,7 @@ async def get_filter_options():
     """
     Get distinct values for filter dropdowns.
     """
-    store = _get_call_history_store()
+    store = await asyncio.to_thread(_get_call_history_store)
     
     providers = await store.get_distinct_values("provider_name")
     pipelines = await store.get_distinct_values("pipeline_name")
@@ -675,7 +679,7 @@ async def get_call(record_id: str):
     """
     Get a single call record by ID.
     """
-    store = _get_call_history_store()
+    store = await asyncio.to_thread(_get_call_history_store)
     
     record = await store.get(record_id)
     if not record:
@@ -689,7 +693,7 @@ async def get_call_transcript(record_id: str):
     """
     Get just the conversation history for a call.
     """
-    store = _get_call_history_store()
+    store = await asyncio.to_thread(_get_call_history_store)
     
     record = await store.get(record_id)
     if not record:
@@ -918,7 +922,8 @@ def _recording_info(call_id, start_time):
 
 @router.get("/calls/{record_id}/recording", response_model=RecordingInfoResponse)
 async def get_call_recording_info(record_id: str):
-    record = await _get_call_history_store().get(record_id)
+    store = await asyncio.to_thread(_get_call_history_store)
+    record = await store.get(record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Call record not found")
     return await run_in_threadpool(_recording_info, record.call_id, record.start_time)
@@ -978,7 +983,8 @@ def _prepare_recording(call_id, start_time, download):
 
 
 async def _stream_call_recording(record_id: str, download: bool = False):
-    record = await _get_call_history_store().get(record_id)
+    store = await asyncio.to_thread(_get_call_history_store)
+    record = await store.get(record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Call record not found")
     return await run_in_threadpool(_prepare_recording, record.call_id, record.start_time, download)
@@ -1005,7 +1011,7 @@ async def delete_call(record_id: str):
     """
     Delete a single call record.
     """
-    store = _get_call_history_store()
+    store = await asyncio.to_thread(_get_call_history_store)
     
     success = await store.delete(record_id)
     if not success:
@@ -1028,7 +1034,7 @@ async def bulk_delete_calls(
             detail="Must specify either before_date or older_than_days"
         )
     
-    store = _get_call_history_store()
+    store = await asyncio.to_thread(_get_call_history_store)
     
     if older_than_days:
         cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
@@ -1049,7 +1055,7 @@ async def export_calls_csv(
     """
     Export call records as CSV with all filters matching the UI.
     """
-    store = _get_call_history_store()
+    store = await asyncio.to_thread(_get_call_history_store)
 
     # Get all matching records (limit to 10000 for safety)
     records = await store.list(
@@ -1084,7 +1090,7 @@ async def export_calls_csv(
             r.transfer_destination or "", r.error_message or "",
             len(r.tool_calls), round(r.avg_turn_latency_ms, 2), round(r.max_turn_latency_ms, 2),
             r.total_turns, r.barge_in_count,
-            json.dumps(getattr(r, "call_metadata", {}) or {}, ensure_ascii=False, sort_keys=True),
+            json.dumps(mask_business_data(getattr(r, "call_metadata", {}) or {}), ensure_ascii=False, sort_keys=True),
         ]
         writer.writerow([_csv_safe_cell(value) for value in row])
     
@@ -1106,7 +1112,7 @@ async def export_calls_json(
     """
     Export call records as JSON with all filters matching the UI.
     """
-    store = _get_call_history_store()
+    store = await asyncio.to_thread(_get_call_history_store)
 
     # Get all matching records (limit to 10000 for safety)
     records = await store.list(

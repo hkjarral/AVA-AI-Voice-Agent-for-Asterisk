@@ -26,7 +26,7 @@ def test_validate_preview_is_synthetic_and_has_no_external_effects(monkeypatch):
     }})
     assert response.status_code == 200
     assert response.json()["valid"]
-    assert response.json()["preview"]["url"] == "https://example.invalid/briefing"
+    assert response.json()["preview"]["url"] == "https://example.invalid"
     assert not external.called
 
 
@@ -109,7 +109,7 @@ async def test_live_test_displays_sent_values_with_json_field_and_environment_ma
         test_values={"caller_name": "Actual test caller", "call_id": "actual-test-id"},
     ))
     assert result.success
-    assert result.resolved_url == "***/hook/actual-test-id"
+    assert result.resolved_url == "***"
     body = json.loads(result.resolved_body)
     assert body["caller"] == "Actual test caller"
     assert body["credential"] == "<redacted>" and body["nested"]["password"] == "<redacted>"

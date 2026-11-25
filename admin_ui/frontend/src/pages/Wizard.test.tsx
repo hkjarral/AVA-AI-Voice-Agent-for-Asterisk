@@ -8,7 +8,7 @@ import Wizard from './Wizard';
 
 vi.mock('axios');
 vi.mock('../hooks/useConfirmDialog', () => ({ useConfirmDialog: () => ({ confirm: vi.fn() }) }));
-const saved = { provider: 'openai_realtime', openai_key: 'synthetic-key', asterisk_host: '127.0.0.1', asterisk_username: 'test', asterisk_password: 'synthetic-password', asterisk_app: 'custom-app' };
+const saved = { provider: 'openai_realtime', openai_key: { set: true }, asterisk_host: '127.0.0.1', asterisk_username: 'test', asterisk_password: { set: true }, asterisk_app: 'custom-app' };
 describe('Fresh setup journey', () => {
     beforeEach(() => {
         vi.resetAllMocks();
@@ -26,17 +26,63 @@ describe('Fresh setup journey', () => {
         await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/wizard/load-config'));
         fireEvent.click(screen.getByText('Next'));
         fireEvent.click(screen.getByText('Next'));
-        await screen.findByDisplayValue('synthetic-key');
+        await screen.findByText('Set');
         fireEvent.click(screen.getByText('Next'));
         await screen.findByLabelText('Deployment topology');
+        fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/wizard/validate-connection', expect.objectContaining({ username: 'test' })));
+        expect(vi.mocked(axios.post).mock.calls.find(([url]) => url.endsWith('/validate-connection'))?.[1]).not.toHaveProperty('password');
         fireEvent.change(screen.getByLabelText('Deployment topology'), { target: { value: 'remote' } });
         fireEvent.change(screen.getByLabelText('AVA media IPv4 address'), { target: { value: '192.0.2.20' } });
         fireEvent.change(screen.getByDisplayValue('127.0.0.1'), { target: { value: '192.0.2.10' } });
         fireEvent.click(screen.getByText('Finish Setup'));
         expect(await screen.findByText('Configuration saved')).toBeTruthy();
+        expect(axios.post).toHaveBeenCalledWith('/api/wizard/validate-key', { provider: 'openai' });
+        const posted = vi.mocked(axios.post).mock.calls.find(([path]) => path === '/api/wizard/save')?.[1];
+        expect(posted).not.toHaveProperty('openai_key');
+        expect(posted).not.toHaveProperty('asterisk_password');
         expect(await screen.findByDisplayValue(/AI_AGENT=receptionist/)).toBeTruthy();
         expect(screen.queryByText('Setup Complete!')).toBeNull();
         expect(axios.post).toHaveBeenCalledWith('/api/wizard/save', expect.objectContaining({ deployment_topology: 'remote', media_advertise_host: '192.0.2.20', asterisk_app: 'custom-app' }));
+    });
+    it('keeps a password edited while the previous value is being saved', async () => {
+        let completeSave!: () => void;
+        const pending = new Promise<void>(resolve => { completeSave = resolve; });
+        vi.mocked(axios.post).mockImplementation(async url => {
+            if (url === '/api/wizard/save') await pending;
+            return { data: { valid: true, status: 'success' } };
+        });
+        render(<MemoryRouter><Wizard /></MemoryRouter>);
+        await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/wizard/load-config'));
+        fireEvent.click(screen.getByText('Next'));
+        fireEvent.click(screen.getByText('Next'));
+        await screen.findByText('Set');
+        fireEvent.click(screen.getByText('Next'));
+        fireEvent.click(await screen.findByRole('button', { name: 'Replace ARI Password' }));
+        const password = screen.getByLabelText('ARI Password');
+        fireEvent.change(password, { target: { value: 'first-replacement' } });
+        fireEvent.click(screen.getByText('Finish Setup'));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/wizard/save',
+            expect.objectContaining({ asterisk_password: 'first-replacement' })));
+        fireEvent.change(password, { target: { value: 'later-replacement' } });
+        completeSave();
+        fireEvent.click(await screen.findByText('Edit setup settings'));
+        expect(await screen.findByLabelText('ARI Password')).toHaveValue('later-replacement');
+    });
+    it('does not validate an unset key and sends only a newly entered replacement', async () => {
+        vi.mocked(axios.get).mockResolvedValueOnce({ data: { ...saved, openai_key: { set: false } } });
+        render(<MemoryRouter><Wizard /></MemoryRouter>);
+        await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/wizard/load-config'));
+        fireEvent.click(screen.getByText('Next'));
+        fireEvent.click(screen.getByText('Next'));
+        await screen.findByText('Not set');
+        fireEvent.click(screen.getByText('Next'));
+        expect(vi.mocked(axios.post).mock.calls.some(([url]) => url.endsWith('/validate-key'))).toBe(false);
+        fireEvent.click(screen.getByRole('button', { name: 'Replace OpenAI API Key' }));
+        const replacement = 'synthetic-replacement';
+        fireEvent.change(screen.getByLabelText('OpenAI API Key'), { target: { value: replacement } });
+        fireEvent.click(screen.getByText('Next'));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/wizard/validate-key', { provider: 'openai', api_key: replacement }));
     });
     it('resumes a saved installation at the handoff', async () => {
         vi.mocked(axios.get).mockResolvedValueOnce({ data: { ...saved, onboarding: { stage: 'configuration_saved' } } });

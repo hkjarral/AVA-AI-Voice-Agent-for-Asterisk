@@ -31,6 +31,25 @@ const expectThemeAwareControl = (control: HTMLElement) => {
 };
 
 describe('HTTPToolForm editor colors', () => {
+    it.each([
+        ['https://fixture.invalid/«secret:signed»', 'generic_http_lookup'],
+        [{origin: 'https://fixture.invalid', set: true}, 'generic_http_lookup'],
+        [{origin: 'https://fixture.invalid', set: true}, 'a2a_agent'],
+    ] as const)('shows a saved destination and requires a complete replacement', (url, kind) => {
+        render(<HTTPToolForm phase={kind === 'a2a_agent' ? 'in_call' : 'pre_call'} onChange={vi.fn()} config={{lookup: {
+            kind, phase: kind === 'a2a_agent' ? 'in_call' : 'pre_call', enabled: true,
+            [kind === 'a2a_agent' ? 'agent_url' : 'url']: url, method: 'GET', headers: {},
+        }}} />);
+        fireEvent.click(screen.getByRole('button', {name: 'Edit lookup'}));
+        expect(screen.getAllByText('https://fixture.invalid', {exact:false}).length).toBeGreaterThan(0);
+        expect(document.body.textContent).not.toContain('«secret:');
+        fireEvent.click(screen.getByRole('button', {name: 'Replace URL'}));
+        const field = screen.getByRole('textbox', {name: kind === 'a2a_agent' ? 'Agent endpoint' : 'URL'});
+        expect(field).toHaveValue('');
+        fireEvent.change(field, {target: {value:'https://replacement.invalid/complete'}});
+        expect(field).toHaveValue('https://replacement.invalid/complete');
+    });
+
     it.each(['Content-Type', ' content-type '])('Use example replaces a pending %s row before review and save', async (headerName) => {
         const onChange = vi.fn();
         render(<HTTPToolForm phase="pre_call" onChange={onChange} config={{lookup: {

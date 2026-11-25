@@ -151,3 +151,16 @@ def test_grok_editor_and_agent_share_catalog_even_for_first_instance(monkeypatch
     assert agent_meta["voices"] == catalog["voices"]
     assert len(catalog["voices"]) == 28
     assert agent_meta["default_voice"] == "myCloneID"
+
+
+def test_meta_never_returns_a_non_version_credential_from_expansion(monkeypatch, tmp_path):
+    from secrets import token_hex
+
+    value = token_hex()
+    env = tmp_path / ".env"
+    env.write_text(f"TEST_API_KEY={value}\n")
+    monkeypatch.setattr(config.settings, "ENV_PATH", str(env))
+    client = _client(monkeypatch, {"deepgram": {"type": "deepgram", "tts_version": "${TEST_API_KEY}"}})
+    response = client.get("/api/config/providers/meta")
+    assert value not in response.text
+    assert response.json()["providers"][0]["tts_version"] == "v1"

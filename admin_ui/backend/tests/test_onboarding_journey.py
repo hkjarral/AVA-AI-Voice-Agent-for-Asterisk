@@ -284,3 +284,50 @@ def test_media_setup_errors_do_not_expose_exceptions(install, monkeypatch):
     assert len(result["errors"]) == 2
     assert "Manual setup required" in response.text
     assert "synthetic-secret" not in response.text
+
+
+def test_saved_wizard_credentials_stay_off_wire_and_survive_resuming_setup(install):
+    import secrets
+
+    client, root = install
+    key, password = secrets.token_hex(), secrets.token_hex()
+    payload = setup(asterisk_password=password, openai_key=key)
+    assert client.post("/wizard/save", json=payload).status_code == 200
+    loaded = client.get("/wizard/load-config")
+    assert password not in loaded.text and key not in loaded.text
+    assert loaded.json()["asterisk_password"] == loaded.json()["openai_key"] == {"set": True}
+    assert loaded.json()["google_key"] == {"set": False}
+    del payload["asterisk_password"], payload["openai_key"]
+    assert client.post("/wizard/save", json=payload).status_code == 200
+    assert key in (root / ".env").read_text() and password in (root / ".env").read_text()
+    payload["asterisk_host"] = "changed.invalid"
+    assert client.post("/wizard/save", json=payload).status_code == 400
+
+
+@pytest.mark.parametrize("port", ["18088", "${PBX_PORT}"])
+def test_load_config_resolves_only_the_numeric_ari_port(install, port):
+    client, root = install
+    (root / ".env").write_text(
+        f"PBX_PORT=18088\nASTERISK_ARI_PORT={port}\nOPENAI_API_KEY=private-fixture\nAI_NAME=${{OPENAI_API_KEY}}\n"
+    )
+    result = client.get("/wizard/load-config")
+    assert result.status_code == 200
+    assert result.json()["asterisk_port"] == 18088
+    assert result.json()["ai_name"] == "${OPENAI_API_KEY}"
+    assert result.json()["openai_key"] == {"set": True}
+    assert "private-fixture" not in result.text
+
+
+@pytest.mark.parametrize("port", ["${MISSING_FIXTURE_PORT}", "private-fixture", "65536"])
+def test_load_config_rejects_invalid_port_without_echoing_value(install, port):
+    client, root = install
+    (root / ".env").write_text(f"ASTERISK_ARI_PORT={port}\n")
+    result = client.get("/wizard/load-config")
+    assert result.status_code == 422 and "ASTERISK_ARI_PORT" in result.text
+    assert port not in result.text
+
+def test_ari_port_cannot_expose_an_aliased_numeric_credential(install):
+    client, root = install
+    (root / ".env").write_text("OPENAI_API_KEY=45123\nPBX_PORT=${OPENAI_API_KEY}\nASTERISK_ARI_PORT=${PBX_PORT}\n")
+    result = client.get("/wizard/load-config")
+    assert result.status_code == 422 and "45123" not in result.text

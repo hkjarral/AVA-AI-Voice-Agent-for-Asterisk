@@ -15,7 +15,7 @@ def app_client(monkeypatch):
     original = yaml.safe_load(Path(config_api.settings.CONFIG_PATH).read_text())
     state = {"config": original, "writes": 0}
     monkeypatch.setattr(tools_api, "_load_cfg", lambda: copy.deepcopy(state["config"]))
-    async def persist(payload):
+    async def persist(payload, previous=None):
         config_api._validate_ai_agent_config(yaml.safe_dump(payload))
         state["config"] = copy.deepcopy(payload)
         state["writes"] += 1

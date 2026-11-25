@@ -284,3 +284,36 @@ describe('A2A assignment', () => {
         expect(selected.inCallHttpTools).toEqual(['lookup']);
     });
 });
+
+it.each(['tools_json', 'extra_json', 'mcp_json', 'tool_configs_json', 'hangup_policy_json'] as const)(
+    'keeps the opaque %s field when another setting is saved and reloaded', (column) => {
+        const opaque = JSON.stringify({ __ava_stored_json__: '«secret:signed-synthetic-marker»' });
+        const form = parseAgentConfig({ [column]: opaque, provider: 'local' });
+        form.backgroundMusic = column === 'extra_json' ? '' : 'office';
+        const saved = serializeAgentConfig(form);
+        expect(saved[column]).toBe(opaque);
+        expect(serializeAgentConfig(parseAgentConfig(saved))[column]).toBe(opaque);
+    }
+);
+
+it('preserves a reconciled legacy tool map while editing another field', () => {
+    const original = '{"send_email_summary":{"enabled":true}}';
+    const form = parseAgentConfig({ tools_json: original });
+    expect(form.inCallTools).toEqual(['send_email_summary']);
+    form.backgroundMusic = 'lobby';
+    expect(serializeAgentConfig(form).tools_json).toBe(original);
+    form.inCallTools = [];
+    expect(serializeAgentConfig(form).tools_json).toBe('[]');
+    form.inCallTools = ['send_email_summary', 'transfer'];
+    expect(JSON.parse(serializeAgentConfig(form).tools_json!)).toEqual({ send_email_summary: { enabled: true }, transfer: {} });
+    form.inCallTools = ['transfer'];
+    expect(serializeAgentConfig(form).tools_json).toBe('["transfer"]');
+});
+
+it('retains opaque resource restrictions across partial form changes', () => {
+    const stored = JSON.stringify({ __ava_stored_json__: '«secret:signed-synthetic-marker»' });
+    const form = parseAgentConfig({ tool_configs_json: stored });
+    form.googleCalendarPolicy = 'selected';
+    form.googleCalendarKeys = ['example'];
+    expect(serializeAgentConfig(form).tool_configs_json).toBe(stored);
+});

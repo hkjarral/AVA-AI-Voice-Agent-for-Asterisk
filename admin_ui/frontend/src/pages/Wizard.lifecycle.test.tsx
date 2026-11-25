@@ -19,7 +19,7 @@ const deferred = <T,>() => {
     const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
     return { promise, resolve, reject };
 };
-const saved = { provider: 'local', asterisk_host: '127.0.0.1', asterisk_username: 'test', asterisk_password: 'synthetic-password', openai_key: 'synthetic-key' };
+const saved = { provider: 'local', asterisk_host: '127.0.0.1', asterisk_username: 'test', asterisk_password: { set: true }, openai_key: { set: true }, kroko_api_key: { set: true }, kokoro_api_key: { set: true } };
 let loadProgress: (config?: AxiosRequestConfig) => Promise<Reply>;
 let startServer: () => Promise<Reply>;
 let loadLogs: () => Promise<Reply>;
@@ -86,6 +86,8 @@ describe('Wizard lifecycle ownership', () => {
         const submissions = vi.mocked(axios.post).mock.calls.filter(([url]) => url.endsWith('/download-selected-models'));
         expect(submissions).toHaveLength(2);
         expect(submissions[0][1]).toMatchObject({ language: 'en-US' });
+        expect(submissions[0][1]).not.toHaveProperty('kroko_api_key');
+        expect(submissions[0][1]).not.toHaveProperty('kokoro_api_key');
         expect(submissions[1][1]).toMatchObject({ language: 'es-ES' });
         await act(async () => { next.resolve({ data: { completed: true } }); });
         expect(screen.getByRole('button', { name: 'Downloaded' })).toBeDisabled();

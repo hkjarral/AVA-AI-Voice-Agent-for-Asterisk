@@ -285,7 +285,10 @@ kill $(cat admin_ui.pid) && nohup python main.py > admin_ui.log 2>&1 &
 4. Enter old and new password
 5. Click "Update Password"
 
-**If you forget your password**:
+**Recover a forgotten password from the host**
+
+This replaces the user database with a new `admin` account. If you still know the password and receive HTTP 429, follow the [login lockout recovery procedure](../docs/MIGRATION.md#login-origins-and-lockout-recovery) to keep existing accounts. For a password reset, restrict Admin UI access to your management connection and retain a protected backup of `config/users.json` first.
+
 ```bash
 # Delete the users file. On next start a new one-time password is generated and
 # printed to Docker logs, or the process/systemd logs for a non-Docker installation.
@@ -294,6 +297,8 @@ rm config/users.json
 # Restart admin-ui
 docker compose restart admin_ui
 ```
+
+Sign in as `admin` using the generated password from the startup log or the host’s owner-only `config/.first-run-password`. Set a new password at first login, then delete the one-time password file before reopening access.
 
 ---
 
@@ -574,21 +579,7 @@ COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent ./scripts/compose-build.sh admin_ui
 
 ### Login Not Working
 
-**Try default credentials**:
-- Username: `admin`
-- Password: `admin`
-
-**Reset to defaults**:
-```bash
-# Stop container
-docker compose stop admin_ui
-
-# Delete users file
-rm config/users.json
-
-# Start container (recreates default user)
-docker compose start admin_ui
-```
+For first login, use `admin` and the generated one-time password. For repeated HTTP 429 responses, see [login lockout recovery](../docs/MIGRATION.md#login-origins-and-lockout-recovery). For a lost password, use [host password recovery](#password-management).
 
 ### 401 Unauthorized Errors
 

@@ -31,6 +31,7 @@ import {
     ChevronsLeft,
     ChevronsRight
 } from 'lucide-react';
+import { loadProvidersPage } from '../../pages/loadProvidersPage';
 import { useAuth } from '../../auth/AuthContext';
 import { KOFI_URL, SPONSORS_URL } from '../../config/donation';
 import { useSidebarCollapsed } from '../../hooks/useSidebarCollapsed';
@@ -47,12 +48,17 @@ const itemClasses = (collapsed: boolean, active: boolean) =>
         : 'text-muted-foreground hover:bg-accent hover:text-foreground'
     }`;
 
-const SidebarItem = ({ to, icon: Icon, label, end = false }: { to: string, icon: any, label: string, end?: boolean }) => {
+// Navigation retries normally when a speculative import fails.
+const preloadProviders = () => { void loadProvidersPage().catch(() => {}); };
+
+const SidebarItem = ({ to, icon: Icon, label, end = false, preload }: { to: string, icon: any, label: string, end?: boolean, preload?: () => void }) => {
     const collapsed = React.useContext(CollapseContext);
     return (
         <NavLink
             to={to}
             end={end}
+            onPointerEnter={preload}
+            onFocus={preload}
             title={collapsed ? label : undefined}
             aria-label={collapsed ? label : undefined}
             className={({ isActive }) => itemClasses(collapsed, isActive)}
@@ -152,7 +158,7 @@ const Sidebar = () => {
 
                     <SidebarGroup title="Core Configuration">
                         <SidebarItem to="/agents" icon={Users} label="Agents" />
-                        <SidebarItem to="/providers" icon={Server} label="Providers" />
+                        <SidebarItem to="/providers" icon={Server} label="Providers" preload={preloadProviders} />
                         <SidebarItem to="/pipelines" icon={Workflow} label="Pipelines" />
                         <SidebarItem to="/profiles" icon={Sliders} label="Audio Profiles" />
                         <SidebarItem to="/tools" icon={Wrench} label="Tools" />

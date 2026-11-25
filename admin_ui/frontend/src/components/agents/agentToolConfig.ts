@@ -26,6 +26,7 @@ export interface AgentToolState {
     hangupEndCallMarkers: string[];
     extraPassthrough: Record<string, unknown>; // extra keys we do not own (+ object-form in_call_http_tools)
     mcpJsonRaw: string;               // mcp_json preserved verbatim — NOTE: no runtime effect, MCP is configured globally not per-agent (audit LOW-T2)
+    storedJson?: Partial<Record<'tools_json' | 'tool_configs_json' | 'hangup_policy_json', string>>;
     transferDestinationPolicy: ResourcePolicy;
     transferDestinationKeys: string[];
     googleCalendarPolicy: ResourcePolicy;
@@ -109,6 +110,17 @@ export interface AgentLike {
 }
 
 export function parseAgentConfig(agent: AgentLike | null | undefined): AgentToolState {
+    const storedJson: AgentToolState['storedJson'] = {};
+    for (const column of ['tools_json', 'tool_configs_json', 'hangup_policy_json'] as const) {
+        const raw = agent?.[column];
+        const marker = raw && safeParseObject(raw).__ava_stored_json__;
+        if (raw && typeof marker === 'string' && marker.includes('«secret:')) {
+            storedJson[column] = raw;
+        }
+    }
+    // Legacy Context imports can store a tool-to-settings object. The tool
+    // picker edits a list, so preserve this form until a replacement is chosen.
+    if (agent?.tools_json?.trimStart().startsWith('{')) storedJson.tools_json = agent.tools_json;
     const extra = safeParseObject(agent?.extra_json);
     const toolConfigs = safeParseObject(agent?.tool_configs_json);
     const hangupPolicy = safeParseObject(agent?.hangup_policy_json);
@@ -140,7 +152,12 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
 
     let inCallTools: string[] = [];
     if (agent?.tools_json && agent.tools_json.trim()) {
-        try { inCallTools = asStrArray(JSON.parse(agent.tools_json)); } catch { inCallTools = []; }
+        const toolMap = safeParseObject(agent.tools_json);
+        if (storedJson.tools_json) {
+            if (!toolMap.__ava_stored_json__) inCallTools = Object.keys(toolMap);
+        } else {
+            try { inCallTools = asStrArray(JSON.parse(agent.tools_json)); } catch { inCallTools = []; }
+        }
     }
 
     return {
@@ -162,6 +179,7 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
             ? [] : asStrArray(hangupPolicy['end_call']),
         extraPassthrough: passthrough,
         mcpJsonRaw: agent?.mcp_json || '',
+        storedJson,
         transferDestinationPolicy,
         transferDestinationKeys: transferDestinationPolicy === 'selected' || !isKnownPolicy(transferDestinationPolicy)
             ? asStrArray(transferConfig['destination_keys']) : [],
@@ -246,13 +264,30 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
         };
     }
 
+    let toolsJson = state.inCallTools.length ? JSON.stringify(state.inCallTools) : null;
+    const storedTools = state.storedJson?.tools_json;
+    if (storedTools) {
+        const original = safeParseObject(storedTools);
+        const names = Object.keys(original);
+        if (original.__ava_stored_json__) {
+            if (!state.inCallTools.length) toolsJson = storedTools;
+        } else if (names.length === state.inCallTools.length && names.every(name => state.inCallTools.includes(name))) {
+            toolsJson = storedTools;
+        } else if (state.inCallTools.some(name => Object.prototype.hasOwnProperty.call(original, name))) {
+            toolsJson = JSON.stringify(Object.fromEntries(state.inCallTools.map(name =>
+                [name, Object.prototype.hasOwnProperty.call(original, name) ? original[name] : {}])));
+        } else {
+            toolsJson = JSON.stringify(state.inCallTools);
+        }
+    }
+
     return {
         provider: state.pipeline ? '' : state.provider,
-        tools_json: state.inCallTools.length ? JSON.stringify(state.inCallTools) : null,
+        tools_json: toolsJson,
         mcp_json: state.mcpJsonRaw.trim() || null,
         extra_json: Object.keys(extra).length ? JSON.stringify(extra) : null,
-        tool_configs_json: Object.keys(toolConfigs).length ? JSON.stringify(toolConfigs) : null,
-        hangup_policy_json: state.hangupMarkerStrategy === 'inherit' ? null : JSON.stringify({
+        tool_configs_json: state.storedJson?.tool_configs_json ?? (Object.keys(toolConfigs).length ? JSON.stringify(toolConfigs) : null),
+        hangup_policy_json: state.hangupMarkerStrategy === 'inherit' ? state.storedJson?.hangup_policy_json ?? null : JSON.stringify({
             strategy: state.hangupMarkerStrategy,
             end_call: [...new Set(state.hangupEndCallMarkers.map((marker) => marker.trim()).filter(Boolean))],
         }),

@@ -99,7 +99,10 @@ docker compose -p asterisk-ai-voice-agent exec -T admin_ui \
 ```
 
 The output is a legacy-compatible `contexts:` block containing the recoverable Agent
-fields. Treat it as a diagnostic/export artifact. Restoring `agents.db` is the preferred
+fields and may include stored credentials. Add `--redact` to omit fields classified
+as credential-bearing. Prompts, greetings and notes remain in the export unless
+the URL-password scan flags the field. Review free-form text for credentials
+before sharing a diagnostic copy. Restoring `agents.db` is the preferred
 v7.4 recovery method.
 
 ## Rollback boundaries

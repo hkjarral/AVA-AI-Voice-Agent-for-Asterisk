@@ -11,6 +11,16 @@ sys.path.insert(0, str(BACKEND_ROOT))
 from api import config  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def isolate_unsaved_local_provider_forms(tmp_path, monkeypatch):
+    # These tests verify unsaved Local AI forms. A shipped provider with the
+    # same name may bind its credential to a different environment-backed URL.
+    base = tmp_path / "base.yaml"
+    base.write_text("providers: {}\n")
+    monkeypatch.setattr(config.settings, "CONFIG_PATH", str(base))
+    monkeypatch.setattr(config.settings, "LOCAL_CONFIG_PATH", str(tmp_path / "local.yaml"))
+
+
 class _FakeLocalAIWebSocket:
     def __init__(self, sent_messages, status_payload, auth_status="ok"):
         self._sent_messages = sent_messages
@@ -213,3 +223,37 @@ async def test_local_provider_stops_after_failed_auth_without_host_fallback(
     assert result["success"] is False
     assert "test-secret" not in result["message"]
     assert sent_messages == [{"type": "auth", "auth_token": "test-secret"}]
+
+
+@pytest.mark.parametrize("field,fallback", [("base_url", False), ("ws_url", True)])
+def test_saved_websocket_probe_reports_only_readiness(monkeypatch, field, fallback):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from secrets import token_hex
+    import yaml
+
+    private = "local_ai_server-" + token_hex()
+    url = f"ws://fixture:{private}@local_ai_server:8765/runtime?tenant={private}"
+    saved = {"type": "local", field: url, "capabilities": ["stt"]}
+    Path(config.settings.CONFIG_PATH).write_text(yaml.safe_dump({"providers": {"local_stt": saved}}))
+    monkeypatch.setattr(config.settings, "ENV_PATH", str(Path(config.settings.CONFIG_PATH).with_suffix(".env")))
+    monkeypatch.delenv("LOCAL_WS_AUTH_TOKEN", raising=False)
+    payload = {**_status_payload(), "stt_backend": private}
+    attempts = []
+
+    def connect(target, **_kwargs):
+        attempts.append(target)
+        if fallback and len(attempts) == 1:
+            raise OSError("unavailable")
+        return _FakeLocalAIWebSocket([], payload)
+
+    monkeypatch.setattr(websockets, "connect", connect)
+    app = FastAPI()
+    app.include_router(config.router, prefix="/config")
+    client = TestClient(app)
+    read = client.get("/config")
+    assert read.status_code == 200 and private not in read.text
+    response = client.post("/config/providers/test", json={"name": "local_stt", "config": read.json()["providers"]["local_stt"]})
+    assert response.status_code == 200
+    assert response.json() == {"success": True, "message": "Local AI Server connected. STT: loaded | LLM: not loaded | TTS: loaded"}
+    assert attempts == ([url, url.replace("@local_ai_server:", "@127.0.0.1:")] if fallback else [url])

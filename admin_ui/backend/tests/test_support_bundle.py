@@ -341,3 +341,17 @@ def test_system_bundle_is_bounded_and_sanitizes_config_and_logs(monkeypatch):
     assert "raw-secret" not in all_text
     assert "me@example.com" not in all_text
     assert "private business instructions" not in all_text
+
+
+def test_agent_bundle_never_returns_operator_supplied_structure_labels(tmp_path, monkeypatch):
+    def seed(store):
+        store.create(display_name="Routing", provider="local", prompt="hello",
+                     tools_json=json.dumps([{"name": {"token": "CANARY-nested"}}]),
+                     extra_json=json.dumps({"CANARY-map-key": {"token": "private"}}))
+
+    result = _client(tmp_path, monkeypatch, seed).get("/api/support-bundle")
+    assert result.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(result.content)) as bundle:
+        agents = json.loads(bundle.read("agents_redacted.json"))
+        assert [agent["slug"] for agent in agents] == ["routing"]
+        assert "CANARY-" not in json.dumps(agents)

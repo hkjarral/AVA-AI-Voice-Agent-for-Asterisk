@@ -150,6 +150,9 @@ const ModularSubtypeForm: React.FC<ModularSubtypeFormProps> = ({ subtype, config
     }
 
     // text / password
+    const tooltip = /(?:^|_)(?:url|endpoint)$/.test(field.key)
+      ? [field.tooltip, 'A saved URL hides its entire query string, including public model parameters.'].filter(Boolean).join(' ')
+      : field.tooltip;
     return (
       <div key={field.key}>
         <FormInput
@@ -158,7 +161,7 @@ const ModularSubtypeForm: React.FC<ModularSubtypeFormProps> = ({ subtype, config
           value={String(currentValue)}
           onChange={(e) => onChange(field.key, e.target.value)}
           placeholder={field.placeholder || ''}
-          tooltip={field.tooltip}
+          tooltip={tooltip}
         />
       </div>
     );

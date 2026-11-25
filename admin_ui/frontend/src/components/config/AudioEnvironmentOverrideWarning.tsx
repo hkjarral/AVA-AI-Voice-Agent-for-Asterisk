@@ -3,6 +3,8 @@ import axios from 'axios';
 import { AlertTriangle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
+import { envString } from '../../utils/envValue';
+
 const AUDIO_RESAMPLER_ENV_KEYS = [
     'AAVA_OPENAI_OUTPUT_RESAMPLER',
     'AAVA_GOOGLE_OUTPUT_RESAMPLER',
@@ -19,7 +21,7 @@ const AudioEnvironmentOverrideWarning = () => {
             if (!active) return;
             const env = response.data || {};
             const activeOverrides = AUDIO_RESAMPLER_ENV_KEYS
-                .map((key) => [key, String(env[key] || '').trim()] as [string, string])
+                .map((key) => [key, envString(env[key]).trim()] as [string, string])
                 .filter(([, value]) => value.length > 0);
             if (activeOverrides.length > 0) setOverrides(activeOverrides);
         }).catch(() => {

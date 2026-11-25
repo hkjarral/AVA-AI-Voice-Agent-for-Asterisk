@@ -119,7 +119,8 @@ def test_automatic_secret_migration_preserves_original_validation_scope(monkeypa
         provider = doc["providers"]["unused_tts"]
         provider.pop("api_key")
         provider["api_key_file"] = "/managed/provider-secret"
-        return True
+        return [("unused_tts", "api-key", b"value")]
+    monkeypatch.setattr(config_api, "_write_provider_secret", lambda *_args: None)
     monkeypatch.setattr(config_api, "_migrate_inline_provider_secrets", migrate)
     desired = {**deepcopy(previous), "audio_transport": "audiosocket"}
     assert config_api.persist_config_content(yaml.safe_dump(desired))["status"] == "success"

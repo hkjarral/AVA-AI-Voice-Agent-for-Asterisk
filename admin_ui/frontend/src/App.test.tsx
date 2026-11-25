@@ -7,6 +7,7 @@ import axios from 'axios';
 import { SetupGuard } from './App';
 
 vi.mock('axios');
+vi.mock('./components/layout/AppShell', () => ({ default: ({ children }: { children: React.ReactNode }) => <main aria-label="Application">{children}</main> }));
 
 const guardedRoutes = (
   <MemoryRouter initialEntries={['/one']}>
@@ -36,6 +37,17 @@ describe('SetupGuard', () => {
     fireEvent.click(screen.getByText('Continue to Dashboard'));
     expect(await screen.findByText('Dashboard content')).toBeTruthy();
     expect(axios.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the shell during setup detection and defers the page until configured', async () => {
+    let ready!: (value: { data: { configured: boolean } }) => void;
+    vi.mocked(axios.get).mockReturnValue(new Promise(resolve => { ready = resolve; }));
+    render(guardedRoutes);
+    const shell = screen.getByRole('main', {name: 'Application'});
+    expect(screen.queryByText('Page one')).toBeNull();
+    ready({data: {configured: true}});
+    await screen.findByText('Page one');
+    expect(screen.getByRole('main', {name: 'Application'})).toBe(shell);
   });
 
   it('does not repeat setup detection on ordinary route changes', async () => {

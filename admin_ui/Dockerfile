@@ -75,4 +75,4 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 # NOTE: Binds to 0.0.0.0 by default for remote accessibility (common for Asterisk servers).
 # SECURITY: Change admin password on first login and restrict port 3003 via firewall/VPN/reverse proxy.
 # Port configurable via UVICORN_PORT env var.
-CMD sh -c 'uvicorn main:app --host ${UVICORN_HOST:-0.0.0.0} --port ${UVICORN_PORT:-3003} --log-config /app/uvicorn_log_config.yaml'
+CMD ["sh", "-c", "exec uvicorn main:app --http services.proxy_peer:PeerAwareHTTPProtocol --forwarded-allow-ips \"${AAVA_TRUSTED_PROXIES:-${FORWARDED_ALLOW_IPS:-127.0.0.1}}\" --host \"${UVICORN_HOST:-0.0.0.0}\" --port \"${UVICORN_PORT:-3003}\" --log-config /app/uvicorn_log_config.yaml"]

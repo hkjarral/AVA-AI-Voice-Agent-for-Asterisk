@@ -326,3 +326,39 @@ async def test_call_local_registry_removes_tool_without_fields_and_installs_boun
     configured = await engine._configure_call_metadata_tool_runtime(configured)
     assert configured.tool_runtime_registry.registered is None
     assert configured.tool_runtime_registry.removed == ["update_call_metadata"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["account_key", "order_key", "lookup_key", "key", "boarding_pass", "session_pwd"])
+async def test_existing_business_key_is_recorded_and_masked_only_for_readers(tmp_path, monkeypatch, key):
+    from src.core.call_history import CallHistoryStore, CallRecord
+    from src.core.call_metadata import normalize_call_metadata_policy
+    from src.core.credential_fields import mask_business_data
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    store = CallHistoryStore(db_path=str(tmp_path / "history.db"))
+    normalize_call_metadata_policy({key: {"persist": True, "correctable": True}})
+    record = CallRecord(call_id="legacy", start_time=datetime.now(timezone.utc), end_time=datetime.now(timezone.utc),
+                        call_metadata={key: "saved-business-value", "tier": "gold"})
+    assert await store.save(record)
+    actual = await store.get_by_call_id(record.call_id)
+    assert actual.call_metadata[key] == "saved-business-value"
+    assert mask_business_data(actual.call_metadata) == {key: "<redacted>", "tier": "gold"}
+
+
+@pytest.mark.asyncio
+async def test_rejected_metadata_key_drops_only_itself_and_preserves_call(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from src.core import call_history
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    log = Mock()
+    monkeypatch.setattr(call_history, "logger", log)
+    store = call_history.CallHistoryStore(db_path=str(tmp_path / "history.db"))
+    record = call_history.CallRecord(call_id="preserved", start_time=datetime.now(timezone.utc), end_time=datetime.now(timezone.utc),
+        call_metadata={"api_token": "private-fixture", "tier": "gold"},
+        call_metadata_updates=[{"field": f, "source": "agent_correction"} for f in ("api_token", "tier")])
+    assert await store.save(record)
+    assert await store.save(record)
+    saved = await store.get_by_call_id(record.call_id)
+    assert saved.call_metadata == {"tier": "gold"} and [r["field"] for r in saved.call_metadata_updates] == ["tier"]
+    log.warning.assert_called_once()
+    assert "private-fixture" not in repr(log.warning.call_args)

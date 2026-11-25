@@ -1,7 +1,7 @@
 """Agents CRUD + stats + dialplan generator (A2) + templates (A3) + migration status."""
 import json, os, sqlite3, sys
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from typing import Literal
 from agent_appearance import normalize_avatar
 from agents_store import AgentsStore, slugify
@@ -19,6 +19,7 @@ router = APIRouter()
 if settings.PROJECT_ROOT not in sys.path:
     sys.path.insert(0, settings.PROJECT_ROOT)
 from src.utils.email_validator import EmailValidator
+from services.agent_secrets import is_opaque_marker, public_agent_row, restore_agent_fields
 from src.tools.runtime_config import (
     ToolConfigPolicyError,
     dump_agent_tool_configs,
@@ -28,6 +29,13 @@ from src.tools.telephony.hangup_policy import (
     HangupPolicyConfigError,
     dump_agent_hangup_policy,
 )
+
+
+def _validate_patch_email(v):
+    # Restoration verifies the row and original value before a legacy field
+    # can retain a signed URL fragment that is not a valid email literal.
+    from services.yaml_secrets import has_markers
+    return v if isinstance(v, str) and has_markers(v) else _validate_optional_email(v)
 
 
 def _validate_optional_email(v):
@@ -140,11 +148,13 @@ class AgentPatch(AgentAppearance):
     is_active: bool | None = None
 
     _check_emails = field_validator("email_recipient", "email_from")(
-        _validate_optional_email)
+        _validate_patch_email)
 
     @field_validator("tool_configs_json")
     @classmethod
     def _check_tool_configs(cls, value):
+        if is_opaque_marker(value):
+            return value  # The writer verifies this marker against the existing row.
         try:
             return dump_agent_tool_configs(value)
         except ToolConfigPolicyError as exc:
@@ -153,6 +163,8 @@ class AgentPatch(AgentAppearance):
     @field_validator("hangup_policy_json")
     @classmethod
     def _check_hangup_policy(cls, value):
+        if is_opaque_marker(value):
+            return value
         try:
             return dump_agent_hangup_policy(value)
         except HangupPolicyConfigError as exc:
@@ -163,6 +175,11 @@ class AgentOut(BaseModel):
     as a response_model never drops a field (wire-compatible with the raw rows we
     returned before). The is_* flags stay int 0/1 — existing consumers depend on that
     shape, so they are NOT coerced to bool."""
+    @model_validator(mode="before")
+    @classmethod
+    def _public_settings(cls, value):
+        return public_agent_row(value) if isinstance(value, dict) else value
+
     avatar_preset: str | None = None
     avatar_image: str | None = None
     id: str
@@ -462,7 +479,10 @@ def _engine_ok(provider, extra_json) -> bool:
 
 @router.post("/agents", status_code=201, response_model=AgentOut)
 def create_agent(body: AgentIn, request: Request):
-    data = body.model_dump()
+    try:
+        data = restore_agent_fields(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     if not _engine_ok(data.get("provider"), data.get("extra_json")):
         raise HTTPException(422, "agent must have a provider or a pipeline")
     data["provider"] = (data.get("provider") or "").strip()
@@ -474,6 +494,12 @@ def create_agent(body: AgentIn, request: Request):
 @router.patch("/agents/{slug}", response_model=AgentOut)
 def patch_agent(slug: str, body: AgentPatch):
     store = _store_for_agent_write()
+    with store.conn:
+        store.conn.execute("BEGIN IMMEDIATE")
+        return _apply_agent_patch(store, slug, body)
+
+
+def _apply_agent_patch(store, slug, body):
     existing = store.get_by_slug(slug)
     if not existing:
         raise HTTPException(404, "agent not found")
@@ -481,7 +507,16 @@ def patch_agent(slug: str, body: AgentPatch):
     # nulls — sending tools_json/extra_json/mcp_json=null must clear the column, so
     # the engine doesn't keep serving stale config (e.g. an old pipeline after the
     # agent is switched to a provider). Unsent fields are left untouched.
-    fields = body.model_dump(exclude_unset=True)
+    try:
+        fields = restore_agent_fields(body.model_dump(exclude_unset=True), existing)
+        for key in ("email_recipient", "email_from"):
+            if key in fields and fields[key] != existing.get(key):
+                try:
+                    _validate_optional_email(fields[key])
+                except ValueError:
+                    raise ValueError("Invalid agent email address") from None
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     if "provider" in fields or "extra_json" in fields:
         eff_provider = fields.get("provider", existing.get("provider"))
         eff_extra = fields.get("extra_json", existing.get("extra_json"))
@@ -489,11 +524,16 @@ def patch_agent(slug: str, body: AgentPatch):
             raise HTTPException(422, "agent must have a provider or a pipeline")
     if "provider" in fields:
         fields["provider"] = (fields["provider"] or "").strip()
-    if "is_active" in fields:
-        promoted = store.set_active(slug, fields.pop("is_active"))
-        if promoted:                       # A4: surface promotion to the UI
-            store.update(promoted, notes=None)  # no-op write keeps updated_at honest
-    return store.update(slug, **fields) if fields else store.get_by_slug(slug)
+    # Write restored fields while the connection still holds its initial lock.
+    # AgentsStore's public mutators commit their own transactions.
+    active = fields.pop("is_active", None)
+    row = store.update(slug, **fields) if fields else existing
+    if active is not None:
+        promoted = store.set_active(slug, active)
+        if promoted:
+            store.update(promoted, notes=None)
+        row = store.get_by_slug(slug)
+    return row
 
 @router.post("/agents/{slug}/default", response_model=AgentOut)
 def set_default(slug: str):

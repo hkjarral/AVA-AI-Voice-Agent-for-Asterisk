@@ -793,7 +793,8 @@ def test_comment_only_local_file_keeps_its_comments():
 
 def test_secret_migration_drops_local_comments(monkeypatch):
     writes = []
-    monkeypatch.setattr(config, "_migrate_inline_provider_secrets", lambda _cfg: True)
+    monkeypatch.setattr(config, "_migrate_inline_provider_secrets", lambda _cfg: [("sample", "api-key", b"value")])
+    monkeypatch.setattr(config, "_write_provider_secret", lambda *_args: None)
     monkeypatch.setattr(config, "_assert_in_use_audio_profiles_unchanged", lambda *_a, **_kw: None)
     monkeypatch.setattr(config, "_validate_ai_agent_config", lambda _content: {})
     monkeypatch.setattr(config, "_read_merged_config_dict", lambda: {})

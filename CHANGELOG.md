@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Mask numeric credential echoes in HTTP tool tests, short Bearer credentials in templates, and embedded credentials shared through YAML aliases. MCP password rotation can retain other credentials for the same command.
+
+- Local AI connection checks report model readiness without returning the WebSocket URL or provider-supplied text.
+
+- Preserve stored Agent credentials when a malformed JSON edit contains an escaped placeholder. Keep existing call metadata names compatible, mask sensitive names on reads, and record the call even when an enrichment field is rejected.
+
+- Protect stored Agent credentials across reads, edits and support downloads. Editors retain unchanged values and preserve older opaque settings. The recovery YAML command now accepts `--redact` and warns before exporting credentials.
+- Mask connection passwords and provider query values, protect campaign media URLs, and mask secret fields in lead and call metadata on operator reads and exports. Calendar discovery errors expose diagnostic categories without echoing provider inputs.
+
+- Provider verification recognizes equivalent environment references and checks saved configuration before resolving a retained credential.
+
+- Retained provider and MCP credentials are bound to the saved endpoint or stdio command. Destination-change errors identify the credential fields to replace.
+
+- Treat stored webhook and tool URLs as complete credentials. Retained secrets require the same scheme, host and port. Templates and arguments use structural redaction while ordinary prose and public environment values remain visible.
+
+- Added structural redaction coverage for tool URLs, template assignments, command arguments and public editor values.
+
+- After 20 failed logins to an account within 15 minutes, restrict new attempts to recently authenticated client addresses for 15 minutes. Apply the signed-in session password budget to password changes and backup downloads.
+
+- When redirects are enabled for Admin UI HTTP tool tests, check the scheme, hostname and effective port of every hop before forwarding the request.
+
+- Check read responses and configuration previews for credential exposure, including managed tool details and support archives.
+
+- Mask embedded credentials in URLs, templates, headers, provider settings and tool previews. Signed placeholders preserve secrets when settings move to the same destination. Credential file paths stay editable, and deleting an environment credential requires JSON null.
+
+- Mask inline credentials in the YAML editor and structured configuration responses. Saving a placeholder preserves the stored value at its original location.
+- Environment, wizard and tool responses hide stored credentials, including webhook URLs and operator-named credential variables.
+- Protect login attempts by account and client address without locking a known operator out because of failures elsewhere. Backup password checks have a separate session budget. Configure trusted reverse proxies with `AAVA_TRUSTED_PROXIES`.
+- Configuration backups require the signed-in operator’s current password. Scripts must send a JSON password in a POST to `/api/config/export`. Successful exports log the actor.
+
 ### Added
 
 - Shared, sourced provider model/voice catalogs with generated Admin UI data,
@@ -18,6 +50,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Show the origin of a stored tool URL and provide a Replace control for supplying a new complete destination. Agent and setup forms identify where to store credentials.
+
+- Added regression coverage for the exact columns written at call teardown on fresh, pre-upgrade and partially upgraded databases.
+
+- Restored same-host proxy support for Admin UI HTTPS redirects and access logs. Login uses the socket peer unless the operator explicitly trusts its proxy chain.
+
+- Recover damaged local configuration overrides in the YAML editor. The editor validates replacement settings and backs up the original file, with revision checks for concurrent edits.
+
+- Begin loading the Providers page when its sidebar link receives pointer or keyboard focus.
+
+- Call history applies each schema migration transactionally, retries concurrent startup, and continues recording on compatible newer schemas.
+- The Admin UI shows whether a credential is stored and lets operators replace it without loading the old value into the browser.
+- `GET /api/config/env` returns `{"set": true}` for a stored credential and `{"set": false}` for an empty one. Omit untouched credentials on save. See the [Admin API migration notes](docs/MIGRATION.md#upcoming-admin-api-changes).
 - Refresh new-provider model defaults and remove retired suggestions while
   preserving explicit operator pins. Synchronize provider forms and the
   options API with the runtime catalog. See [provider migration and call
@@ -26,7 +71,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credentials; disabled or invalid role blocks cannot inherit a shared
   full-provider adapter. ElevenLabs output choices match implemented decoders.
 
+### Performance
+
+- Load Admin UI pages on demand, show navigation while checking setup, compress large responses, and cache fingerprinted build assets across visits.
+
+### Removed
+
+- Remove the unused external-media prototype, retired configuration components, HealthWidget and three superseded Local AI backend classes.
+
 ### Fixed
+
+- Persist confirmed VICIdial terminal results before retrying a late Call History write. Clearing the log file path while file logging is enabled restores the standard path.
+
+- The setup wizard resolves environment references in the ARI port and preserves credential edits made while saving. SMTP verification accepts equivalent numeric ports.
+
+- Open call history off the async event loop. If an optional upgrade fails, continue recording in the existing schema while retaining required erasure protections.
+
+- The raw YAML editor reports the location of malformed configuration and reloads after on-disk repairs. A failed read cannot overwrite the file with a blank editor.
 
 - Check OpenAI Realtime TTS model access during pipeline readiness. Buffer
   caller utterances for OpenAI REST transcription and clean up playback

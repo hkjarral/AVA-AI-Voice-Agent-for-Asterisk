@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from services.frontend_static import mount_frontend
 import settings
 from dotenv import load_dotenv
 import os
@@ -276,37 +277,10 @@ app.include_router(support.router, prefix="/api", tags=["support"], dependencies
 async def health_check():
     return {"status": "healthy"}
 
-# Serve static files (Frontend)
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-import os
-
-# Mount static files if directory exists (production/docker)
-static_dir = os.path.join(os.path.dirname(__file__), "static")
-if os.path.exists(static_dir):
-    static_files = StaticFiles(directory=static_dir, html=False)
-    app.mount("/assets", StaticFiles(directory=os.path.join(static_dir, "assets")), name="assets")
-    index_file = os.path.join(static_dir, "index.html")
-    
-    @app.get("/{full_path:path}")
-    async def serve_react_app(full_path: str):
-        # API routes are already handled above
-        if full_path.startswith("api/") or full_path in ("docs", "redoc", "openapi.json"):
-            raise HTTPException(status_code=404, detail="Not found")
-            
-        # Use Starlette's safe static path lookup to prevent traversal.
-        if full_path:
-            resolved_path, stat_result = static_files.lookup_path(full_path.lstrip("/"))
-            if stat_result and os.path.isfile(resolved_path):
-                return FileResponse(resolved_path)
-            
-        # Serve index.html for all other routes (SPA)
-        response = FileResponse(index_file)
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-        return response
+mount_frontend(app, Path(__file__).parent / "static")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True,
+                http="services.proxy_peer:PeerAwareHTTPProtocol",
+                forwarded_allow_ips=os.getenv("AAVA_TRUSTED_PROXIES") or None)

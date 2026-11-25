@@ -79,15 +79,9 @@ def _structure_only(raw: Any):
         data = json.loads(raw) if isinstance(raw, str) else raw
     except (json.JSONDecodeError, TypeError):
         return ["<unparseable>"]
-    if isinstance(data, list):
-        return [
-            item.get("name", "<tool>") if isinstance(item, dict)
-            else f"<tool len={len(item)}>" if isinstance(item, str)
-            else "<tool>"
-            for item in data
-        ]
-    if isinstance(data, dict):
-        return sorted(data.keys())
+    # A stored object key or a tool's "name" may itself contain private data.
+    if isinstance(data, (dict, list)):
+        return [f"<{type(data).__name__} entries={len(data)}>"]
     return ["<unknown>"]
 
 
@@ -481,7 +475,8 @@ def _source_recommendations(call: Any) -> Dict[str, Any]:
 
 
 async def _call_evidence(call_id: str):
-    call = await _call_store().get_by_call_id(call_id)
+    history = await asyncio.to_thread(_call_store)
+    call = await history.get_by_call_id(call_id)
     if not call:
         raise HTTPException(status_code=404, detail="Call record not found")
     start = call.start_time or datetime.now(timezone.utc)
@@ -676,9 +671,9 @@ def _system_bundle_sync(request: SystemBundleRequest, *, deprecated: bool = Fals
 
         if request.include_config:
             try:
-                from api.config import _read_merged_config_dict
+                from api.config import _read_merged_config_dict, public_config
 
-                archive.writestr("config/current_config.sanitized.json", _json_bytes(sanitize_value(_read_merged_config_dict())))
+                archive.writestr("config/current_config.sanitized.json", _json_bytes(sanitize_value(public_config(_read_merged_config_dict()))))
             except Exception:
                 manifest["omissions"].append("Sanitized configuration was unavailable and was omitted.")
         try:

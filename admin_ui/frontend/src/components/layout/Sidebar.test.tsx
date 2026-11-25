@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import '@testing-library/jest-dom/vitest';
@@ -60,4 +60,16 @@ describe('Sidebar — collapse (issue #596)', () => {
         expect(screen.getByText('Dashboard')).toBeInTheDocument();
         expect(screen.getByRole('button', { name: /collapse sidebar/i })).toHaveAttribute('aria-expanded', 'true');
     });
+});
+
+vi.mock('../../pages/loadProvidersPage', () => ({ loadProvidersPage: vi.fn(async () => ({})) }));
+import { loadProvidersPage } from '../../pages/loadProvidersPage';
+
+it('warms the Providers route on hover or focus without loading it during sidebar render', () => {
+    renderSidebar();
+    const link = screen.getByRole('link', {name: 'Providers'});
+    expect(loadProvidersPage).not.toHaveBeenCalled();
+    fireEvent.pointerEnter(link);
+    fireEvent.focus(link);
+    expect(loadProvidersPage).toHaveBeenCalledTimes(2);
 });

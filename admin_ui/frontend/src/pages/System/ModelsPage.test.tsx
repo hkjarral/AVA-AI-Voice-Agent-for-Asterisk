@@ -98,7 +98,7 @@ const installedModelsPayload = {
     ],
 };
 
-const mockModelsPageApis = (healthStatus = 'error', environment: Record<string, string> = {}, modelsPayload: unknown = installedModelsPayload) => {
+const mockModelsPageApis = (healthStatus = 'error', environment: Record<string, string | { set: boolean }> = {}, modelsPayload: unknown = installedModelsPayload) => {
     vi.mocked(axios.get).mockImplementation((url) => {
         if (url === '/api/wizard/local/available-models') {
             return Promise.resolve({
@@ -257,6 +257,25 @@ describe('ModelsPage Local AI status', () => {
         for (const [, payload] of vi.mocked(axios.post).mock.calls) {
             expect(payload).toMatchObject({ sherpa_sense_voice_language: 'zh', sherpa_sense_voice_use_itn: false });
         }
+    });
+
+    it.each([false, true])('updates only a noncredential chat format on model switch (protected=%s)', async protectedFormat => {
+        const component = { ...localAIComponent, state: 'ready', details: {
+            ...localAIComponent.details, config: { runtime_mode: 'full' },
+        } };
+        liveStatusState.current.snapshot = { ...liveStatusSnapshot(), components: { local_ai_server: component } };
+        const path = '/app/models/llm/test.gguf';
+        mockModelsPageApis('connected', { OPENAI_API_KEY: { set: true }, LOCAL_LLM_CHAT_FORMAT: protectedFormat ? { set: true } : 'legacy' }, {
+            ...installedModelsPayload, llm: [...installedModelsPayload.llm, { name: 'Test model', path, chat_format: 'chatml' }],
+        });
+        vi.mocked(axios.post).mockResolvedValue({ data: { success: true } });
+        render(<MemoryRouter><ModelsPage /></MemoryRouter>);
+        const option = await screen.findByRole('option', { name: 'Test model' });
+        fireEvent.change(option.closest('select')!, { target: { value: path } });
+        fireEvent.click(screen.getByRole('button', { name: /Apply Changes/i }));
+        await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/local-ai/switch', expect.objectContaining({ model_path: path })));
+        const envWrites = vi.mocked(axios.post).mock.calls.filter(([url]) => url === '/api/config/env');
+        expect(envWrites.map(([, body]) => body)).toEqual(protectedFormat ? [] : [{ LOCAL_LLM_CHAT_FORMAT: 'chatml' }]);
     });
 
     it('shows persisted SenseVoice settings while another backend is active and sends exactly those values', async () => {

@@ -3,24 +3,29 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
 
 
-def atomic_write_text(path: str, content: str, *, mode_from_existing: bool = True) -> None:
+def atomic_write_text(path: str, content: str, *, mode_from_existing: bool = True,
+                      preserve_owner: bool = False) -> None:
     dir_path = os.path.dirname(path) or "."
-    original_mode: Optional[int] = None
-    if mode_from_existing and os.path.exists(path):
-        original_mode = os.stat(path).st_mode
-
-    with tempfile.NamedTemporaryFile("w", dir=dir_path, delete=False, suffix=".tmp") as f:
-        f.write(content)
-        temp_path = f.name
-
-    if original_mode is not None:
-        os.chmod(temp_path, original_mode)
-
-    os.replace(temp_path, path)
+    previous = os.stat(path) if mode_from_existing and os.path.exists(path) else None
+    temporary = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=dir_path, delete=False, suffix=".tmp")
+    temp_path = Path(temporary.name)
+    try:
+        with temporary as stream:
+            stream.write(content)
+            if previous is not None:
+                if preserve_owner:
+                    current = os.fstat(stream.fileno())
+                    if (current.st_uid, current.st_gid) != (previous.st_uid, previous.st_gid):
+                        os.fchown(stream.fileno(), previous.st_uid, previous.st_gid)
+                os.fchmod(stream.fileno(), previous.st_mode)
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def atomic_write_lines(path: str, lines: Iterable[str], *, mode_from_existing: bool = True) -> None:

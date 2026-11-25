@@ -715,6 +715,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, 
                     <FormLabel htmlFor="agent-greeting" tooltip="First words the agent speaks when a call connects. Use {caller_name} for the caller's name.">
                         Greeting
                     </FormLabel>
+                    <p className="text-xs text-muted-foreground">This text is visible in configuration. Keep credentials in dedicated credential fields.</p>
                     <input
                         id="agent-greeting"
                         value={greeting}
@@ -769,6 +770,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, 
                     <FormLabel htmlFor="agent-prompt" tooltip="System prompt passed to the LLM. Use {company} as a placeholder for the business name.">
                         Prompt
                     </FormLabel>
+                    <p className="text-xs text-muted-foreground">This text is visible in configuration. Keep credentials in dedicated credential fields.</p>
                     <PromptToolHighlight
                         id="agent-prompt"
                         value={prompt}

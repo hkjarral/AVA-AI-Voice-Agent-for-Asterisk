@@ -206,7 +206,7 @@ def test_inline_secret_migration_ignores_no_auth_sentinel(monkeypatch):
         }
     }
 
-    assert config_api._migrate_inline_provider_secrets(config) is False
+    assert config_api._migrate_inline_provider_secrets(config) == []
     assert config["providers"]["native_llm"]["api_key"] == "not-needed"
     assert writes == []
 
