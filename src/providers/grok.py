@@ -20,7 +20,7 @@ import os
 import time
 import uuid
 import audioop
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Literal
 
 import websockets
 from .connection_recovery import connect_with_recovery
@@ -1273,11 +1273,11 @@ class GrokProvider(AIProviderInterface):
 
     async def _send_explicit_greeting(
         self, *, after_cancelled_id: Optional[str] = None, retry_deadline: Optional[float] = None
-    ):
+    ) -> Literal["sent", "wait_for_quiet", "suppressed"]:
         greeting = (self.config.greeting or "").strip()
         websocket = self.websocket
         if not greeting or not websocket or websocket.state.name != "OPEN":
-            return
+            return "suppressed"
 
         # Per Grok Voice Agent docs: Disable turn_detection during greeting
         # to prevent user speech from interrupting the greeting
@@ -1326,19 +1326,17 @@ class GrokProvider(AIProviderInterface):
             # Input events continue while other writes hold the lock. Claim the
             # next response only when we can send on the same live connection.
             if websocket is not self.websocket or websocket.state.name != "OPEN" or self._closing or self._closed:
-                return
+                return "suppressed"
             if self._is_ga and (
                 self._last_created_response_id != after_cancelled_id or self._last_final_user_text
             ):
-                return
+                return "suppressed"
             if retry_deadline is not None:
                 now = asyncio.get_running_loop().time()
-                if (
-                    now >= retry_deadline or self._caller_speaking
-                    or now - self._last_greeting_vad_edge < self._GREETING_QUIET_SECONDS
-                    or self._pending_response or self._current_response_id
-                ):
-                    return
+                if now >= retry_deadline or self._pending_response or self._current_response_id:
+                    return "suppressed"
+                if self._caller_speaking or now - self._last_greeting_vad_edge < self._GREETING_QUIET_SECONDS:
+                    return "wait_for_quiet"
                 logger.info("Retrying silent Grok greeting after pickup", call_id=self._call_id)
 
             logger.info(
@@ -1364,6 +1362,7 @@ class GrokProvider(AIProviderInterface):
         self._greeting_vad_task.add_done_callback(_log_provider_task_exception)
         self._background_tasks.add(self._greeting_vad_task)
         self._greeting_vad_task.add_done_callback(self._background_tasks.discard)
+        return "sent"
 
     def _cancel_greeting_retry(self):
         task = self._greeting_retry_task
@@ -1380,9 +1379,11 @@ class GrokProvider(AIProviderInterface):
             quiet_until = max(start, self._last_greeting_vad_edge) + self._GREETING_QUIET_SECONDS
             remaining = quiet_until - loop.time()
             if not self._caller_speaking and remaining <= 0:
-                await self._send_explicit_greeting(
+                outcome = await self._send_explicit_greeting(
                     after_cancelled_id=self._greeting_response_id, retry_deadline=deadline
                 )
+                if outcome == "wait_for_quiet":
+                    continue  # A VAD edge arrived while waiting for the send lock.
                 return
             delay = self._GREETING_QUIET_SECONDS if self._caller_speaking else remaining
             await asyncio.sleep(min(delay, deadline - loop.time()))

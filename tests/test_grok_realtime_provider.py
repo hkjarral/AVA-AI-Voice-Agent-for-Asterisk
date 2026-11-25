@@ -726,11 +726,11 @@ async def test_caller_already_answered_during_session_ack_gets_no_late_greeting(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["quiet", "caller_speaking", "new_response", "deadline"])
+@pytest.mark.parametrize("change", ["quiet", "caller_speaking", "noise_burst", "new_response", "deadline"])
 async def test_greeting_retry_rechecks_call_after_waiting_for_send_lock(provider, monkeypatch, change):
     ws = await _start_greeting_at_pickup(provider)
-    monkeypatch.setattr(provider, "_GREETING_QUIET_SECONDS", 0.001)
-    budget = 0.05 if change == "deadline" else 5.0
+    monkeypatch.setattr(provider, "_GREETING_QUIET_SECONDS", 0.02)
+    budget = 0.10 if change in {"deadline", "caller_speaking"} else 5.0
     monkeypatch.setattr(provider, "_GREETING_RECOVERY_SECONDS", budget)
 
     # Signal exactly when the recovery is queued, before any competing event.
@@ -748,15 +748,17 @@ async def test_greeting_retry_rechecks_call_after_waiting_for_send_lock(provider
             await provider._handle_event({"type": "response.done", "response": {"id": "greeting", "status": "cancelled"}})
             await provider._handle_event({"type": "input_audio_buffer.speech_stopped"})
             await asyncio.wait_for(waiting.wait(), timeout=1)
-            if change == "caller_speaking":
+            if change in {"caller_speaking", "noise_burst"}:
                 await provider._handle_event({"type": "input_audio_buffer.speech_started"})
+                if change == "noise_burst":
+                    await provider._handle_event({"type": "input_audio_buffer.speech_stopped"})
             elif change == "new_response":
                 await provider._handle_event({"type": "response.created", "response": {"id": "answer"}})
             elif change == "deadline":
                 await asyncio.sleep(budget)
         result, = await asyncio.gather(provider._greeting_retry_task, return_exceptions=True)
         assert result is None or isinstance(result, asyncio.CancelledError)
-        assert len(_greeting_requests(ws)) == (2 if change == "quiet" else 1)
+        assert len(_greeting_requests(ws)) == (2 if change in {"quiet", "noise_burst"} else 1)
         if change == "new_response":
             assert provider._greeting_response_id != "answer"
     finally:
