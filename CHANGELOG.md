@@ -88,6 +88,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add an inbound-only, per-Agent inactivity fallback to configured extensions,
   queues or ring groups, with scoped destination validation and guarded handoff.
   Late provider disconnects preserve the caller after transfer ownership is claimed.
+- Short inbound acoustic bursts preserve the remaining inactivity budget instead
+  of refreshing the full timeout. Sustained speech and recognized caller turns
+  retain protection. Add source-aware watchdog transition diagnostics; outbound
+  opt-in behavior is unchanged.
+  Preserve that budget across deferred pauses and classify sustained input even
+  when its end arrives during output, processing, or suspension.
 
 - Persist confirmed VICIdial terminal results before retrying a late Call History write. Clearing the log file path while file logging is enabled restores the standard path.
 
