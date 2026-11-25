@@ -631,6 +631,18 @@ async def test_grok_blind_transfer_result_and_drain(configured, sequence, monkey
     provider._allowed_tools = ["blind_transfer"]
     registry = ToolRegistry()
     registry.register(UnifiedTransferTool)
+    if sequence == "slow-tool":
+        tool_started = asyncio.Event()
+        release_tool = asyncio.Event()
+        tool = registry.get("blind_transfer")
+        execute = tool.execute
+
+        async def delayed_execute(parameters, context):
+            tool_started.set()
+            await release_tool.wait()
+            return await execute(parameters, context)
+
+        monkeypatch.setattr(tool, "execute", delayed_execute)
     provider.tool_adapter = GrokToolAdapter(registry)
     async def send_payload(payload):
         if sequence == "interrupted-at-send" and json.loads(payload)["type"] == "conversation.item.create":
@@ -665,8 +677,7 @@ async def test_grok_blind_transfer_result_and_drain(configured, sequence, monkey
         "arguments": json.dumps({"destination": destination}),
     }})
     tool_tasks = list(provider._background_tasks)
-    if sequence != "slow-tool":
-        await asyncio.wait_for(waiting.wait(), 1)
+    await asyncio.wait_for((tool_started if sequence == "slow-tool" else waiting).wait(), 1)
     send.assert_not_awaited()
     if sequence == "paced":
         # Segment completion pauses the pacer before the authoritative response boundary.
@@ -674,6 +685,10 @@ async def test_grok_blind_transfer_result_and_drain(configured, sequence, monkey
     await provider._handle_event({"type": "response.done", "response": {
         "id": "parent", "status": "cancelled" if sequence == "interrupted" else "completed",
     }})
+    if sequence == "slow-tool":
+        assert session.pending_deferred_transfer is None
+        send.assert_not_awaited()
+        release_tool.set()
     await asyncio.wait_for(asyncio.gather(*tool_tasks), 1)
     wire = [json.loads(call.args[0]) for call in send.await_args_list]
     needs_reply = sequence not in {"speech-first", "slow-tool", "paced"}
