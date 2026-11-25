@@ -1,5 +1,9 @@
 # Integration backup and rollback safety
 
+For v7.7.5, browser/API configuration exports require the signed-in operator's current
+password. Follow the [backup API migration](MIGRATION.md#upcoming-admin-api-changes);
+coherent host SQLite snapshots remain necessary for integration recovery.
+
 The updated CLI and pinned recovery script preserve `secrets/` (including immutable
 provider/Pushover credentials and the Calendly token) with owner-only files inside
 a private backup directory. They snapshot `data/operator/calendly.db` through

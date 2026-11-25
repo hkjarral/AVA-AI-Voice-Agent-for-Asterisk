@@ -6,7 +6,7 @@
   <img alt="AVA Core — AI Voice Agent for Asterisk" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-[![Version](https://img.shields.io/badge/version-7.7.4-blue.svg)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
+[![Version](https://img.shields.io/badge/version-7.7.5-blue.svg)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
 [![CI](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Discord](https://dcbadge.limes.pink/api/server/ysg8fphxUe?style=plastic)](https://discord.gg/ysg8fphxUe)
@@ -37,17 +37,17 @@ Asterisk 18+ / FreePBX system with ARI enabled. Cloud configurations start with
 transports require newer Asterisk versions or additional modules.
 
 **Already running AVA?** Follow the
-[v7.7.4 upgrade guide](docs/INSTALLATION.md#upgrade-to-v774-existing-checkout)
+[v7.7.5 upgrade guide](docs/INSTALLATION.md#upgrade-to-v775-existing-checkout)
 instead of cloning another installation.
 
 On the AVA host:
 
-Use the commands below once v7.7.4 appears in GitHub Releases. Until then, use
+Use the commands below once v7.7.5 appears in GitHub Releases. Until then, use
 the guide from the latest published release. v7.7.1 and earlier checkouts use
 the [older-checkout recovery](docs/CLI_TOOLS_GUIDE.md#standalone-compose-and-older-helpers).
 
 ```bash
-git clone --branch v7.7.4 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+git clone --branch v7.7.5 https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd AVA-AI-Voice-Agent-for-Asterisk
 sudo ./preflight.sh --apply-fixes
 ./install.sh --ui
@@ -114,7 +114,7 @@ supported backends, limits and live-call priority.
 
 Model availability, tools, latency, and transport support vary by configuration.
 Use the [compatibility matrix](docs/Transport-Mode-Compatibility.md) and
-[release validation evidence](docs/baselines/golden/v7.7.4-validation-matrix.md)
+[release validation evidence](docs/baselines/golden/v7.7.5-validation-matrix.md)
 rather than assuming every provider/transport combination is qualified.
 
 AudioSocket and ExternalMedia RTP are configuration-dependent; Media WebSocket
@@ -169,15 +169,16 @@ The core services are `ai_engine` and `admin_ui`; `local_ai_server` and
 
 <a id="-whats-new"></a>
 
-### v7.7.4 highlights
+### v7.7.5 highlights
 
-- SenseVoice local STT and expanded Grok voice and speech controls.
-- Calendar timezone, availability and booking corrections.
-- Safer voicemail/hangup recovery, smoother input gain and Local AI security updates.
+- Synchronized provider/model/voice catalogs and opt-in speech workflows.
+- Stored-credential protection, safer backups and resilient Call History upgrades.
+- Inbound inactivity destinations, fax handoff preservation and Grok call fixes.
+- Background Docker cleanup with progress and recoverable job status.
 
 See the [changelog](CHANGELOG.md) for detailed changes and contributor credit,
 [GitHub Releases](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases)
-for artifacts, and [migration notes](docs/MIGRATION.md#v773-to-v774) before upgrading.
+for artifacts, and [migration notes](docs/MIGRATION.md#v774-to-v775) before upgrading.
 Earlier release notes remain in the changelog and versioned repository history.
 
 <a id="-contributing"></a>
@@ -227,14 +228,14 @@ context. All contributions still require appropriate testing and review.
 </tr>
 <tr>
 <td align="center"><a href="https://github.com/pi0n00r"><img src="https://github.com/pi0n00r.png" width="60" alt="pi0n00r"><br><sub><b>pi0n00r</b></sub></a><br>Local AI, Transcription, MCP, A2A</td>
-<td align="center"><a href="https://github.com/MVECoder"><img src="https://github.com/MVECoder.png" width="60" alt="MVECoder"><br><sub><b>MVECoder</b></sub></a><br>Audio, Calendar, Grok and Lifecycle Reports</td>
+<td align="center"><a href="https://github.com/MVECoder"><img src="https://github.com/MVECoder.png" width="60" alt="MVECoder"><br><sub><b>MVECoder</b></sub></a><br>Grok, Fax and Lifecycle Reports</td>
 <td align="center"><a href="https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/commit/06f039dcf293128fa55478cb4bbd584fadf8f131"><img src="https://img.shields.io/badge/contributor-NC-blue" alt="NC contributor badge"><br><sub><b>NC</b></sub></a><br>Local AI Environment Parser</td>
 <td align="center"><a href="https://github.com/theluckystrike"><img src="https://github.com/theluckystrike.png" width="60" alt="theluckystrike"><br><sub><b>Michael (theluckystrike)</b></sub></a><br>Farewell Hangup Fix</td>
 <td align="center"><a href="https://github.com/kevinrossen"><img src="https://github.com/kevinrossen.png" width="60" alt="kevinrossen"><br><sub><b>Kevin Rossen</b></sub></a><br>HTTP Template Security</td>
 </tr>
 <tr>
 <td align="center"><a href="https://github.com/abaichuan1017"><img src="https://github.com/abaichuan1017.png" width="60" alt="abaichuan1017"><br><sub><b>Kai (abaichuan1017)</b></sub></a><br>Local Pipeline Diagnostics Docs</td>
-<td align="center"><a href="https://github.com/Andrew-Engelbrecht"><img src="https://github.com/Andrew-Engelbrecht.png" width="60" alt="Andrew-Engelbrecht"><br><sub><b>Andrew-Engelbrecht</b></sub></a><br>Upgrade Failure Report</td>
+<td align="center"><a href="https://github.com/Andrew-Engelbrecht"><img src="https://github.com/Andrew-Engelbrecht.png" width="60" alt="Andrew-Engelbrecht"><br><sub><b>Andrew-Engelbrecht</b></sub></a><br>Inactivity Fallback Proposal and Upgrade Report</td>
 <td align="center"><a href="https://github.com/jjaroztegi"><img src="https://github.com/jjaroztegi.png" width="60" alt="jjaroztegi"><br><sub><b>jjaroztegi</b></sub></a><br>Media Reports and Reproduction</td>
 <td align="center"><a href="https://github.com/ibewackofreak"><img src="https://github.com/ibewackofreak.png" width="60" alt="ibewackofreak"><br><sub><b>ibewackofreak</b></sub></a><br>Docker Bootstrap Report</td>
 <td align="center"><a href="https://github.com/lucivan212"><img src="https://github.com/lucivan212.png" width="60" alt="lucivan212"><br><sub><b>lucivan212</b></sub></a><br>Recording Access Proposal</td>

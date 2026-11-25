@@ -1,6 +1,6 @@
 # Tool Calling Guide
 
-**Version**: 7.7.4<br>
+**Version**: 7.7.5<br>
 **Status**: Provider-specific qualification (see setup guides)<br>
 **Last Updated**: October 2026
 
@@ -2098,7 +2098,7 @@ Tools written once, work with any provider.
 ---
 
 **Last Updated**: October 2026<br>
-**Version**: 7.7.4<br>
+**Version**: 7.7.5<br>
 **Status**: Provider-specific qualification (see setup guides)
 
 

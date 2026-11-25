@@ -7,6 +7,7 @@ from api import docs
 
 ROOT = Path(__file__).resolve().parents[3]
 RELEASE_GUIDES = {
+    "Provider-Catalog-Updates.md",
     "OpenAI-Compatible-Transcription.md", "HTTP-Tool-Templates.md",
     "Appointment-booking-providers.md", "Calendly-calendar-tool.md", "In-Call-Summaries.md", "AGENTS.md",
     "ARI-Endpoint-Discovery.md", "Microsoft-teams-verification.md",

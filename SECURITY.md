@@ -21,7 +21,7 @@
 
 ---
 
-The supported trains are 7.7.x and 7.6.x. v7.7.4 is part of the existing
+The supported trains are 7.7.x and 7.6.x. v7.7.5 is part of the existing
 7.7.x train. 7.5.x is
 unsupported.
 The 7.5.x HTTP-template fix is not claimed shipped: upgrade to a fixed 7.6.x/7.7.x

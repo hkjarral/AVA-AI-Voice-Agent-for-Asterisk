@@ -17,17 +17,24 @@ checks and tag it only after the applicable release gates pass.
 
 ## Manual Golden Baselines (Must Pass Before Tagging)
 
-For v7.7.4, use the [current validation matrix](baselines/golden/v7.7.4-validation-matrix.md).
-The maintainer approved a fresh v7.7.4-only waiver of additional deployment,
+For v7.7.5, use the [current validation matrix](baselines/golden/v7.7.5-validation-matrix.md).
+The maintainer approved a fresh v7.7.5-only waiver of additional deployment,
 runtime, live-call and upgrade testing, including exact-candidate acceptance and
-a successful-call golden baseline. Reuse existing revision/configuration-qualified
-evidence and retain all unverified lanes. Required CI, automated/image checks,
-security assessment and review are not waived. The maintainer approved the
-[v7.7.4-only security exception](baselines/golden/v7.7.4-validation-matrix.md#v774-only-security-exception)
-and #888 merge after successful final checks. Release maintainers review the
-remaining-risk remediation by 2026-11-29 or before the next stable tag, whichever
-comes first. Verify exact-main CI after merge. The tag remains held; the v7.7.3
-exception does not carry forward.
+a successful-call golden baseline. Retain original revisions and unverified lanes
+for fax, fallback/watchdog, Grok transfers, Docker cleanup and optional providers.
+Required CI, automated/image checks, security assessment and review are not waived.
+The v7.7.4 security exception does not carry forward; remaining findings require
+an explicit [current disposition](baselines/golden/v7.7.5-validation-matrix.md#security-disposition).
+Its November 29 follow-up remains due. Merge and tag remain held for separate approval.
+
+### Historical v7.7.4 evidence acceptance
+
+The [v7.7.4 matrix](baselines/golden/v7.7.4-validation-matrix.md) retains its original
+pre-publication checkpoints and release-only waiver/exception. The later
+[v7.7.4 release record](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v7.7.4)
+records authorized publication from `329661ea` and verified workflows/artifacts.
+Its exception was limited to v7.7.4, with remediation review due November 29, 2026
+or before the next stable tag, whichever comes first. It does not authorize v7.7.5.
 
 ### Historical v7.7.3 evidence acceptance
 

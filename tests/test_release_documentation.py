@@ -12,11 +12,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.mark.parametrize("relative", [
     "docs/INTEGRATION_BACKUPS.md",
+    "docs/Provider-Catalog-Updates.md",
     "docs/baselines/golden/v7.7.0-validation-matrix.md",
     "docs/baselines/golden/v7.7.1-validation-matrix.md",
     "docs/baselines/golden/v7.7.2-validation-matrix.md",
     "docs/baselines/golden/v7.7.3-validation-matrix.md",
-    "docs/baselines/golden/v7.7.4-validation-matrix.md",
+    "docs/baselines/golden/v7.7.5-validation-matrix.md",
     "docs/OpenAI-Compatible-Transcription.md",
     "docs/HTTP-Tool-Templates.md",
     "docs/Appointment-booking-providers.md",
