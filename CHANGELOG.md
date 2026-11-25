@@ -82,6 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Grok sends the blind-transfer result once and skips the extra spoken turn when the parent response has already completed the handoff sentence. Transfer still waits for caller-facing playback to drain.
+- Grok can retry a greeting once after pickup noise cancels it before any audio. A caller who starts a conversation takes priority.
 
 - Persist confirmed VICIdial terminal results before retrying a late Call History write. Clearing the log file path while file logging is enabled restores the standard path.
 
