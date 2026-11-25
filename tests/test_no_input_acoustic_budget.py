@@ -214,3 +214,94 @@ async def test_talkdetect_barge_in_during_checkin_is_still_acoustic_evidence():
         assert state.deadline == clock[0] + 15
     finally:
         await watchdog.stop(state.call_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pause', ['output', 'processing', 'suspended'])
+async def test_sustained_input_renews_policy_even_when_its_end_is_paused(pause):
+    watchdog, state, clock, _ = await clocked_call('paused-sustained-' + pause)
+    try:
+        state.phase, state.check_ins, state.final_announced = 'grace', 1, True
+        clock[0] += 13
+        await watchdog.note_input_state(state.call_id, True, 'asterisk:talk_detect')
+        if pause == 'output':
+            await watchdog.note_agent_output_start(state.call_id)
+        elif pause == 'processing':
+            await watchdog.note_processing(state.call_id, True)
+        else:
+            await watchdog.set_suspended(state.call_id, True)
+        clock[0] += 1.2
+        await watchdog.note_input_state(state.call_id, False, 'asterisk:talk_detect')
+        assert state.check_ins == 0 and state.final_announced is False
+        assert state.last_activity_source == 'asterisk:talk_detect'
+        assert state.deadline is None
+        if pause == 'output':
+            await watchdog.note_agent_output_end(state.call_id, reset_timer=False)
+        elif pause == 'processing':
+            await watchdog.note_processing(state.call_id, False)
+        else:
+            await watchdog.set_suspended(state.call_id, False)
+        assert state.deadline == clock[0] + 15
+    finally:
+        await watchdog.stop(state.call_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reset_timer', [False, True])
+async def test_silence_output_restores_deferred_short_input_budget(reset_timer):
+    watchdog, state, clock, _ = await clocked_call('paused-short-' + str(reset_timer))
+    try:
+        state.phase, state.check_ins, state.final_announced = 'grace', 1, True
+        clock[0] += 13
+        await watchdog.note_input_state(state.call_id, True, 'asterisk:talk_detect')
+        await watchdog.note_agent_output_start(state.call_id)
+        clock[0] += 0.6
+        await watchdog.note_input_state(state.call_id, False, 'asterisk:talk_detect')
+        assert state.deadline is None
+        await watchdog.note_agent_output_end(state.call_id, reset_timer=reset_timer)
+        assert state.deadline == clock[0] + (15 if reset_timer else 2)
+        assert state.final_announced is (not reset_timer)
+        assert state.check_ins == (0 if reset_timer else 1)
+    finally:
+        await watchdog.stop(state.call_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pause', ['processing', 'suspended'])
+async def test_short_input_retains_its_budget_across_other_pauses(pause):
+    watchdog, state, clock, _ = await clocked_call('short-pause-' + pause)
+    try:
+        state.phase, state.check_ins, state.final_announced = 'grace', 1, True
+        clock[0] += 13
+        await watchdog.note_input_state(state.call_id, True, 'asterisk:talk_detect')
+        if pause == 'processing':
+            await watchdog.note_processing(state.call_id, True)
+        else:
+            await watchdog.set_suspended(state.call_id, True)
+        clock[0] += 0.6
+        await watchdog.note_input_state(state.call_id, False, 'asterisk:talk_detect')
+        if pause == 'processing':
+            await watchdog.note_processing(state.call_id, False)
+        else:
+            await watchdog.set_suspended(state.call_id, False)
+        assert state.deadline == clock[0] + 2
+        assert state.check_ins == 1 and state.final_announced is True
+    finally:
+        await watchdog.stop(state.call_id)
+
+
+@pytest.mark.asyncio
+async def test_silence_output_end_does_not_start_counting_while_input_is_active():
+    watchdog, state, clock, _ = await clocked_call('input-outlasts-output')
+    try:
+        clock[0] += 13
+        await watchdog.note_input_state(state.call_id, True, 'asterisk:talk_detect')
+        await watchdog.note_agent_output_start(state.call_id)
+        clock[0] += 0.2
+        await watchdog.note_agent_output_end(state.call_id, reset_timer=False)
+        assert state.deadline is None and not watchdog._can_count(state)
+        clock[0] += 0.4
+        await watchdog.note_input_state(state.call_id, False, 'asterisk:talk_detect')
+        assert state.deadline == clock[0] + 2
+    finally:
+        await watchdog.stop(state.call_id)

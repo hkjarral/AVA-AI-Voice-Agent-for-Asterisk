@@ -57,14 +57,16 @@ cannot run while activity keeps the watchdog from reaching its deadline.
 For inbound calls, raw audio VAD and Asterisk TalkDetect pause inactivity timing
 while input is active. A detector active-input interval shorter than one second resumes the
 remaining idle or reply-grace budget instead of buying an entirely new timeout.
+That budget also survives overlapping output, processing, or suspension pauses.
 TalkDetect barge-in during a watchdog prompt uses the same acoustic policy.
 There is at least a one-second recognition opportunity after a short burst
 (capped by the configured timeout/grace). Repeated fax-sized bursts therefore
 do not continually renew the full inactivity window or reset check-in attempts.
 
 Sustained acoustic input of at least one second and authoritative provider or
-pipeline activity still reset the policy. Transcripts are not the sole way to
-protect callers: the watchdog never counts idle time during active input.
+pipeline activity still reset the policy. Sustained input is recognized even if
+it ends during a pause. Transcripts are not the sole way to protect callers:
+the watchdog never counts idle time during active input.
 Brief input during the final warning gets another reply grace; unconfirmed
 bursts do not cause that warning to repeat indefinitely. A recognized response
 starts a fresh policy cycle. This is not fax detection and does not identify a

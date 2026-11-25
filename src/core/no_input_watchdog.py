@@ -288,7 +288,8 @@ class NoInputWatchdog:
         if active:
             state.deadline = None
         elif state.ready and not state.output_active and not state.suspended:
-            self._reset_initial_deadline(state)
+            if not self._resume_deferred_input(state):
+                self._reset_initial_deadline(state)
         if changed:
             self._log_transition(state, "processing_pause" if active else "processing_resume")
         self._wake(state)
@@ -327,21 +328,16 @@ class NoInputWatchdog:
             )
             state.deadline = None
             self._log_transition(state, "input_pause", source)
-        elif state.ready and not state.output_active and not state.processing and not state.suspended:
+        else:
             duration = max(0.0, self._clock() - (state.input_started_at if state.input_started_at is not None else self._clock()))
-            remaining = state.input_pause_remaining
-            state.input_pause_remaining = None
             state.input_started_at = None
             if duration >= _SUSTAINED_INPUT_SEC:
                 await self.note_activity(call_id, source)
-            elif remaining is not None:
-                recognition_grace = min(1.0, state.policy.initial_timeout_sec, state.policy.grace_timeout_sec)
-                state.deadline = self._clock() + max(recognition_grace, remaining)
-                self._log_transition(state, "input_resume_remaining", source)
-            elif state.deadline is None and not state.self_announcement:
-                self._reset_initial_deadline(state)
-        else:
-            self._log_transition(state, "input_resume_deferred", source)
+            elif self._can_count(state):
+                if not self._resume_deferred_input(state) and state.deadline is None and not state.self_announcement:
+                    self._reset_initial_deadline(state)
+            else:
+                self._log_transition(state, "input_resume_deferred", source)
         self._wake(state)
 
     async def note_agent_output_start(self, call_id: str) -> None:
@@ -392,10 +388,15 @@ class NoInputWatchdog:
             # should pause AVA's caller-idle deadline while it is audible, but it
             # must not buy the hosted agent a fresh inactivity window.
             remaining = state.output_pause_remaining
-            if remaining is None:
-                self._reset_initial_deadline(state)
-            else:
-                state.deadline = self._clock() + max(0.0, remaining)
+            if state.input_active:
+                if state.input_pause_remaining is None:
+                    state.input_pause_remaining = remaining
+                state.deadline = None
+            elif not self._resume_deferred_input(state):
+                if remaining is None:
+                    self._reset_initial_deadline(state)
+                else:
+                    state.deadline = self._clock() + max(0.0, remaining)
         state.output_pause_remaining = None
         if changed:
             self._log_transition(state, "output_resume")
@@ -411,10 +412,25 @@ class NoInputWatchdog:
         if state.suspended:
             state.deadline = None
         elif state.ready and not state.output_active and not state.processing:
-            self._reset_initial_deadline(state)
+            if not self._resume_deferred_input(state):
+                self._reset_initial_deadline(state)
         if changed:
             self._log_transition(state, "policy_pause" if suspended else "policy_resume")
         self._wake(state)
+
+    def _resume_deferred_input(self, state: _CallState) -> bool:
+        """Resume a short burst's saved budget after another pause finishes."""
+        remaining = state.input_pause_remaining
+        if remaining is None:
+            return False
+        if state.input_active:
+            state.deadline = None
+            return True
+        state.input_pause_remaining = None
+        recognition_grace = min(1.0, state.policy.initial_timeout_sec, state.policy.grace_timeout_sec)
+        state.deadline = self._clock() + max(recognition_grace, remaining)
+        self._log_transition(state, "input_resume_remaining", state.input_source)
+        return True
 
     def _log_transition(self, state: _CallState, transition: str, source: Optional[str] = None) -> None:
         """Bounded state diagnostics, never audio, transcripts, or per-frame logs."""

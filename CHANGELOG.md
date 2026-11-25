@@ -92,6 +92,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of refreshing the full timeout. Sustained speech and recognized caller turns
   retain protection. Add source-aware watchdog transition diagnostics; outbound
   opt-in behavior is unchanged.
+  Preserve that budget across deferred pauses and classify sustained input even
+  when its end arrives during output, processing, or suspension.
 
 - Persist confirmed VICIdial terminal results before retrying a late Call History write. Clearing the log file path while file logging is enabled restores the standard path.
 
