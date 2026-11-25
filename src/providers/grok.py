@@ -1271,14 +1271,12 @@ class GrokProvider(AIProviderInterface):
         self._provider_reported_output_rate = None
         await self._send_json(payload)
 
-    async def _send_explicit_greeting(self, *, after_cancelled_id: Optional[str] = None):
+    async def _send_explicit_greeting(
+        self, *, after_cancelled_id: Optional[str] = None, retry_deadline: Optional[float] = None
+    ):
         greeting = (self.config.greeting or "").strip()
-        if not greeting or not self.websocket or self.websocket.state.name != "OPEN":
-            return
-        if self._is_ga and (
-            self._last_created_response_id != after_cancelled_id or self._last_final_user_text
-        ):
-            # A caller turn can start while waiting for the session ACK or for silence.
+        websocket = self.websocket
+        if not greeting or not websocket or websocket.state.name != "OPEN":
             return
 
         # Per Grok Voice Agent docs: Disable turn_detection during greeting
@@ -1324,17 +1322,35 @@ class GrokProvider(AIProviderInterface):
                 },
             }
         
-        logger.info(
-            "🎤 Sending greeting response.create",
-            call_id=self._call_id,
-            greeting_preview=greeting[:50] + "..." if len(greeting) > 50 else greeting,
-        )
+        async with self._send_lock:
+            # Input events continue while other writes hold the lock. Claim the
+            # next response only when we can send on the same live connection.
+            if websocket is not self.websocket or websocket.state.name != "OPEN" or self._closing or self._closed:
+                return
+            if self._is_ga and (
+                self._last_created_response_id != after_cancelled_id or self._last_final_user_text
+            ):
+                return
+            if retry_deadline is not None:
+                now = asyncio.get_running_loop().time()
+                if (
+                    now >= retry_deadline or self._caller_speaking
+                    or now - self._last_greeting_vad_edge < self._GREETING_QUIET_SECONDS
+                    or self._pending_response or self._current_response_id
+                ):
+                    return
+                logger.info("Retrying silent Grok greeting after pickup", call_id=self._call_id)
 
-        self._greeting_response_id = None
-        self._greeting_completed = False
-        await self._send_json(response_payload)
-        self._pending_response = True
-        
+            logger.info(
+                "🎤 Sending greeting response.create",
+                call_id=self._call_id,
+                greeting_preview=greeting[:50] + "..." if len(greeting) > 50 else greeting,
+            )
+            self._greeting_response_id = None
+            self._greeting_completed = False
+            await websocket.send(json.dumps(response_payload))
+            self._pending_response = True
+
         logger.info(
             "🛡️  Greeting sent - will re-enable VAD after completion",
             call_id=self._call_id
@@ -1364,12 +1380,9 @@ class GrokProvider(AIProviderInterface):
             quiet_until = max(start, self._last_greeting_vad_edge) + self._GREETING_QUIET_SECONDS
             remaining = quiet_until - loop.time()
             if not self._caller_speaking and remaining <= 0:
-                if not (
-                    self._closing or self._closed or self._pending_response
-                    or self._current_response_id or self._last_final_user_text
-                ):
-                    logger.info("Retrying silent Grok greeting after pickup", call_id=self._call_id)
-                    await self._send_explicit_greeting(after_cancelled_id=self._greeting_response_id)
+                await self._send_explicit_greeting(
+                    after_cancelled_id=self._greeting_response_id, retry_deadline=deadline
+                )
                 return
             delay = self._GREETING_QUIET_SECONDS if self._caller_speaking else remaining
             await asyncio.sleep(min(delay, deadline - loop.time()))

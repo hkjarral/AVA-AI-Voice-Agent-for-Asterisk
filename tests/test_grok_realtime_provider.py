@@ -723,3 +723,41 @@ async def test_caller_already_answered_during_session_ack_gets_no_late_greeting(
     await provider._handle_event({"type": "response.done", "response": {"id": "first-answer", "status": "completed"}})
     await provider._send_explicit_greeting()
     assert not _greeting_requests(ws)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["quiet", "caller_speaking", "new_response", "deadline"])
+async def test_greeting_retry_rechecks_call_after_waiting_for_send_lock(provider, monkeypatch, change):
+    ws = await _start_greeting_at_pickup(provider)
+    monkeypatch.setattr(provider, "_GREETING_QUIET_SECONDS", 0.001)
+    budget = 0.05 if change == "deadline" else 5.0
+    monkeypatch.setattr(provider, "_GREETING_RECOVERY_SECONDS", budget)
+
+    # Signal exactly when the recovery is queued, before any competing event.
+    waiting = asyncio.Event()
+
+    class ObservedLock(asyncio.Lock):
+        async def acquire(self):
+            if self.locked():
+                waiting.set()
+            return await super().acquire()
+
+    provider._send_lock = ObservedLock()
+    try:
+        async with provider._send_lock:
+            await provider._handle_event({"type": "response.done", "response": {"id": "greeting", "status": "cancelled"}})
+            await provider._handle_event({"type": "input_audio_buffer.speech_stopped"})
+            await asyncio.wait_for(waiting.wait(), timeout=1)
+            if change == "caller_speaking":
+                await provider._handle_event({"type": "input_audio_buffer.speech_started"})
+            elif change == "new_response":
+                await provider._handle_event({"type": "response.created", "response": {"id": "answer"}})
+            elif change == "deadline":
+                await asyncio.sleep(budget)
+        result, = await asyncio.gather(provider._greeting_retry_task, return_exceptions=True)
+        assert result is None or isinstance(result, asyncio.CancelledError)
+        assert len(_greeting_requests(ws)) == (2 if change == "quiet" else 1)
+        if change == "new_response":
+            assert provider._greeting_response_id != "answer"
+    finally:
+        await provider.stop_session()
