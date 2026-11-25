@@ -407,7 +407,7 @@ this operator state directory to coordinate cleanup.
 The cleanup budget is 15 minutes across selected steps. Nonzero exits and timeouts
 stop subsequent steps. Each step reports its state and Docker's measured reclaimed
 space when available. A missing total means unknown, including partial deletion
-before a failure. A timeout kills and reaps the CLI. Docker may still be finishing
+before a failure. A timeout kills the CLI process group, including Docker CLI plugins, and reaps the CLI. Docker may still be finishing
 deletions on the daemon, so refresh usage before choosing to retry. Disk usage is
 queried separately with bounded commands off the API event loop. Its failure leaves
 the cleanup result intact and the page labels displayed usage as potentially stale.

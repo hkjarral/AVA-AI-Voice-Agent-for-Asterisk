@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -128,6 +129,21 @@ def _start(resources):
         return snapshot(job)
 
 
+def _run_command(command, *, stdout, stderr, timeout, pass_fds):
+    # Docker can invoke a CLI plugin. Keep its descendants in one killable group.
+    process = subprocess.Popen(command, stdout=stdout, stderr=stderr, stdin=subprocess.DEVNULL,
+                               pass_fds=pass_fds, start_new_session=True)
+    try:
+        return subprocess.CompletedProcess(command, process.wait(timeout=timeout))
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=5)
+        raise
+
+
 def run(root, lock_fd):
     job = _read(root)
     deadline = time.monotonic() + TIMEOUT_SECONDS
@@ -142,7 +158,7 @@ def run(root, lock_fd):
             # Spool Docker's potentially large list of deleted layers to disk.
             with tempfile.TemporaryFile() as output:
                 try:
-                    result = subprocess.run(COMMANDS[step["resource"]], stdout=output, stderr=output,
+                    result = _run_command(COMMANDS[step["resource"]], stdout=output, stderr=output,
                                             timeout=remaining, pass_fds=(lock_fd,))
                     step["exit_code"] = result.returncode
                     step["status"] = "completed" if result.returncode == 0 else "failed"

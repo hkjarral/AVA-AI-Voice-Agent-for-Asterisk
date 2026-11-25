@@ -35,7 +35,7 @@ def test_success_and_fixed_selection(root, monkeypatch):
         commands.append(command)
         kwargs['stdout'].write(b'Total reclaimed space: 2.5GB\n')
         return subprocess.CompletedProcess(command, 0)
-    monkeypatch.setattr(cleanup.subprocess, 'run', run)
+    monkeypatch.setattr(cleanup, '_run_command', run)
     cleanup.run(root, 10)
     job = cleanup.latest()
     assert job['status'] == 'completed'
@@ -53,7 +53,7 @@ def test_partial_failure_preserves_measured_results(root, monkeypatch, timeout):
         if timeout:
             raise subprocess.TimeoutExpired(command, kwargs['timeout'])
         return subprocess.CompletedProcess(command, 1)
-    monkeypatch.setattr(cleanup.subprocess, 'run', run)
+    monkeypatch.setattr(cleanup, '_run_command', run)
     cleanup.run(root, 10)
     job = cleanup.latest()
     assert job['status'] == ('timed_out' if timeout else 'failed')
@@ -238,3 +238,45 @@ def test_worker_death_keeps_cli_lock_until_exit(root, monkeypatch):
     while cleanup.latest()['status'] == 'running' and time.monotonic() < deadline:
         time.sleep(.02)
     assert cleanup.latest()['status'] == 'interrupted'
+
+
+def test_timeout_stops_cli_plugin_group(root):
+    import os
+    child_pid = root / 'plugin.pid'
+    script = root / 'plugin_fixture.py'
+    script.write_text('import os, time\nfrom pathlib import Path\n'
+                      'pid = os.fork()\n'
+                      'if pid == 0:\n'
+                      f'    Path({str(child_pid)!r}).write_text(str(os.getpid()))\n'
+                      'time.sleep(30)\n')
+    with (root / 'output').open('wb') as output:
+        with pytest.raises(subprocess.TimeoutExpired):
+            cleanup._run_command([sys.executable, str(script)], stdout=output, stderr=output,
+                                 timeout=.5, pass_fds=())
+    assert child_pid.exists()
+    # A killed descendant can briefly remain a zombie until the OS reaps it.
+    import psutil
+    pid = int(child_pid.read_text())
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        try:
+            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+                return
+        except psutil.NoSuchProcess:
+            return
+        time.sleep(.01)
+    pytest.fail('CLI plugin survived the cleanup timeout')
+
+
+def test_total_budget_and_elapsed_use_controlled_clocks(root, monkeypatch):
+    job = seed(root)
+    job['started_at'] = 40
+    cleanup._write(root, job)
+    ticks = iter([100, 1001])
+    monkeypatch.setattr(cleanup, 'time', SimpleNamespace(time=lambda: 1000, monotonic=lambda: next(ticks)))
+    monkeypatch.setattr(cleanup, '_run_command', lambda *a, **k: pytest.fail('budget already exhausted'))
+    cleanup.run(root, 10)
+    result = cleanup.latest()
+    assert result['status'] == 'timed_out'
+    assert result['elapsed_seconds'] == 960
+    assert all(step['status'] == 'pending' for step in result['steps'])
