@@ -17,6 +17,68 @@ Agents are managed in the Admin UI **Agents** tab and stored in `agents.db`. v7.
 
 ## Source of truth: agents.db
 
+### Inbound inactivity fallback
+
+Under **Agents → Advanced → Caller Inactivity Overrides**, choose an **Inbound
+timeout action**. **Hang up** retains the existing default. **Transfer to
+destination** requires a configured extension, queue, or ring group within this
+Agent's transfer destination scope. Configure inventory in Tools first; the
+transfer service must be enabled. This engine-owned action does not enable an
+AI-invoked transfer tool or widen the Agent's resource permissions.
+
+The fallback runs after the initial silence period, configured check-ins and
+reply grace. Caller activity during the final announcement cancels that timeout.
+Transfer mode has a separate **Transfer message**; blank uses its default and
+does not replace the Agent's saved hangup message. Save takes effect on new calls.
+Existing calls retain their captured policy and tool generation.
+
+Settings persist in `extra_json.no_input` as `timeout_action` (`hangup` or
+`transfer`), `fallback_destination` (an exact destination key), and optional
+`transfer_message` (1–500 characters). This is a per-Agent, inbound-only action;
+outbound watchdog opt-in remains supported but still ends inactive calls.
+Missing action fields and older engines retain hangup behavior. A rollback to
+an older engine does not implement the fallback, so restore the intended
+operator behavior before downgrading.
+
+Invalid settings are rejected by the UI and API. An unavailable destination or
+explicitly rejected handoff ends the call through normal cleanup. A missing key
+is never fuzzy-matched to another route. An uncertain response retains ownership
+protection: AVA does not repeat the transfer or automatically delete the caller.
+Bounded current-channel checks can confirm the target or observe channel removal;
+otherwise the engine logs that manual PBX inspection is required. A handoff that
+was still unconfirmed when cleanup froze the record reports an error, not a
+successful transfer. Call diagnostics retain the timeout action and result.
+
+Fax detection and repeated-tone watchdog hardening are separate. A fallback
+cannot run while activity keeps the watchdog from reaching its deadline.
+
+### Caller inactivity and acoustic bursts
+
+For inbound calls, raw audio VAD and Asterisk TalkDetect pause inactivity timing
+while input is active. A detector active-input interval shorter than one second resumes the
+remaining idle or reply-grace budget instead of buying an entirely new timeout.
+That budget also survives overlapping output, processing, or suspension pauses.
+TalkDetect barge-in during a watchdog prompt uses the same acoustic policy.
+There is at least a one-second recognition opportunity after a short burst
+(capped by the configured timeout/grace). Repeated fax-sized bursts therefore
+do not continually renew the full inactivity window or reset check-in attempts.
+
+Sustained acoustic input of at least one second and authoritative provider or
+pipeline activity still reset the policy. Sustained input is recognized even if
+it ends during a pause. Transcripts are not the sole way to protect callers:
+the watchdog never counts idle time during active input.
+Brief input during the final warning gets another reply grace; unconfirmed
+bursts do not cause that warning to repeat indefinitely. A recognized response
+starts a fresh policy cycle. This is not fax detection and does not identify a
+sender or provision a receiver. Outbound watchdog opt-in retains its previous
+reset behavior.
+
+`Caller inactivity state changed` INFO events report pause/resume/reset reason,
+activity source, phase, check-in count, remaining time and processing/output
+state. They contain no audio or transcript and are emitted on state transitions,
+not individual media frames. Use these events to distinguish acoustic resets
+from processing, output or lifecycle pauses before changing detector thresholds.
+
 ### v7.7 workspace and integration access
 
 Searchable cards/list views lead to a routed General, Conversation, Tools and

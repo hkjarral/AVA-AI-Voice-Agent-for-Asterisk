@@ -5,7 +5,7 @@ This tool implements the canonical `blind_transfer` tool and replaces the legacy
 `transfer_call` and `transfer_to_queue` tools with a single unified interface.
 """
 
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple, List, Callable, Awaitable
 import structlog
 
 from ..base import Tool, ToolDefinition, ToolParameter, ToolCategory
@@ -700,6 +700,8 @@ class UnifiedTransferTool(Tool):
         transfer_type: str,
         dialplan_context: str,
         transfer_state: str,
+        claim_ownership: Optional[Callable[[dict], Awaitable[bool]]] = None,
+        release_ownership: Optional[Callable[[dict], Awaitable[bool]]] = None,
     ) -> Dict[str, Any]:
         """Validate and hand caller ownership to a concrete dialplan target."""
         priority = 1
@@ -758,11 +760,12 @@ class UnifiedTransferTool(Tool):
 
         # StasisEnd can race the HTTP response. Claim transfer ownership before
         # continue so normal cleanup cannot hang up a successfully handed-off leg.
-        await context.update_session(
-            transfer_active=True,
-            transfer_state=transfer_state,
-            transfer_target=description,
-        )
+        changes = dict(transfer_active=True, transfer_state=transfer_state, transfer_target=description)
+        if claim_ownership is not None:
+            if not await claim_ownership(changes):
+                return {"status": "failed", "ownership_lost": True}
+        else:
+            await context.update_session(**changes)
 
         try:
             handed_off = await context.ari_client.continue_in_dialplan(
@@ -805,7 +808,11 @@ class UnifiedTransferTool(Tool):
         restore_ownership = handed_off is False
         if restore_ownership:
             try:
-                await context.update_session(**previous_transfer_state)
+                if release_ownership is not None:
+                    if not await release_ownership(previous_transfer_state):
+                        return {"status": "failed", "ownership_lost": True}
+                else:
+                    await context.update_session(**previous_transfer_state)
             except Exception:
                 logger.error(
                     "Failed to restore transfer ownership after unconfirmed handoff",

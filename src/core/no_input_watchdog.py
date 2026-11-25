@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Dict, Mapping, Optional
 
 import structlog
 from prometheus_client import Counter, Gauge
+from .no_input_fallback import DEFAULT_TRANSFER_MESSAGE
 
 logger = structlog.get_logger(__name__)
 
@@ -34,6 +35,10 @@ PauseCallback = Callable[[str], Awaitable[bool]]
 
 _DEFAULT_CHECK_IN_MESSAGE = "Are you still there?"
 _DEFAULT_FINAL_MESSAGE = "I still can't hear you, so I'll end the call now. Goodbye."
+# Acoustic bursts alone are weaker evidence than a recognized caller turn.
+# Keep a short recognition opportunity without letting fax CNG bursts refresh
+# an entire inactivity window. Sustained speech remains protected without ASR.
+_SUSTAINED_INPUT_SEC = 1.0
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:
@@ -94,11 +99,16 @@ class NoInputPolicy:
     max_check_ins: int = 1
     check_in_message: str = _DEFAULT_CHECK_IN_MESSAGE
     final_message: str = _DEFAULT_FINAL_MESSAGE
+    timeout_action: str = "hangup"
+    fallback_destination: str = ""
 
     @classmethod
     def from_mapping(cls, value: Optional[Mapping[str, Any]]) -> "NoInputPolicy":
         """Build a safe policy from merged global and per-agent values."""
         raw = dict(value or {})
+        action = "transfer" if raw.get("timeout_action") == "transfer" else "hangup"
+        destination = raw.get("fallback_destination")
+        destination = destination.strip() if isinstance(destination, str) else ""
         return cls(
             enabled=_coerce_bool(raw.get("enabled", True), True),
             inbound_enabled=_coerce_bool(raw.get("inbound_enabled", True), True),
@@ -107,7 +117,12 @@ class NoInputPolicy:
             grace_timeout_sec=_coerce_float(raw.get("grace_timeout_sec", 15.0), 15.0, 1.0, 3600.0),
             max_check_ins=_coerce_int(raw.get("max_check_ins", 1), 1, 0, 10),
             check_in_message=_coerce_message(raw.get("check_in_message"), _DEFAULT_CHECK_IN_MESSAGE),
-            final_message=_coerce_message(raw.get("final_message"), _DEFAULT_FINAL_MESSAGE),
+            final_message=(
+                _coerce_message(raw.get("transfer_message"), DEFAULT_TRANSFER_MESSAGE)
+                if action == "transfer" else _coerce_message(raw.get("final_message"), _DEFAULT_FINAL_MESSAGE)
+            ),
+            timeout_action=action,
+            fallback_destination=destination,
         )
 
     def applies_to(self, *, is_outbound: bool) -> bool:
@@ -135,6 +150,11 @@ class _CallState:
     check_ins: int = 0
     deadline: Optional[float] = None
     output_pause_remaining: Optional[float] = None
+    input_pause_remaining: Optional[float] = None
+    input_started_at: Optional[float] = None
+    input_source: str = ""
+    input_sequence: int = 0
+    final_announced: bool = False
     last_activity_at: float = field(default_factory=time.monotonic)
     last_activity_source: str = "call_start"
 
@@ -177,6 +197,7 @@ class NoInputWatchdog:
             "deadline": state.deadline,
             "last_activity_at": state.last_activity_at,
             "last_activity_source": state.last_activity_source,
+            "input_source": state.input_source,
         }
 
     async def register(
@@ -195,7 +216,7 @@ class NoInputWatchdog:
                 is_outbound=is_outbound,
             )
             return False
-        state = _CallState(call_id=call_id, policy=policy, is_outbound=is_outbound)
+        state = _CallState(call_id=call_id, policy=policy, is_outbound=is_outbound, last_activity_at=self._clock())
         self._states[call_id] = state
         state.task = asyncio.create_task(self._run(state), name=f"no-input-{call_id}")
         _NO_INPUT_ACTIVE.inc()
@@ -238,8 +259,15 @@ class NoInputWatchdog:
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
+        if not state.is_outbound and source == "asterisk:talk_detect_barge_in":
+            # TALK_DETECT remains acoustic evidence while interrupting a prompt;
+            # it must not bypass the short-burst policy during check-ins.
+            await self.note_input_state(call_id, True, "asterisk:talk_detect")
+            return
         state.last_activity_at = self._clock()
         state.last_activity_source = source
+        state.input_pause_remaining = None
+        state.final_announced = False
         state.check_ins = 0
         state.phase = "waiting"
         if state.ready and not state.output_active and not state.processing and not state.suspended:
@@ -247,6 +275,7 @@ class NoInputWatchdog:
         else:
             state.deadline = None
         _NO_INPUT_EVENTS.labels("caller_activity").inc()
+        self._log_transition(state, "caller_activity", source)
         self._wake(state)
 
     async def note_processing(self, call_id: str, active: bool) -> None:
@@ -254,15 +283,19 @@ class NoInputWatchdog:
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
+        changed = state.processing != bool(active)
         state.processing = bool(active)
         if active:
             state.deadline = None
         elif state.ready and not state.output_active and not state.suspended:
-            self._reset_initial_deadline(state)
+            if not self._resume_deferred_input(state):
+                self._reset_initial_deadline(state)
+        if changed:
+            self._log_transition(state, "processing_pause" if active else "processing_resume")
         self._wake(state)
 
     async def note_input_state(self, call_id: str, active: bool, source: str) -> None:
-        """Pause timing for sustained caller speech and restart after it ends."""
+        """Pause for acoustic input; short bursts resume the remaining budget."""
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
@@ -270,18 +303,41 @@ class NoInputWatchdog:
         # TALK_DETECT and provider VAD end events are not guaranteed to be paired
         # with a start event.  An unmatched/duplicate end must be a no-op: resetting
         # the deadline here can indefinitely postpone the post-check-in grace timeout.
-        if not active and not was_active:
+        if bool(active) == was_active:
             return
         state.input_active = bool(active)
+        if state.is_outbound:
+            # Keep existing campaign behavior; qualify inbound changes first.
+            if active:
+                state.last_activity_at = self._clock()
+                state.last_activity_source = source
+                state.check_ins = 0
+                state.phase = "waiting"
+                state.deadline = None
+            elif state.ready and not state.output_active and not state.processing and not state.suspended:
+                self._reset_initial_deadline(state)
+            self._log_transition(state, "input_pause" if active else "input_resume", source)
+            self._wake(state)
+            return
         if active:
-            state.last_activity_at = self._clock()
-            state.last_activity_source = source
-            state.check_ins = 0
-            state.phase = "waiting"
+            state.input_started_at = self._clock()
+            state.input_source = source
+            state.input_sequence += 1
+            state.input_pause_remaining = (
+                max(0.0, state.deadline - self._clock()) if state.deadline is not None else None
+            )
             state.deadline = None
-            _NO_INPUT_EVENTS.labels("caller_activity").inc()
-        elif state.ready and not state.output_active and not state.processing and not state.suspended:
-            self._reset_initial_deadline(state)
+            self._log_transition(state, "input_pause", source)
+        else:
+            duration = max(0.0, self._clock() - (state.input_started_at if state.input_started_at is not None else self._clock()))
+            state.input_started_at = None
+            if duration >= _SUSTAINED_INPUT_SEC:
+                await self.note_activity(call_id, source)
+            elif self._can_count(state):
+                if not self._resume_deferred_input(state) and state.deadline is None and not state.self_announcement:
+                    self._reset_initial_deadline(state)
+            else:
+                self._log_transition(state, "input_resume_deferred", source)
         self._wake(state)
 
     async def note_agent_output_start(self, call_id: str) -> None:
@@ -289,7 +345,8 @@ class NoInputWatchdog:
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
-        if not state.output_active:
+        changed = not state.output_active
+        if changed:
             state.output_pause_remaining = (
                 max(0.0, float(state.deadline) - self._clock())
                 if state.deadline is not None
@@ -298,6 +355,8 @@ class NoInputWatchdog:
         state.output_active = True
         state.processing = False
         state.deadline = None
+        if changed:
+            self._log_transition(state, "output_pause")
         self._wake(state)
 
     async def note_agent_output_end(
@@ -311,6 +370,7 @@ class NoInputWatchdog:
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
+        changed = state.output_active
         state.output_active = False
         state.processing = False
         if preserve_policy_state:
@@ -328,11 +388,18 @@ class NoInputWatchdog:
             # should pause AVA's caller-idle deadline while it is audible, but it
             # must not buy the hosted agent a fresh inactivity window.
             remaining = state.output_pause_remaining
-            if remaining is None:
-                self._reset_initial_deadline(state)
-            else:
-                state.deadline = self._clock() + max(0.0, remaining)
+            if state.input_active:
+                if state.input_pause_remaining is None:
+                    state.input_pause_remaining = remaining
+                state.deadline = None
+            elif not self._resume_deferred_input(state):
+                if remaining is None:
+                    self._reset_initial_deadline(state)
+                else:
+                    state.deadline = self._clock() + max(0.0, remaining)
         state.output_pause_remaining = None
+        if changed:
+            self._log_transition(state, "output_resume")
         self._wake(state)
 
     async def set_suspended(self, call_id: str, suspended: bool) -> None:
@@ -340,12 +407,40 @@ class NoInputWatchdog:
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
+        changed = state.suspended != bool(suspended)
         state.suspended = bool(suspended)
         if state.suspended:
             state.deadline = None
         elif state.ready and not state.output_active and not state.processing:
-            self._reset_initial_deadline(state)
+            if not self._resume_deferred_input(state):
+                self._reset_initial_deadline(state)
+        if changed:
+            self._log_transition(state, "policy_pause" if suspended else "policy_resume")
         self._wake(state)
+
+    def _resume_deferred_input(self, state: _CallState) -> bool:
+        """Resume a short burst's saved budget after another pause finishes."""
+        remaining = state.input_pause_remaining
+        if remaining is None:
+            return False
+        if state.input_active:
+            state.deadline = None
+            return True
+        state.input_pause_remaining = None
+        recognition_grace = min(1.0, state.policy.initial_timeout_sec, state.policy.grace_timeout_sec)
+        state.deadline = self._clock() + max(recognition_grace, remaining)
+        self._log_transition(state, "input_resume_remaining", state.input_source)
+        return True
+
+    def _log_transition(self, state: _CallState, transition: str, source: Optional[str] = None) -> None:
+        """Bounded state diagnostics, never audio, transcripts, or per-frame logs."""
+        logger.info(
+            "Caller inactivity state changed", call_id=state.call_id, transition=transition,
+            source=source or state.last_activity_source, phase=state.phase,
+            ready=state.ready, input_active=state.input_active, output_active=state.output_active,
+            processing=state.processing, suspended=state.suspended, check_ins=state.check_ins,
+            remaining_sec=max(0.0, state.deadline - self._clock()) if state.deadline is not None else None,
+        )
 
     def _wake(self, state: _CallState) -> None:
         """Wake the state machine after a state transition."""
@@ -354,6 +449,9 @@ class NoInputWatchdog:
     def _reset_initial_deadline(self, state: _CallState) -> None:
         """Set a fresh initial idle deadline from the monotonic clock."""
         state.deadline = self._clock() + state.policy.initial_timeout_sec
+        state.input_pause_remaining = None
+        state.final_announced = False
+        self._log_transition(state, "timer_reset")
 
     def _can_count(self, state: _CallState) -> bool:
         """Return whether idle time may currently advance."""
@@ -465,11 +563,15 @@ class NoInputWatchdog:
         state.output_active = False
         state.phase = "grace"
         state.deadline = self._clock() + state.policy.grace_timeout_sec
+        if state.input_active:
+            state.input_pause_remaining = state.policy.grace_timeout_sec
 
     async def _finish_for_no_input(self, state: _CallState) -> None:
         """Speak the terminal warning and attempt the engine-owned hangup."""
         activity_before = state.last_activity_at
-        if state.policy.final_message:
+        input_before = state.input_sequence
+        if state.policy.final_message and not state.final_announced:
+            state.final_announced = True
             state.phase = "final_announcement"
             state.deadline = None
             state.self_announcement = True
@@ -500,10 +602,22 @@ class NoInputWatchdog:
             _NO_INPUT_EVENTS.labels("caller_resumed").inc()
             return
 
+        if state.input_active or state.input_sequence != input_before:
+            # Give a brief caller response during the warning a full reply grace.
+            # Do not repeat the warning/reset check-ins for unconfirmed bursts:
+            # recurring fax tones must eventually exhaust this remaining budget.
+            state.phase = "grace"
+            state.output_active = False
+            state.deadline = self._clock() + state.policy.grace_timeout_sec
+            if state.input_active:
+                state.input_pause_remaining = state.policy.grace_timeout_sec
+            self._log_transition(state, "final_input_grace")
+            return
+
         state.terminal = True
-        state.phase = "hangup"
-        _NO_INPUT_EVENTS.labels("hangup").inc()
-        logger.info("Caller inactivity timeout reached", call_id=state.call_id)
+        state.phase = state.policy.timeout_action
+        _NO_INPUT_EVENTS.labels(state.policy.timeout_action).inc()
+        logger.info("Caller inactivity timeout reached", call_id=state.call_id, action=state.policy.timeout_action)
         try:
             await self._hangup(state.call_id)
         except Exception:

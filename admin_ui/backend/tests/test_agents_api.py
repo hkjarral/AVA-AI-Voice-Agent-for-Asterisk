@@ -30,6 +30,44 @@ def test_crud_roundtrip(client):
     assert client.delete("/api/agents/maria_vendas").status_code == 204
 
 
+@pytest.mark.parametrize("policy", [
+    {"timeout_action": "transfer"},
+    {"timeout_action": "other"},
+    {"timeout_action": "transfer", "fallback_destination": "missing"},
+    {"timeout_action": "transfer", "fallback_destination": "reception", "transfer_message": " "},
+])
+def test_inactivity_fallback_rejects_invalid_direct_api_requests(client, monkeypatch, policy):
+    import json
+    from services import onboarding
+    monkeypatch.setattr(onboarding, "effective_config", lambda: {"tools": {"transfer": {"destinations": {
+        "reception": {"type": "queue", "target": "600"},
+    }}}})
+    response = client.post("/api/agents", json={"display_name": "Fallback", "provider": "x", "prompt": "p",
+        "extra_json": json.dumps({"no_input": policy})})
+    assert response.status_code == 422
+
+
+def test_inactivity_fallback_roundtrip_and_scope_changes_are_validated(client, monkeypatch):
+    import json
+    from services import onboarding
+    monkeypatch.setattr(onboarding, "effective_config", lambda: {"tools": {"transfer": {"destinations": {
+        "reception": {"type": "queue", "target": "600"},
+    }}}})
+    extra = {"future_setting": {"keep": True}, "no_input": {
+        "timeout_action": "transfer", "fallback_destination": "reception", "initial_timeout_sec": 42,
+    }}
+    response = client.post("/api/agents", json={"display_name": "Fallback", "provider": "x", "prompt": "p",
+        "extra_json": json.dumps(extra)})
+    assert response.status_code == 201
+    saved = client.get("/api/agents/fallback").json()
+    assert json.loads(saved["extra_json"]) == extra
+    response = client.patch("/api/agents/fallback", json={"tool_configs_json": json.dumps({
+        "transfer": {"destination_policy": "none"},
+    })})
+    assert response.status_code == 422
+    assert client.patch("/api/agents/fallback", json={"extra_json": None}).status_code == 200
+
+
 def test_tool_configs_are_validated_and_canonicalized(client):
     raw = {
         "transfer": {

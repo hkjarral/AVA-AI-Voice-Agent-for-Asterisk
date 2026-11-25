@@ -441,6 +441,46 @@ Snapshot:
 
 ![Custom Destination - Target](freepbx/img/snapshot-2-custom-destination.png)
 
+### 3.5 Late Fax Detection on a Shared Voice/Fax Line
+
+If FreePBX fax detection remains enabled when a call enters AVA, a late CNG
+calling tone can redirect the caller to the special `fax` extension in the
+channel's **current context**. The context that invokes `Stasis()` must provide
+that extension. Otherwise Asterisk reports that no fax extension exists.
+
+Add the route in `extensions_custom.conf`, in the same context as your AVA
+entry extension. For example, if FreePBX already sets `FAX_DEST` on the inbound
+route:
+
+```asterisk
+exten => fax,1,NoOp(Late fax detection - handing caller to configured receiver)
+ same => n,GotoIf($["${FAX_DEST}"=""]?missing)
+ same => n,Set(__DIRECTION=INBOUND)
+ same => n,Goto(${CUT(FAX_DEST,^,1)},${CUT(FAX_DEST,^,2)},${CUT(FAX_DEST,^,3)})
+ same => n(missing),Hangup()
+```
+
+Only use an administrator-configured `FAX_DEST` such as `ext-fax^35^1`;
+verify the complete context, extension, and priority exist. Alternatively use
+a fixed `Goto(ext-fax,35,1)` after replacing `35` with your receiver. Configure
+fax detection and its wait through **Inbound Routes → Fax**, then Apply Config;
+do not edit FreePBX-generated configuration. No receiver is created by AVA.
+
+AVA preserves a confirmed inbound fax handoff and releases its own provider,
+watchdog, playback, and media resources. History reports a transfer, **not fax
+delivery**; inspect Asterisk/FreePBX's fax result for receipt. Recognition uses
+the caller's StasisEnd dialplan snapshot or a bounded current-channel lookup.
+Lookup failures and unrelated redirects retain the existing cleanup policy.
+Outbound and externally managed dialer calls retain their existing ownership.
+
+This is independent of inactivity fallback. Fax tones can be classified as
+activity, so shortening the inactivity timer is not a fax-detection substitute.
+Automated lifecycle tests cover cleanup and event races. A real fax reception
+on the final deployed revision is still required to qualify a deployment.
+
+ARI references: [StasisEnd event schema](https://github.com/asterisk/asterisk/blob/22/rest-api/api-docs/events.json)
+and [current channel lookup](https://docs.asterisk.org/Asterisk_22_Documentation/API_Documentation/Asterisk_REST_Interface/Channels_REST_API/#get).
+
 ## 4. Deployment & Startup
 
 ### 4.1 Start Services
