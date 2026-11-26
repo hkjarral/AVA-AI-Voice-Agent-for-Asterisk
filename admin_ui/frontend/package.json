@@ -27,7 +27,7 @@
         "axios": "^1.21.0",
         "clsx": "^2.1.0",
         "js-yaml": "^4.3.2",
-        "lucide-react": "^0.475.0",
+        "lucide-react": "^1.72.0",
         "react": "^19.3.1",
         "react-dom": "^19.3.1",
         "react-markdown": "^9.0.1",
