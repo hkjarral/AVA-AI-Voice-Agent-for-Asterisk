@@ -4014,6 +4014,7 @@ def test_vicidial_tool_policy_is_scoped_to_external_calls():
 
 
 def test_agent_runtime_resolution_preserves_vicidial_destinations():
+    from src.tools.registry import ToolRegistry
     global_config = {
         "tools": {
             "transfer": {
@@ -4039,7 +4040,7 @@ def test_agent_runtime_resolution_preserves_vicidial_destinations():
     generation = SimpleNamespace(
         generation_id=1,
         config_hash="hash",
-        registry=SimpleNamespace(),
+        registry=ToolRegistry.isolated(),
         for_agent=lambda _policy: effective,
     )
     engine = Engine.__new__(Engine)

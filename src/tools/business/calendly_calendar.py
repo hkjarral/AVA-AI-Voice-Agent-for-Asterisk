@@ -77,11 +77,13 @@ class CalendlyCalendarTool(Tool):
             if parameters.get("action") == "create_booking":
                 async def active():
                     session = await context.get_session()
-                    if not session or getattr(session, "cleanup_in_progress", False) or getattr(session, "cleanup_completed", False):
+                    if session is not conversation or not session or getattr(session, "cleanup_in_progress", False) or getattr(session, "cleanup_completed", False):
                         raise CalendlyError("call_not_active")
                     if await context.get_tool_block_response("calendly_calendar"):
                         raise CalendlyError("call_not_active")
                 session = await context.get_session() if getattr(context, "session_store", None) is not None else None
+                if conversation is not None:
+                    await active()
                 request = dict(parameters)
                 reference = request.get("confirmation_reference")
                 if reference and not await asyncio.to_thread(store.prior, operation):
@@ -98,6 +100,7 @@ class CalendlyCalendarTool(Tool):
                         raise CalendlyError("confirmation_details_required")
                 result = await service.book(cfg, operation, request, active)
                 if session is not None:
+                    await active()
                     if result.get("status") == "confirmation_required":
                         prepared = {"action": "create_booking", "slot_reference": request["slot_reference"],
                                     "name": result["confirmation_recap"]["name"], "email": result["confirmation_recap"]["email"],

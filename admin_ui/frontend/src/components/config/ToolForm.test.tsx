@@ -470,3 +470,18 @@ describe('ToolForm Google Calendar future slot defaults', () => {
         expect(screen.getByLabelText('Max slots returned')).toHaveValue(0);
     });
 });
+
+describe('ToolForm — live agent destination admission', () => {
+    it('excludes dialplan destinations from the advanced live agent selector', async () => {
+
+        render(<ToolForm config={{ transfer: { enabled: true, destinations: {
+            survey: { type: 'dialplan', target: 's', dialplan_context: 'survey' },
+            desk: { type: 'extension', target: '6000' },
+            support: { type: 'ringgroup', target: '600' },
+        } } }} onChange={vi.fn()} />);
+
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        const select = screen.getByRole('combobox', { name: 'Live Agent Destination Key (Advanced)' }) as HTMLSelectElement;
+        expect(Array.from(select.options).map(option => option.value)).toEqual(['', 'desk', 'support']);
+    });
+});

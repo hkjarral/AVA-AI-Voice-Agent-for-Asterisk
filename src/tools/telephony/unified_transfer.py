@@ -6,6 +6,7 @@ This tool implements the canonical `blind_transfer` tool and replaces the legacy
 """
 
 from typing import Dict, Any, Optional, Tuple, List, Callable, Awaitable
+import asyncio
 import structlog
 
 from ..base import Tool, ToolDefinition, ToolParameter, ToolCategory
@@ -95,15 +96,33 @@ class UnifiedTransferTool(Tool):
         destination_key: Optional[str] = None,
         priority: int = 1,
     ) -> Dict[str, Any]:
+        session = await context.get_session()
+        lock = getattr(session, "_transfer_dispatch_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            session._transfer_dispatch_lock = lock
+        async with lock:
+            if await context.session_store.get_by_call_id(context.call_id) is not session:
+                return {"status": "failed", "message": "Call ownership changed."}
+            return await self._prepare_transfer_locked(
+                context=context, source_tool=source_tool, transfer_type=transfer_type,
+                target=target, description=description, dialplan_context=dialplan_context,
+                destination_key=destination_key, priority=priority)
+
+    async def _prepare_transfer_locked(self, *, context, source_tool, transfer_type,
+                                       target, description, dialplan_context,
+                                       destination_key, priority):
         if transfer_deferral_enabled(context):
             try:
                 session = await context.get_session()
                 pending = getattr(session, "pending_deferred_transfer", None)
                 if isinstance(pending, dict) and pending.get("kind") == "transfer":
+                    pending_payload = pending.get("payload") if isinstance(pending.get("payload"), dict) else {}
                     same_pending_transfer = (
                         str(pending.get("transfer_type") or "").strip() == str(transfer_type or "").strip()
                         and str(pending.get("target") or "").strip() == str(target or "").strip()
                         and str(pending.get("dialplan_context") or "").strip() == str(dialplan_context or "").strip()
+                        and pending_payload.get("priority", 1) == priority
                     )
                     if not same_pending_transfer:
                         logger.warning(
@@ -152,8 +171,18 @@ class UnifiedTransferTool(Tool):
         if transfer_deferral_enabled(context):
             if source_tool == "blind_transfer" and context.tool_response_id:
                 action["_tool_response_id"] = context.tool_response_id
+            action["_preparing"] = True
+            try:
+                await store_pending_deferred_transfer(context, action)
+            except RuntimeError:
+                return {"status": "failed", "message": "Call no longer admits a transfer."}
             await self._maybe_start_predial_transfer(context, action)
-            await store_pending_deferred_transfer(context, action)
+            session = await context.get_session()
+            if (not session or session.cleanup_in_progress or session.cleanup_completed
+                    or (session.pending_deferred_transfer or {}).get("id") != action["id"]):
+                return {"status": "failed", "message": "Transfer was cancelled or call ownership changed."}
+            action["_preparing"] = False
+            await store_pending_deferred_transfer(context, action, session=session)
             return build_deferred_transfer_result(
                 action=action,
                 message=f"Transferring you to {description} now.",
@@ -213,7 +242,10 @@ class UnifiedTransferTool(Tool):
         destination_key = str(action.get("destination_key") or action.get("target") or "").strip()
         try:
             session = await context.get_session()
-            session.current_action = {
+            if (not session or session.cleanup_in_progress or session.cleanup_completed
+                    or (session.pending_deferred_transfer or {}).get("id") != action.get("id")):
+                return
+            marker = {
                 "type": "predial_transfer",
                 "deferred_action_id": action.get("id"),
                 "destination_key": destination_key,
@@ -226,9 +258,16 @@ class UnifiedTransferTool(Tool):
                 "ready_to_bridge": False,
                 "bridged": False,
             }
-            await context.session_store.upsert_call(session)
+            from src.core.session_store import SessionStore
+            if isinstance(context.session_store, SessionStore):
+                if not await context.session_store.update_deferred_predial(session, action["id"], marker, begin=True):
+                    return
+            else:
+                session.current_action = marker
+                await context.session_store.upsert_call(session)
         except Exception:
             logger.debug("Failed to persist predial transfer action state", call_id=context.call_id, exc_info=True)
+            return
 
         try:
             result = await context.ari_client.send_command(
@@ -245,7 +284,7 @@ class UnifiedTransferTool(Tool):
                 params={
                     "endpoint": endpoint,
                     "app": app,
-                    "appArgs": f"predial-transfer,{context.call_id},{destination_key}",
+                    "appArgs": f"predial-transfer,{context.call_id},{destination_key},{action['id']}",
                     "callerId": self._caller_id_for_predial(context),
                     "timeout": dial_timeout_sec,
                 },
@@ -265,6 +304,21 @@ class UnifiedTransferTool(Tool):
             return
 
         predial_channel_id = str(result["id"])
+        from src.core.session_store import SessionStore
+        if isinstance(context.session_store, SessionStore):
+            published = await context.session_store.update_deferred_predial(
+                session, action["id"], {"predial_channel_id": predial_channel_id})
+        else:
+            latest = await context.session_store.get_by_call_id(context.call_id)
+            published = (latest is session and not session.cleanup_in_progress and not session.cleanup_completed
+                         and (session.pending_deferred_transfer or {}).get("id") == action.get("id")
+                         and (session.current_action or {}).get("deferred_action_id") == action.get("id"))
+        if not published:
+            engine = getattr(context.ari_client, "engine", None)
+            if engine and hasattr(engine, "_unregister_predial_transfer_channel"):
+                engine._unregister_predial_transfer_channel(predial_channel_id)
+            await context.ari_client.hangup_channel(predial_channel_id)
+            return
         action["payload"] = {
             **(action.get("payload") if isinstance(action.get("payload"), dict) else {}),
             "predial": {
@@ -275,8 +329,7 @@ class UnifiedTransferTool(Tool):
             },
         }
         try:
-            session = await context.get_session()
-            if isinstance(session.current_action, dict) and session.current_action.get("type") == "predial_transfer":
+            if not isinstance(context.session_store, SessionStore):
                 session.current_action["predial_channel_id"] = predial_channel_id
                 await context.session_store.upsert_call(session)
             engine = getattr(context.ari_client, "engine", None)
@@ -562,6 +615,8 @@ class UnifiedTransferTool(Tool):
         action: Dict[str, Any],
         context: ToolExecutionContext,
     ) -> Dict[str, Any]:
+        if action.get("_preparing"):
+            return {"status": "pending", "message": "Transfer preparation is in progress."}
         transfer_type = str(action.get("transfer_type") or "").strip()
         target = str(action.get("target") or "").strip()
         description = str(action.get("description") or target or "").strip()

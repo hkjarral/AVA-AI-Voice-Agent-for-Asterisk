@@ -960,3 +960,21 @@ async def test_native_reentry_uses_conversation_history_identity_for_booking_pri
         await sessions.upsert_call(session)
         assert (await native.CalendlyCalendarTool().execute({'action': 'get_available_slots', 'appointment_key': 'consultation', 'timezone': 'UTC'}, context))['status'] == 'success'
         assert service.slots.call_args.args[1] == 'call:' + key
+
+
+async def test_native_booking_does_not_adopt_replacement_conversation(setup, monkeypatch):
+    from src.core.models import CallSession
+    tool, context, session, _, recap = await native_confirmation(setup, monkeypatch)
+    _, service, fake, _ = setup
+    old_current = service.current
+    replacement = CallSession(call_id=session.call_id, caller_channel_id=session.call_id)
+    async def replace_before_submission(*args, **kwargs):
+        result = await old_current(*args, **kwargs)
+        await context.session_store.remove_call(session.call_id)
+        await context.session_store.upsert_call(replacement)
+        return result
+    monkeypatch.setattr(service, 'current', replace_before_submission)
+    result = await tool.execute({'action': 'create_booking', 'confirmation_reference': recap['confirmation_reference'], 'email_confirmed': True, 'booking_confirmed': True}, context)
+    assert result['code'] == 'call_not_active'
+    assert fake.posts == 0
+    assert not getattr(replacement, '_calendly_confirmation', None)

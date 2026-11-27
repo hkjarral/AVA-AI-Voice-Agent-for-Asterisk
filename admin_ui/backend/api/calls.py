@@ -363,6 +363,12 @@ def _record_to_response(record, agent_names: Optional[Dict[str, str]] = None) ->
                 diagnostics["conversation_completion"] = current
         except Exception:
             pass  # Historical evidence remains available if the journal was archived.
+    completion = diagnostics.get("conversation_completion")
+    if isinstance(completion, dict):
+        completion = dict(completion)
+        if completion.get("requested_next_step") not in ("hangup", completion.get("next_step")) or completion.get("result") == "unavailable":
+            completion["requested_next_step"] = "<invalid>"
+        diagnostics["conversation_completion"] = completion
     return CallRecordResponse(
         id=record.id,
         call_id=record.call_id,

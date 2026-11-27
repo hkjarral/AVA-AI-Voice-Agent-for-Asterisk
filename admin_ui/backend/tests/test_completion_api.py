@@ -60,3 +60,25 @@ def test_agent_cannot_select_opt_in_default_or_broaden_routes(monkeypatch,policy
 def test_unchanged_stale_agent_completion_round_trips_without_reapproving_it():
     policy=json.dumps({"hangup_call":{"destination_keys":["deleted"],"default_next_step":"deleted"}})
     agents_api._validate_agent_completion({"tool_configs_json":policy},{"tool_configs_json":policy})
+
+
+def test_live_agent_override_rejects_dialplan_route(config_client):
+    client, state = config_client
+    response = client.patch('/api/tools/builtin/transfer', json={
+        'destinations': {'menu': {'type': 'dialplan', 'target': 's', 'dialplan_context': 'ivr'}},
+        'live_agent_destination_key': 'menu'})
+    assert response.status_code == 400
+    assert state['writes'] == 0
+
+
+@pytest.mark.parametrize('journal', [False, True])
+def test_history_masks_invalid_requested_destination_even_in_old_journal(monkeypatch, journal):
+    from types import SimpleNamespace
+    from api.calls import _record_to_response
+    from src.core.call_history import CallRecord
+    from src.core.handoff_journal import HandoffJournal
+    action = {'id': 'test', 'conversation_id': 'conversation', 'requested_next_step': 'private@example.com', 'next_step': 'hangup', 'result': 'unavailable'}
+    record = CallRecord(call_id='channel:conversation', diagnostics_snapshot={'conversation_id': 'conversation', 'conversation_completion': action})
+    monkeypatch.setattr(HandoffJournal, 'get', lambda *args: action if journal else None)
+    response = _record_to_response(record)
+    assert response.diagnostics_snapshot['conversation_completion']['requested_next_step'] == '<invalid>'

@@ -175,8 +175,21 @@ Restart recovery observes pending actions without replaying routing or hanging u
 channels. It does not reconstruct the old provider conversation. Keep this SQLite
 file with the operator backup; do not delete unresolved evidence during rollback.
 The file is additive and does not migrate the Agent or Call History schemas.
+Recovery queries only indexed unresolved actions and uses a conditional write so
+a late observation cannot replace a definitive live result. Finalized evidence
+is retained for operator backup; this journal has no automatic retention policy.
 Call History shows requested/resolved next steps, routing result and audio drain
 confirmation; the current journal result supplements early cleanup snapshots.
+A local playback timeout is not proof of delivery: pipeline completion requires
+the matching PBX PlaybackFinished event for confirmed drain. A hosted provider
+missing its completion event still executes its captured next step after bounded
+audio waiting, with drain marked unconfirmed. Natural farewell detection without
+an accepted hangup tool request does not apply a configured completion default.
+
+History identifies each AI conversation with `<PBX channel ID>:<conversation UUID>`.
+Pre-call and post-call webhook `call_id` retains the original PBX channel ID for
+existing integration correlation; internal history writes and durable external
+disposition retries use the separate conversation History key.
 
 To disable, set global completion destinations to empty and default to `hangup`,
 then Save & Apply. Active calls retain their prior snapshot. Before a code rollback,

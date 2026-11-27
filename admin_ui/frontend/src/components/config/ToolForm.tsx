@@ -1727,7 +1727,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 		                                    options={[
 			                                        { value: '', label: 'Not set (auto: destinations.live_agent or key live_agent)' },
 			                                        ...Object.entries(config.transfer?.destinations || {})
-			                                            .filter(([, dest]) => dest && typeof dest === 'object')
+			                                            .filter(([, dest]) => dest && typeof dest === 'object' && (!('type' in dest) || dest.type !== 'dialplan'))
 			                                            .map(([key, dest]: [string, any]) => ({
 	                                                        key,
 	                                                        type: dest?.type || 'extension',

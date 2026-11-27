@@ -56,6 +56,9 @@ def validate_completion_config(tools: dict) -> None:
                 raise ValueError("Dialplan priority must be a positive integer")
             if route.get("attended_allowed") or route.get("live_agent"):
                 raise ValueError("Dialplan destinations support blind transfer and completion only")
+    live_agent = (tools.get("transfer") or {}).get("live_agent_destination_key")
+    if isinstance(destinations.get(live_agent), dict) and destinations[live_agent].get("type") == "dialplan":
+        raise ValueError("Live agent override cannot use a dialplan destination")
     default = policy.get("default_next_step", "hangup")
     if default != "hangup":
         route = destinations.get(default)
@@ -85,7 +88,7 @@ def effective_completion(config: dict, override: Any = None) -> dict:
 def resolve_completion(config: dict, requested: Any = None, *, supplied: bool = False) -> dict:
     policy = effective_completion(config)
     key = requested if supplied else policy["default_next_step"]
-    result = {"requested_next_step": key if isinstance(key, str) else "<invalid>", "next_step": "hangup", "result": "pending"}
+    result = {"requested_next_step": key if isinstance(key, str) and (key == "hangup" or key in policy["destination_keys"]) else "<invalid>", "next_step": "hangup", "result": "pending"}
     if key == "hangup":
         return result
     if not isinstance(key, str) or key not in policy["destination_keys"]:

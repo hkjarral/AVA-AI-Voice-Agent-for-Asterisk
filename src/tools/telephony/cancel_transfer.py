@@ -148,7 +148,7 @@ class CancelTransferTool(Tool):
                 session.current_action = None
                 session.pending_deferred_transfer = None
                 session.transfer_context = None
-                session.audio_capture_enabled = True
+                session.audio_capture_enabled = not bool(session.tts_tokens)
                 await context.session_store.upsert_call(session)
             try:
                 if engine and hasattr(engine, "_cancel_attended_transfer_screening"):

@@ -2947,6 +2947,7 @@ class Engine:
         call_id = str(action.get("call_id") or action.get("id") or "pending-action")
         operation = str(action.get("operation") or "").strip().lower()
         replay = CallSession(call_id=call_id, caller_channel_id=call_id)
+        replay.history_call_id = payload.get("history_call_id") or call_id
         replay.external_platform = "vicidial"
         replay.external_connection = connection
         replay.external_mapping = {}
@@ -2958,7 +2959,7 @@ class Engine:
         replay.external_disposition_payload = {
             key: value
             for key, value in payload.items()
-            if key not in {"requested_status", "retry_terminal"}
+            if key not in {"requested_status", "retry_terminal", "history_call_id"}
         }
         replay.external_session = VicidialSessionInfo(
             external_call_id=str(action.get("external_call_id") or ""),
@@ -2983,7 +2984,7 @@ class Engine:
             from src.core.call_history import get_call_history_store_async
 
             history = await get_call_history_store_async()
-            if not await history.update_external_lifecycle(call_id, retry_action_id=action_id, **result):
+            if not await history.update_external_lifecycle((action.get("payload") or {}).get("history_call_id") or call_id, retry_action_id=action_id, **result):
                 raise RuntimeError("VICIdial retry result could not be persisted to Call History")
 
         if "terminal_result" in action:
@@ -3052,6 +3053,7 @@ class Engine:
                         "VICIdial terminal retry session snapshot is unavailable"
                     )
                 session = CallSession(call_id=call_id, caller_channel_id=call_id)
+                session.history_call_id = payload.get("history_call_id") or call_id
                 session.external_platform = "vicidial"
                 session.external_connection = connection
                 mapping_id = str(terminal_session.get("mapping_id") or "").strip()
@@ -3075,7 +3077,7 @@ class Engine:
                 session.external_disposition_payload = {
                     key: value
                     for key, value in payload.items()
-                    if key != "retry_terminal"
+                    if key not in {"retry_terminal", "history_call_id"}
                 }
                 session.external_disposition_payload.update(
                     {
@@ -4973,7 +4975,7 @@ class Engine:
             logger.info("🎯 HYBRID ARI - Processing caller channel", channel_id=channel_id)
             if channel_id:
                 self._seen_caller_stasis_channels.add(channel_id)
-            await self._handle_caller_stasis_start_hybrid(channel_id, channel)
+            await self._handle_caller_stasis_start_hybrid(channel_id, {**channel, "_stasis_entry_id": event.get("timestamp")})
         elif self._is_local_channel(channel):
             # Local channels are helper legs (e.g., transfers) and should be mapped back
             # to a real caller channel.
@@ -6518,6 +6520,7 @@ class Engine:
                 connection=connection,
                 payload={
                     "requested_status": status,
+                    "history_call_id": getattr(session, "history_call_id", None) or session.call_id,
                     "retry_terminal": {
                         "semantic": terminal_semantic,
                         "operation_reason": operation_reason,
@@ -6928,6 +6931,16 @@ class Engine:
         
         # Check if call is already in progress
         existing_session = await self.session_store.get_by_call_id(caller_channel_id)
+        entry_id = channel.get("_stasis_entry_id")
+        if (existing_session and self._session_was_transferred(existing_session)
+                and entry_id and getattr(existing_session, "_stasis_entry_id", None)
+                and entry_id > existing_session._stasis_entry_id
+                and not existing_session.cleanup_in_progress
+                and caller_channel_id not in _cleanup_in_progress):
+            # A distinct subsequent StasisStart proves re-entry even if the old
+            # StasisEnd was lost. Cleanup retains transferred caller ownership.
+            await self._cleanup_call(caller_channel_id)
+            existing_session = await self.session_store.get_by_call_id(caller_channel_id)
         if caller_channel_id in _cleanup_in_progress or (existing_session and (existing_session.cleanup_in_progress or self._session_was_transferred(existing_session))):
             # Session removal precedes final media/capture cleanup. Wait for both
             # owners before admitting a returning live channel.
@@ -6942,6 +6955,9 @@ class Engine:
                     existing_session = None
                     break
                 observations += 1
+                if observations >= 300:
+                    logger.error("Returning Stasis entry blocked by retired owner; inspect PBX", call_id=caller_channel_id)
+                    return
                 if observations % 50 == 0:
                     try:
                         live = await asyncio.wait_for(self.ari_client.send_command(
@@ -7016,6 +7032,7 @@ class Engine:
             # Every AI conversation has an independent durable History key,
             # including first entry. Do not rely on a best-effort PBX variable.
             session.history_call_id = f"{caller_channel_id}:{session.conversation_id}"
+            session._stasis_entry_id = channel.get("_stasis_entry_id")
             _cleanup_completed_at.pop(caller_channel_id, None)
             session.tool_runtime_generation = getattr(self, "_tool_generation", None)
             self._resolve_session_tool_runtime(session)
@@ -7986,7 +8003,8 @@ class Engine:
             return
 
         action = dict(getattr(session, "current_action", None) or {})
-        if action.get("type") != "predial_transfer":
+        if (action.get("type") != "predial_transfer" or session.cleanup_in_progress or session.cleanup_completed
+                or (len(args) > 3 and action.get("deferred_action_id") != args[-1])):
             logger.info(
                 "Predial transfer answered but no matching action is active; hanging up destination leg",
                 call_id=caller_id,
@@ -8002,7 +8020,7 @@ class Engine:
         if destination_key and not action.get("destination_key"):
             action["destination_key"] = destination_key
         session.current_action = action
-        await self._save_session(session)
+        await self._save_session(session, require_current=True)
 
         logger.info(
             "Predial transfer destination answered",
@@ -12011,7 +12029,7 @@ class Engine:
 
     async def _persist_call_history(self, session: CallSession, call_id: str) -> None:
         """Persist call record to history database (Milestone 21)."""
-        call_id = getattr(session, "history_call_id", None) or call_id
+        history_call_id = getattr(session, "history_call_id", None) or call_id
         try:
             from src.core.call_history import CallRecord, get_call_history_store_async
             
@@ -12056,7 +12074,7 @@ class Engine:
             barge_in_count = int(getattr(session, 'barge_in_count', 0) or 0)
             
             record = CallRecord(
-                call_id=call_id,
+                call_id=history_call_id,
                 caller_number=session.caller_number,
                 caller_name=session.caller_name,
                 called_number=session.called_number,
@@ -12117,7 +12135,7 @@ class Engine:
                 # attempts can link to the correct Call History row for UI click-through.
                 persisted_record_id = record.id
                 try:
-                    persisted = await store.get_by_call_id(call_id)
+                    persisted = await store.get_by_call_id(history_call_id)
                     if persisted and getattr(persisted, "id", None):
                         persisted_record_id = str(getattr(persisted, "id"))
                 except Exception:
@@ -17261,12 +17279,13 @@ class Engine:
                         drain_timeout_sec = max(drain_timeout_sec, google_provider.config.long_audio_backlog_sec + 30.0)
                     if drain_timeout_cap_sec is not None:
                         drain_timeout_sec = min(drain_timeout_sec, max(0.0, drain_timeout_cap_sec))
-                    drained = await self._wait_for_call_audio_drain(
+                    drain_observed = await self._wait_for_call_audio_drain(
                         call_id,
                         timeout_sec=drain_timeout_sec,
                         quiet_sec=self._terminal_transport_quiet_sec(),
                         reason=reason,
                     )
+                    drained = drained and drain_observed
 
                 # A transfer may have taken ownership and recovered while this
                 # older hangup was draining. Its pending action can already be gone.
@@ -17381,9 +17400,43 @@ class Engine:
                             except Exception:
                                 logger.warning("Failed to release native terminal protection", call_id=call_id)
 
+    async def _play_pipeline_completion_farewell(self, call_id, pipeline, farewell) -> bool:
+        """Only the PBX PlaybackFinished event confirms delivery, not a local timer."""
+        if not farewell:
+            return False
+        playback_id = f"pipeline-farewell:{uuid.uuid4().hex}"
+        waiter = asyncio.get_running_loop().create_future()
+        waiters = getattr(self, "_ari_playback_waiters", None)
+        if waiters is None:
+            waiters = self._ari_playback_waiters = {}
+        managed = getattr(self, "_managed_playback_waiters", None)
+        if managed is None:
+            managed = self._managed_playback_waiters = set()
+        waiters[playback_id] = waiter
+        managed.add(playback_id)
+        try:
+            audio = bytearray()
+            async for chunk in pipeline.tts_adapter.synthesize(call_id, farewell, pipeline.tts_options):
+                audio.extend(chunk)
+            if not audio:
+                return False
+            audio = self._pipeline_audio_for_file_playback(pipeline.tts_options, bytes(audio))
+            pid = await self.playback_manager.play_audio(call_id, audio, "pipeline-farewell", playback_id=playback_id)
+            if not pid:
+                return False
+            await self.playback_manager.wait_for_playback_end(call_id, pid, timeout_sec=len(audio) / 8000.0 + 3.0)
+            return waiter.done() and not waiter.cancelled() and waiter.result().get("state") == "done"
+        except Exception:
+            logger.warning("Pipeline farewell could not be confirmed", call_id=call_id, exc_info=True)
+            return False
+        finally:
+            waiters.pop(playback_id, None)
+            managed.discard(playback_id)
+            if not waiter.done():
+                waiter.cancel()
+
     async def _complete_conversation_handoff(self, session: CallSession, *, audio_drained: bool) -> bool:
         """True means another lifecycle owner holds the caller; never follow with DELETE."""
-        from src.tools.telephony.completion import resolve_completion
         from src.tools.telephony.dialplan_handoff import continue_to_dialplan
         from src.tools.telephony.unified_transfer import UnifiedTransferTool
         from src.tools.context import ToolExecutionContext
@@ -17391,8 +17444,7 @@ class Engine:
         config = self._tool_config_for_session(session)
         action = session.completion_action
         if not action:
-            action = resolve_completion(config)
-            session.completion_action = action
+            return False  # Only an accepted hangup tool can arm a completion destination.
         action["audio_drained"] = audio_drained
         if action.get("next_step", "hangup") == "hangup":
             if action.get("result") == "pending":
@@ -17493,6 +17545,9 @@ class Engine:
             return
         for action_id, action in pending:
             try:
+                active = await self.session_store.get_by_call_id(action.get("channel_id"))
+                if active and action.get("conversation_id") == active.conversation_id:
+                    continue  # The live conversation owns its definitive journal write.
                 channel = await asyncio.wait_for(self.ari_client.send_command(
                     "GET", f"channels/{action['channel_id']}", tolerate_statuses=[404]), timeout=1.0)
                 if isinstance(channel, dict) and channel.get("status") == 404:
@@ -17503,7 +17558,7 @@ class Engine:
                 else:
                     logger.warning("Unresolved completion handoff after restart; inspect PBX", call_id=action.get("channel_id"))
                     continue
-                await journal.write(action_id, action)
+                await journal.observe(action_id, action)
             except Exception:
                 logger.warning("Completion handoff observation unavailable; retrying later", call_id=action.get("channel_id"))
 
@@ -17515,6 +17570,7 @@ class Engine:
         timeout_sec: float = 15.0,
         call_outcome: Optional[str] = None,
         clear_local_farewell_pending: bool = False,
+        expected_session: Optional[CallSession] = None,
     ) -> None:
         """Bound a provider/tool terminal flow that never emits audio completion."""
         tasks = getattr(self, "_terminal_fallback_tasks", None)
@@ -17529,7 +17585,8 @@ class Engine:
             try:
                 await asyncio.sleep(max(1.0, float(timeout_sec)))
                 session = await self.session_store.get_by_call_id(call_id)
-                if session and bool(getattr(session, "cleanup_after_tts", False)):
+                if (session and (expected_session is None or session is expected_session)
+                        and bool(getattr(session, "cleanup_after_tts", False))):
                     logger.warning(
                         "Terminal audio completion timeout reached",
                         call_id=call_id,
@@ -17542,6 +17599,7 @@ class Engine:
                         call_id,
                         reason=f"{reason}:fallback_timeout",
                         call_outcome=call_outcome,
+                        audio_drain_confirmed=False,
                     )
             except asyncio.CancelledError:
                 return
@@ -19551,28 +19609,7 @@ class Engine:
                                             await self.session_store.upsert_call(session)
                                             logger.info("Farewell added to conversation history", call_id=call_id)
                                             
-                                            # Speak farewell
-                                            try:
-                                                # Re-use TTS synthesis for farewell
-                                                fw_bytes = bytearray()
-                                                async for chunk in pipeline.tts_adapter.synthesize(call_id, farewell, pipeline.tts_options):
-                                                    fw_bytes.extend(chunk)
-                                                if fw_bytes:
-                                                    fw_bytes = self._pipeline_audio_for_file_playback(pipeline.tts_options, bytes(fw_bytes))
-                                                    pid = await self.playback_manager.play_audio(call_id, fw_bytes, "pipeline-farewell")
-                                                    # Calculate actual duration: mulaw 8kHz = 8000 bytes/sec
-                                                    duration_sec = len(fw_bytes) / 8000.0
-                                                    # Wait for farewell (interruptible by barge-in) + small buffer
-                                                    if pid:
-                                                        farewell_drained = await self.playback_manager.wait_for_playback_end(
-                                                            call_id,
-                                                            pid,
-                                                            timeout_sec=(duration_sec + 3.0),
-                                                        )
-                                                
-                                                logger.info("Farewell playback completed", duration_sec=duration_sec, call_id=call_id)
-                                            except Exception as e:
-                                                logger.error("Farewell TTS failed", error=str(e))
+                                            farewell_drained = await self._play_pipeline_completion_farewell(call_id, pipeline, farewell)
                                         
                                         await self._terminate_call_after_audio(
                                             call_id,
@@ -19860,18 +19897,7 @@ class Engine:
                                                                 conversation_history.append(_ts_msg("assistant", farewell))
                                                                 session.conversation_history = list(conversation_history)
                                                                 await self.session_store.upsert_call(session)
-                                                                fw_bytes = bytearray()
-                                                                async for chunk in pipeline.tts_adapter.synthesize(call_id, farewell, pipeline.tts_options):
-                                                                    fw_bytes.extend(chunk)
-                                                                if fw_bytes:
-                                                                    fw_bytes = self._pipeline_audio_for_file_playback(pipeline.tts_options, bytes(fw_bytes))
-                                                                    fw_pid = await self.playback_manager.play_audio(call_id, fw_bytes, "pipeline-farewell")
-                                                                    if fw_pid:
-                                                                        farewell_drained = await self.playback_manager.wait_for_playback_end(
-                                                                            call_id,
-                                                                            fw_pid,
-                                                                            timeout_sec=(len(fw_bytes) / 8000.0 + 3.0),
-                                                                        )
+                                                                farewell_drained = await self._play_pipeline_completion_farewell(call_id, pipeline, farewell)
                                                                 await self._terminate_call_after_audio(
                                                                     call_id,
                                                                     reason="pipeline_followup_hangup_call",
@@ -23055,12 +23081,33 @@ class Engine:
                     priority=int(getattr(self.config, "provider_failure_redirect_priority", 1) or 1),
                     transfer_state="provider_failure_redirect", require_valid_target=True, expected_session=session,
                 )
-                if result.get("status") == "success" or result.get("handoff_indeterminate") or result.get("ownership_lost"):
+                if result.get("status") == "success" or result.get("handoff_indeterminate"):
+                    self._fire_and_forget_for_call(session.call_id, self._observe_provider_failure_handoff(session),
+                                                  name=f"provider-failure-reconcile-{session.call_id}")
+                    return
+                if result.get("ownership_lost"):
                     return
 
         await self._announce_provider_failure_and_hangup(
             session.call_id, session.caller_channel_id
         )
+
+    async def _observe_provider_failure_handoff(self, session: CallSession) -> None:
+        for _ in range(3):
+            await asyncio.sleep(0.5)
+            if await self.session_store.get_by_call_id(session.call_id) is not session or session.cleanup_in_progress:
+                return
+            try:
+                channel = await asyncio.wait_for(self.ari_client.send_command(
+                    "GET", f"channels/{session.caller_channel_id}", tolerate_statuses=[404]), timeout=0.5)
+            except Exception:
+                continue
+            if isinstance(channel, dict) and (channel.get("status") == 404 or (
+                    channel.get("id") == session.caller_channel_id and
+                    str((channel.get("dialplan") or {}).get("app_name") or "").lower() not in {"", "stasis"})):
+                await self._cleanup_call(session.call_id)
+                return
+        logger.warning("Provider failure handoff needs PBX inspection; no redirect retry or caller hangup", call_id=session.call_id)
 
     async def _announce_provider_failure_and_hangup(self, call_id: str, channel_id: str) -> None:
         """HIGH-3: best-effort error prompt to the caller, then hang up the channel.
@@ -23108,7 +23155,8 @@ class Engine:
 
             # PlaybackManager tracks/gates only engine-managed TTS playbacks.
             # Attended transfer uses ad-hoc deterministic IDs; avoid warning spam for unknown IDs.
-            if playback_id not in self._ari_playback_waiters:
+            if (playback_id not in self._ari_playback_waiters
+                    or playback_id in getattr(self, "_managed_playback_waiters", set())):
                 await self.playback_manager.on_playback_finished(playback_id)
         except Exception as exc:
             logger.error("Error in PlaybackFinished handler", error=str(exc), exc_info=True)
@@ -23424,6 +23472,8 @@ class Engine:
                                 call_id,
                                 reason=f"{provider_name}:hangup_call",
                                 timeout_sec=15.0,
+                                call_outcome="agent_hangup",
+                                expected_session=session,
                             )
                 elif not blocked_result:
                     logger.warning(
@@ -25183,7 +25233,7 @@ class Engine:
         from src.tools.base import ToolPhase
         from src.tools.context import PostCallContext
         tool_registry = self._tool_registry_for_session(session)
-        call_id = getattr(session, "history_call_id", None) or call_id
+        history_call_id = getattr(session, "history_call_id", None) or call_id
         
         try:
             # Get context config for this call
@@ -25335,7 +25385,7 @@ class Engine:
                 if history_store is not None:
                     try:
                         await history_store.update_phase_tool(
-                            call_id=call_id,
+                            call_id=history_call_id,
                             phase=phase,
                             tool_name=tool_name,
                             started_at=started_at_iso,
@@ -25379,7 +25429,7 @@ class Engine:
                     tool_starts[tool.definition.name] = started_at_iso
                     try:
                         await history_store.append_phase_tool(
-                            call_id=call_id,
+                            call_id=history_call_id,
                             phase=phase,
                             record={
                                 "name": tool.definition.name,

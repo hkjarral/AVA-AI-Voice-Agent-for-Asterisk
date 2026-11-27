@@ -103,7 +103,10 @@ class SessionStore:
                     or getattr(session, "transfer_active", False) or session.handoff_action_id
                     or session.completion_action):
                 return False
-            session.pending_deferred_transfer = dict(action)
+            pending = session.pending_deferred_transfer or {}
+            if pending and pending.get("id") != action.get("id"):
+                return False
+            session.pending_deferred_transfer = {**pending, **action}
             return True
 
     async def cancel_deferred_transfer(self, session: CallSession, expected_id: str) -> bool:
@@ -117,7 +120,23 @@ class SessionStore:
             session.current_action = None
             session.pending_deferred_transfer = None
             session.transfer_context = None
-            session.audio_capture_enabled = True
+            session.audio_capture_enabled = not bool(session.tts_tokens)
+            return True
+
+    async def update_deferred_predial(self, session: CallSession, expected_id: str, values: dict, *, begin=False) -> bool:
+        """Fence predial preparation/publication against cancellation and re-entry."""
+        async with self._lock:
+            if (self._sessions_by_call_id.get(session.call_id) is not session
+                    or session.cleanup_in_progress or session.cleanup_completed
+                    or (session.pending_deferred_transfer or {}).get("id") != expected_id
+                    or session.handoff_action_id or getattr(session, "transfer_active", False)):
+                return False
+            if begin:
+                session.current_action = dict(values)
+            else:
+                if (session.current_action or {}).get("deferred_action_id") != expected_id:
+                    return False
+                session.current_action.update(values)
             return True
 
     async def retire_failed_predial(self, session: CallSession, expected_id: str) -> None:

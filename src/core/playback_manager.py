@@ -106,7 +106,8 @@ class PlaybackManager:
     
     async def play_audio(self, call_id: str, audio_bytes: bytes,
                         playback_type: str = "response", *,
-                        owner_check: Optional[Callable[[], bool]] = None) -> Optional[str]:
+                        owner_check: Optional[Callable[[], bool]] = None,
+                        playback_id: Optional[str] = None) -> Optional[str]:
         """
         Play audio with deterministic playback ID and gating.
         
@@ -119,7 +120,6 @@ class PlaybackManager:
         Returns:
             playback_id if successful, None if failed
         """
-        playback_id = None
         audio_file = None
         ari_attempted = False
         try:
@@ -135,7 +135,7 @@ class PlaybackManager:
                 return None
 
             # Generate deterministic playback ID
-            playback_id = self._generate_playback_id(call_id, playback_type)
+            playback_id = playback_id or self._generate_playback_id(call_id, playback_type)
             
             # Create audio file
             audio_file = await self._create_audio_file(audio_bytes, playback_id)

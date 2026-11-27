@@ -1666,8 +1666,13 @@ async def test_pipeline_terminal_tool_routes_captured_survey_after_farewell(monk
     engine.ari_client.set_channel_var = AsyncMock(return_value=True)
     engine.ari_client.hangup_channel = AsyncMock(return_value=True)
     engine.ari_client.dialplan_target_exists = AsyncMock(return_value=True)
-    engine.playback_manager.play_audio = AsyncMock(return_value='farewell')
-    engine.playback_manager.wait_for_playback_end = AsyncMock(return_value=drained)
+    async def play_audio(*args, playback_id=None, **kwargs):
+        if drained:
+            await engine._on_playback_finished({'playback': {'id': playback_id, 'state': 'done'}})
+        return playback_id
+    engine.playback_manager.play_audio = AsyncMock(side_effect=play_audio)
+    engine.playback_manager.on_playback_finished = AsyncMock()
+    engine.playback_manager.wait_for_playback_end = AsyncMock(return_value=True)
     dispatched = asyncio.Event()
     async def redirect(*args, **kwargs):
         engine.playback_manager.wait_for_playback_end.assert_awaited_once()

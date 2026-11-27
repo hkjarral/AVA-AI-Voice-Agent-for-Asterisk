@@ -51,7 +51,15 @@ return is the end of one AI conversation and the start of another when re-entere
   terminal requests.
 - Call-scoped provider enums and immutable configuration across reloads.
 - Durable pending-action observation after restart without redirect replay or
-  destructive caller hangup.
+  destructive caller hangup; a concurrent live result wins over a stale recovery probe.
+- Transfer reservation before predial, concurrent duplicate/conflicting requests,
+  cancellation during origination and retirement of late destination legs.
+- Hosted missing-event fallback preserves the selected route and conversation
+  owner; pipeline drain requires the matching PBX event rather than a local timer.
+- Fresh Stasis entry after a missed StasisEnd; original PBX IDs in post-call
+  webhooks and conversation keys in History, outbound linkage and durable retries.
+- Booking admission rejects replacement conversations; invalid destination input
+  stays redacted in diagnostics and History; dialplan routes cannot override live agents.
 - Structured Tools API, raw YAML and Agent API validation; legacy opaque policy
   round-trip; frontend controls, opt-in default exclusion and Agent serialization.
 
