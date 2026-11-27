@@ -234,3 +234,13 @@ version, provider, transport, test call IDs and raw private evidence.
 
 For setup validation and survey/IVR acceptance scenarios, use the
 [conversation completion testing guide](CONVERSATION_COMPLETION_TESTING.md).
+
+A started redirect request alone is not a confirmed transfer. Cleanup waits up
+to one second for its in-flight HTTP result before freezing notifications and
+History. If acceptance is still unknown, the outcome is `error`; the completion
+journal retains subsequent acceptance or explicit rejection without rewriting
+an already sent notification. Failed caller hangup attempts release the live
+completion reservation after bounded retries while keeping the action evidence,
+so a later tool request or no-input policy can act on the still-owned caller.
+Cancelled transfer preparation similarly releases only its own reservation;
+known destination legs retain an independent cleanup owner.

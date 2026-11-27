@@ -1466,6 +1466,7 @@ class DeepgramProvider(AIProviderInterface):
                 'called_number': getattr(self, '_called_number', None),
                 'context_name': getattr(self, '_context_name', None),
                 'session_store': getattr(self, '_session_store', None),
+                'expected_session': getattr(self, '_tool_owner_session', None),
                 'ari_client': getattr(self, '_ari_client', None),
                 'config': getattr(self, '_full_config', None),
                 'allowed_tools': self._allowed_tools,

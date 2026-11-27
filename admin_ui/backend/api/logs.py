@@ -161,6 +161,7 @@ async def _resolve_call_history_window(
 
         call_meta: Dict[str, Any] = {
             "call_id": record.call_id,
+            "caller_channel_id": (getattr(record, "diagnostics_snapshot", None) or {}).get("caller_channel_id") or record.call_id,
             "caller_number": record.caller_number,
             "caller_name": record.caller_name,
             "start_time": start.isoformat() if start else None,
@@ -356,12 +357,14 @@ async def get_container_log_events(
                 continue
             parsed_events.append(parsed)
 
+        # History IDs identify a conversation; lifecycle logs retain the PBX channel ID.
+        log_call_id = (call_meta or {}).get("caller_channel_id") or call_id_norm
         related_ids: List[str] = []
         related_bridge_ids: List[str] = []
         if call_id_norm and expand_related:
-            related_ids, related_bridge_ids = _compute_related_ids(parsed_events, call_id_norm)
+            related_ids, related_bridge_ids = _compute_related_ids(parsed_events, log_call_id)
 
-        wanted_ids = set(related_ids or ([call_id_norm] if call_id_norm else []))
+        wanted_ids = set(related_ids or ([log_call_id] if log_call_id else []))
         wanted_bridge_ids = set(related_bridge_ids or [])
 
         events: List[LogEvent] = []

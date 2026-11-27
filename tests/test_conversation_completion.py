@@ -104,7 +104,7 @@ async def test_survey_acceptance_drains_then_continues_once_without_hangup():
         return True
     async def redirect(*args, **kwargs):
         assert session.transfer_active is True
-        assert session.call_outcome == "transferred"
+        assert session.call_outcome != "transferred"  # POST has not yet been accepted.
         assert (await HandoffJournal().pending())[0][1]["result"] == "dispatching"
         order.append("continue")
         return True
@@ -509,7 +509,15 @@ async def test_concurrent_predial_reserves_before_originate_and_never_overwrites
     engine, session, ctx = await setup_engine()
     ctx.config['tools']['transfer'].update(defer_until_playback_complete=True, deferred_strategy='predial_then_bridge')
     ctx.config['tools']['transfer']['destinations'].update(desk={'type': 'extension', 'target': '6000'}, other={'type': 'extension', 'target': '6001'})
-    started, release = asyncio.Event(), asyncio.Event()
+    started, release, competing = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    class ObservedLock(asyncio.Lock):
+        attempts = 0
+        async def __aenter__(self):
+            self.attempts += 1
+            if self.attempts == 2:
+                competing.set()
+            return await super().__aenter__()
+    session._transfer_dispatch_lock = ObservedLock()
     async def originate(**kwargs):
         assert session.pending_deferred_transfer
         started.set()
@@ -528,7 +536,7 @@ async def test_concurrent_predial_reserves_before_originate_and_never_overwrites
         action_id = session.pending_deferred_transfer['id']
         other = asyncio.create_task(tool.execute({'destination': second}, ctx))
         workers.append(other)
-        await asyncio.sleep(0)
+        await asyncio.wait_for(competing.wait(), timeout=1)
         release.set()
         results = await asyncio.wait_for(asyncio.gather(first, other), timeout=2)
         assert results[0]['status'] == 'success'
@@ -989,19 +997,19 @@ async def test_pipeline_farewell_waits_for_pbx_even_after_local_token_retires():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('started', [False, True])
-async def test_reserved_completion_is_not_reported_as_a_dispatched_transfer(monkeypatch, started):
+@pytest.mark.parametrize('started,outcome,expected', [(False, None, 'completed'), (True, None, 'error'), (True, 'indeterminate', 'error'), (True, 'accepted', 'transferred'), (True, 'rejected', 'error')])
+async def test_reserved_completion_is_not_reported_as_a_dispatched_transfer(monkeypatch, started, outcome, expected):
     from src.core import call_history
     engine, session, _ = await setup_engine()
     session.transfer_active = True
     session.transfer_state = 'conversation_completion'
-    session._completion_dispatch_state = {'started': started}
+    session._completion_dispatch_state = {'started': started, 'outcome': outcome}
     session.call_outcome = 'transferred'
     session.conversation_history = [{'role': 'user', 'content': 'hello'}]
     history = SimpleNamespace(_enabled=True, save=AsyncMock(return_value=True), get_by_call_id=AsyncMock(return_value=SimpleNamespace(id='row')))
     monkeypatch.setattr(call_history, 'get_call_history_store_async', AsyncMock(return_value=history))
     await engine._persist_call_history(session, 'caller')
-    assert history.save.await_args.args[0].outcome == ('transferred' if started else 'completed')
+    assert history.save.await_args.args[0].outcome == expected
 
 
 @pytest.mark.asyncio
@@ -1015,3 +1023,181 @@ async def test_retrying_failed_hangup_does_not_replay_a_rejected_completion():
     await engine._terminate_call_after_audio('caller', reason='retry-delete', call_outcome='agent_hangup')
     engine.ari_client.continue_in_dialplan.assert_awaited_once()
     assert engine.ari_client.hangup_channel.await_count == 4
+
+
+@pytest.mark.parametrize('key', ['survey\u0085private', 'survey\u009fprivate', 'survey\x00private'])
+def test_completion_keys_reject_unicode_controls(key):
+    from src.tools.telephony.completion import valid_key
+    assert valid_key(key) is False
+    assert valid_key('顧客 survey 👩‍💻') is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('outbound,external', [(True, None), (False, 'vicidial')])
+async def test_ineligible_conversations_advertise_only_hangup(outbound, external):
+    engine, session, _ = await setup_engine()
+    session.is_outbound = outbound
+    session.external_platform = external
+    session.tool_runtime_generation = ToolRuntimeGeneration.build(generation_id=1, config=config())
+    engine._resolve_session_tool_runtime(session)
+    schema = session.tool_runtime_registry.to_openai_schema_filtered(['hangup_call'])[0]
+    assert schema['function']['parameters']['properties']['next_step']['enum'] == ['hangup']
+
+
+@pytest.mark.asyncio
+async def test_stale_tool_context_cannot_arm_returning_conversation():
+    engine, old, ctx = await setup_engine()
+    ctx.expected_session = old
+    replacement = CallSession(call_id='caller', caller_channel_id='caller')
+    await engine.session_store.upsert_call(replacement)
+    result = await HangupCallTool().execute({'next_step': 'survey'}, ctx)
+    assert result['will_hangup'] is False
+    assert (await ctx.get_tool_block_response('blind_transfer'))['error_code'] == 'stale_conversation'
+    assert replacement.completion_action == {}
+    assert replacement.cleanup_after_tts is False
+    engine.ari_client.continue_in_dialplan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_terminal_delete_releases_reservation_for_new_transfer():
+    engine, session, ctx = await setup_engine()
+    await HangupCallTool().execute({'next_step': 'hangup'}, ctx)
+    engine.ari_client.hangup_channel.return_value = False
+    assert await engine._terminate_call_after_audio('caller', reason='failed-delete', call_outcome='agent_hangup') is False
+    assert session.completion_action['terminal_result'] == 'hangup_failed'
+    assert session.cleanup_after_tts is False
+    result = await UnifiedTransferTool().execute({'destination': 'menu'}, ctx)
+    assert result['status'] == 'success'
+    engine.ari_client.continue_in_dialplan.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_predial_preparation_releases_only_its_reservation():
+    engine, session, ctx = await setup_engine()
+    ctx.config['tools']['transfer'].update(defer_until_playback_complete=True, deferred_strategy='predial_then_bridge')
+    ctx.config['tools']['transfer']['destinations']['desk'] = {'type': 'extension', 'target': '6000'}
+    started = asyncio.Event()
+    async def originate(**kwargs):
+        started.set()
+        await asyncio.Event().wait()
+    engine.ari_client.send_command.side_effect = originate
+    task = asyncio.create_task(UnifiedTransferTool().execute({'destination': 'desk'}, ctx))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert session.pending_deferred_transfer is None
+        assert session.current_action is None
+        result = await UnifiedTransferTool().execute({'destination': 'menu'}, ctx)
+        assert result['status'] == 'success'
+        assert result['deferred_transfer']['destination_key'] == 'menu'
+    finally:
+        if not task.done(): task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_immediate_uncertain_transfer_schedules_identity_bound_observer():
+    engine, session, ctx = await setup_engine()
+    engine.ari_client.engine = engine
+    engine.ari_client.continue_in_dialplan.return_value = None
+    scheduled = []
+    def schedule(call_id, coro, **kwargs):
+        scheduled.append((call_id, kwargs['name']))
+        coro.close()
+    engine._fire_and_forget_for_call = schedule
+    result = await UnifiedTransferTool().execute({'destination': 'menu'}, ctx)
+    assert result['handoff_indeterminate'] is True
+    assert scheduled == [('caller', 'immediate-transfer-reconcile-caller')]
+    assert session.transfer_active is True
+    engine.ari_client.hangup_channel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fallback_playback_can_finish_during_post_before_http_response():
+    engine, session, ctx = await setup_engine()
+    engine.config.tools = {'hangup_call': {'fallback_media_uri': 'sound:goodbye'}}
+    engine._ari_playback_waiters = {}
+    async def play(channel, media, playback_id):
+        assert playback_id in engine._ari_playback_waiters
+        await engine._on_playback_finished({'playback': {'id': playback_id, 'state': 'done'}})
+        return True
+    engine.ari_client.play_media_on_channel_with_id = AsyncMock(side_effect=play)
+    await HangupCallTool().execute({'next_step': 'survey'}, ctx)
+    await asyncio.wait_for(engine.on_provider_event({'type': 'HangupReady', 'call_id': 'caller', 'reason': 'farewell_no_audio', 'had_audio': False}), timeout=1)
+    assert session.completion_action['audio_drained'] is True
+    assert engine._ari_playback_waiters == {}
+
+
+@pytest.mark.asyncio
+async def test_late_explicit_rejection_is_not_hidden_by_retired_owner():
+    engine, old, ctx = await setup_engine()
+    await HangupCallTool().execute({'next_step': 'survey'}, ctx)
+    replacement = CallSession(call_id='caller', caller_channel_id='caller')
+    async def reject(*args, **kwargs):
+        old.cleanup_in_progress = True
+        await engine.session_store.upsert_call(replacement)
+        return False
+    engine.ari_client.continue_in_dialplan.side_effect = reject
+    assert await engine._complete_conversation_handoff(old, audio_drained=True) is True
+    assert old.completion_action['result'] == 'rejected'
+    assert replacement.completion_action == {}
+    assert getattr(replacement, 'transfer_active', False) is False
+    assert HandoffJournal().get(old.completion_action['id'])['result'] == 'rejected'
+    engine.ari_client.hangup_channel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_context_update_cannot_reinsert_owner_retired_while_waiting_for_store(monkeypatch):
+    from src.tools.context import StaleToolContextError
+    engine, old, ctx = await setup_engine()
+    original = engine.session_store.update_tool_session
+    replacement = CallSession(call_id='caller', caller_channel_id='caller')
+    async def replace_then_update(session, values):
+        await engine.session_store.upsert_call(replacement)
+        return await original(session, values)
+    monkeypatch.setattr(engine.session_store, 'update_tool_session', replace_then_update)
+    with pytest.raises(StaleToolContextError):
+        await ctx.update_session(cleanup_after_tts=True)
+    assert await engine.session_store.get_by_call_id('caller') is replacement
+    assert replacement.cleanup_after_tts is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('provider', ['openai', 'grok', 'deepgram', 'elevenlabs'])
+async def test_native_adapter_rejects_request_from_retired_conversation(provider):
+    from src.tools.adapters.openai import OpenAIToolAdapter
+    from src.tools.adapters.grok import GrokToolAdapter
+    from src.tools.adapters.deepgram import DeepgramToolAdapter
+    from src.tools.adapters.elevenlabs import ElevenLabsToolAdapter
+    engine, old, _ = await setup_engine()
+    generation = ToolRuntimeGeneration.build(generation_id=1, config=config())
+    registry = generation.registry
+    replacement = CallSession(call_id='caller', caller_channel_id='caller')
+    await engine.session_store.upsert_call(replacement)
+    context = {'call_id': 'caller', 'caller_channel_id': 'caller', 'expected_session': old,
+               'session_store': engine.session_store, 'ari_client': engine.ari_client, 'config': config()}
+    call = {'type': 'function_call', 'name': 'hangup_call', 'id': 'tool', 'call_id': 'tool', 'arguments': '{"next_step":"survey"}'}
+    if provider == 'elevenlabs':
+        result = await ElevenLabsToolAdapter(registry=registry).execute_tool('hangup_call', 'tool', {'next_step': 'survey'}, context)
+    else:
+        adapter = {'openai': OpenAIToolAdapter, 'grok': GrokToolAdapter, 'deepgram': DeepgramToolAdapter}[provider](registry)
+        event = {'functions': [call]} if provider == 'deepgram' else {'type': 'response.output_item.done', 'item': call}
+        result = await adapter.handle_tool_call_event(event, context)
+    assert result.get('will_hangup') is not True
+    assert replacement.completion_action == {}
+    assert replacement.cleanup_after_tts is False
+
+
+@pytest.mark.asyncio
+async def test_stale_native_result_is_not_appended_to_returning_conversation():
+    from src.tools.execution_history import record_in_call_tool_result
+    engine, _, _ = await setup_engine()
+    replacement = CallSession(call_id='caller', caller_channel_id='caller')
+    await engine.session_store.upsert_call(replacement)
+    result = await record_in_call_tool_result(session_store=engine.session_store, call_id='caller',
+        tool_call_id='old-tool', tool_name='hangup_call', parameters={'next_step': 'survey'},
+        result={'status': 'error', 'error_code': 'stale_conversation', 'will_hangup': False})
+    assert result is None
+    assert not replacement.tool_calls

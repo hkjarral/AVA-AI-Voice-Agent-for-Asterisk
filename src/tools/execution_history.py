@@ -467,6 +467,8 @@ async def record_in_call_tool_result(
     before provider delivery, so a failed provider response and retry retain
     the original execution fact under the upstream ``tool_call_id``.
     """
+    if isinstance(result, dict) and result.get("error_code") == "stale_conversation":
+        return None  # A retired request must not appear in a returning caller's history.
     record: Optional[Dict[str, Any]] = None
     try:
         record = build_in_call_tool_record(

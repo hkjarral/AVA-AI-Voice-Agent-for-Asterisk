@@ -138,6 +138,11 @@ async def continue_to_dialplan(*, context: ToolExecutionContext, target: str,
             exc_info=True,
         )
 
+    # Publish the HTTP result synchronously before cleanup or restore can await.
+    dispatch_state["outcome"] = "accepted" if handed_off is True else "rejected" if handed_off is False else "indeterminate"
+    settled = dispatch_state.get("settled")
+    if settled is not None:
+        settled.set()
     handoff_indeterminate = handed_off is not True and handed_off is not False
 
     if handed_off is True:
@@ -163,7 +168,7 @@ async def continue_to_dialplan(*, context: ToolExecutionContext, target: str,
         try:
             if release_ownership is not None:
                 if not await release_ownership(previous_transfer_state):
-                    return {"status": "failed", "ownership_lost": True}
+                    return {"status": "failed", "ownership_lost": True, "handoff_rejected": True}
             else:
                 await context.update_session(**previous_transfer_state)
         except Exception:

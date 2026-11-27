@@ -11,7 +11,7 @@ Simplified design (v5.0):
 
 from typing import Dict, Any
 from src.tools.base import Tool, ToolDefinition, ToolParameter, ToolCategory
-from src.tools.context import ToolExecutionContext
+from src.tools.context import ToolExecutionContext, StaleToolContextError
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -123,6 +123,9 @@ class HangupCallTool(Tool):
                 "next_step": session.completion_action["next_step"],
             }
             
+        except StaleToolContextError:
+            return {"status": "error", "error_code": "stale_conversation",
+                    "message": "This conversation has ended.", "will_hangup": False}
         except Exception as e:
             logger.error(f"Error preparing hangup: {e}", exc_info=True)
             return {

@@ -237,3 +237,25 @@ async def test_log_read_failures_sanitize_container_name(endpoint, kwargs, monke
     messages = [record.getMessage() for record in caplog.records]
     assert any("ai_engineforged-entry" in message for message in messages)
     assert all("\r" not in message and "\n" not in message for message in messages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('expand_related', [True, False])
+async def test_history_log_link_uses_persisted_channel_identity(monkeypatch, expand_related):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from src.core import call_history
+    # Do not split on colons: a PBX channel ID can itself contain them.
+    raw_id = 'channel:custom:42'
+    history_id = raw_id + ':conversation-uuid'
+    record = call_history.CallRecord(call_id=history_id, start_time=datetime.now(timezone.utc),
+        diagnostics_snapshot={'caller_channel_id': raw_id})
+    store = SimpleNamespace(get_by_call_id=AsyncMock(return_value=record))
+    monkeypatch.setattr(call_history, 'get_call_history_store_async', AsyncMock(return_value=store))
+    raw = f'2026-01-01T00:00:00Z [INFO] call ended [src.engine] call_id={raw_id}\n'.encode()
+    monkeypatch.setattr(logs, '_read_container_logs_sync', lambda *args, **kwargs: (raw, 'container', 'ai_engine'))
+    result = await logs.get_container_log_events('ai_engine', call_id=history_id, levels=None, categories=None, expand_related=expand_related)
+    store.get_by_call_id.assert_awaited_once_with(history_id)
+    assert len(result['events']) == 1
+    assert result['call']['call_id'] == history_id

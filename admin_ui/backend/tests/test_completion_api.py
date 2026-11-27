@@ -82,3 +82,14 @@ def test_history_masks_invalid_requested_destination_even_in_old_journal(monkeyp
     monkeypatch.setattr(HandoffJournal, 'get', lambda *args: action if journal else None)
     response = _record_to_response(record)
     assert response.diagnostics_snapshot['conversation_completion']['requested_next_step'] == '<invalid>'
+
+
+@pytest.mark.parametrize('route,expected', [(None, '<invalid>'), ({'type': 'dialplan', 'target': 's', 'dialplan_context': 'survey'}, 'survey')])
+def test_ineligible_request_preserves_only_validated_destination_snapshot(monkeypatch, route, expected):
+    from api.calls import _record_to_response
+    from src.core.call_history import CallRecord
+    action = {'requested_next_step': 'survey', 'next_step': 'hangup', 'result': 'ineligible'}
+    if route is not None:
+        action['route'] = route
+    response = _record_to_response(CallRecord(call_id='channel:conversation', diagnostics_snapshot={'conversation_completion': action}))
+    assert response.diagnostics_snapshot['conversation_completion']['requested_next_step'] == expected

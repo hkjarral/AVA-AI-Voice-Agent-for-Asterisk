@@ -649,6 +649,9 @@ class VicidialStore:
             }
         else:
             action_payload = {}
+        history_call_id = str(payload.get("history_call_id") or "").strip()
+        if history_call_id:
+            action_payload["history_call_id"] = history_call_id
         requested_status = str(payload.get("requested_status") or "").strip()
         if requested_status:
             action_payload["requested_status"] = requested_status
@@ -741,7 +744,7 @@ class VicidialStore:
                 else {
                     key: value
                     for key, value in action_payload.items()
-                    if key != "retry_terminal"
+                    if key not in {"retry_terminal", "history_call_id"}
                 }
             ),
         }

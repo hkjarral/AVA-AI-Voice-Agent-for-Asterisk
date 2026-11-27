@@ -366,7 +366,11 @@ def _record_to_response(record, agent_names: Optional[Dict[str, str]] = None) ->
     completion = diagnostics.get("conversation_completion")
     if isinstance(completion, dict):
         completion = dict(completion)
-        if completion.get("requested_next_step") not in ("hangup", completion.get("next_step")) or completion.get("result") == "unavailable":
+        from src.tools.telephony.completion import executable_route, valid_key
+        eligible_request = (completion.get("result") == "ineligible"
+                            and valid_key(completion.get("requested_next_step"))
+                            and executable_route(completion.get("route")))
+        if not eligible_request and (completion.get("requested_next_step") not in ("hangup", completion.get("next_step")) or completion.get("result") == "unavailable"):
             completion["requested_next_step"] = "<invalid>"
         diagnostics["conversation_completion"] = completion
     return CallRecordResponse(

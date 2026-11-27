@@ -81,6 +81,15 @@ class SessionStore:
         async with self._lock:
             return self._sessions_by_call_id.get(call_id)
 
+    async def update_tool_session(self, session: CallSession, values: dict) -> bool:
+        """Mutate the captured tool owner without re-registering a retired session."""
+        async with self._lock:
+            if self._sessions_by_call_id.get(session.call_id) is not session:
+                return False
+            for key, value in values.items():
+                setattr(session, key, value)
+            return True
+
     async def arm_completion(self, session: CallSession, selected: dict) -> bool:
         async with self._lock:
             action = session.current_action or {}
@@ -91,9 +100,24 @@ class SessionStore:
                     or (isinstance(action, dict) and action.get("type") in {
                         "transfer", "attended_transfer", "predial_transfer", "voicemail"})):
                 return False
-            if not session.completion_action:
+            if not session.completion_action or session.completion_reserved is False:
                 session.completion_action = selected
+            session.completion_reserved = True
             session.cleanup_after_tts = True
+            return True
+
+    async def release_failed_completion(self, session: CallSession) -> bool:
+        """Release only a still-owned, definitively failed terminal request."""
+        async with self._lock:
+            if (self._sessions_by_call_id.get(session.call_id) is not session
+                    or session.cleanup_in_progress or session.cleanup_completed
+                    or session.handoff_action_id or getattr(session, "transfer_active", False)
+                    or session.pending_deferred_transfer):
+                return False
+            session.completion_reserved = False
+            session.cleanup_after_tts = False
+            if session.completion_action:
+                session.completion_action["terminal_result"] = "hangup_failed"
             return True
 
     async def store_deferred_transfer(self, session: CallSession, action: dict) -> bool:
@@ -101,7 +125,7 @@ class SessionStore:
             if (self._sessions_by_call_id.get(session.call_id) is not session
                     or session.cleanup_in_progress or session.cleanup_completed
                     or getattr(session, "transfer_active", False) or session.handoff_action_id
-                    or session.completion_action):
+                    or (session.completion_action and session.completion_reserved is not False)):
                 return False
             pending = session.pending_deferred_transfer or {}
             if pending and pending.get("id") != action.get("id"):
@@ -158,7 +182,7 @@ class SessionStore:
                     or session.cleanup_in_progress or session.cleanup_completed
                     or getattr(session, "transfer_active", False) or getattr(session, "transfer_state", None)
                     or session.transfer_destination
-                    or (session.completion_action and session.completion_action is not expected_completion_action)
+                    or (session.completion_action and session.completion_reserved is not False and session.completion_action is not expected_completion_action)
                     or ((session.pending_deferred_transfer or {}).get("id") != expected_deferred_id)
                     or (isinstance(action, dict) and action.get("type") in {
                         "attended_transfer", "predial_transfer", "blind_transfer", "queue_transfer", "ring_group_transfer", "voicemail"})):
@@ -174,7 +198,7 @@ class SessionStore:
             return (self._sessions_by_call_id.get(session.call_id) is session
                     and not session.cleanup_in_progress and not session.cleanup_completed
                     and session.handoff_action_id == action_id
-                    and (not session.completion_action or session.completion_action is expected_completion_action)
+                    and (not session.completion_action or session.completion_reserved is False or session.completion_action is expected_completion_action)
                     and bool(getattr(session, "transfer_active", False))
                     and (session.pending_deferred_transfer or {}).get("id") == expected_deferred_id)
 

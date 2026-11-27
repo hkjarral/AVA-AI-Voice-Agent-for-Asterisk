@@ -954,10 +954,10 @@ async def test_native_reentry_uses_conversation_history_identity_for_booking_pri
     monkeypatch.setattr(native, 'CalendlyService', lambda _: service)
     service.slots = AsyncMock(return_value={'status': 'success', 'slots': []})
     sessions = SessionStore()
-    context = ToolExecutionContext(call_id='same-channel', session_store=sessions, config={'tools': {'calendly_calendar': cfg}})
     for key in ['same-channel:first', 'same-channel:second']:
         session = CallSession(call_id='same-channel', caller_channel_id='same-channel', history_call_id=key)
         await sessions.upsert_call(session)
+        context = ToolExecutionContext(call_id='same-channel', expected_session=session, session_store=sessions, config={'tools': {'calendly_calendar': cfg}})
         assert (await native.CalendlyCalendarTool().execute({'action': 'get_available_slots', 'appointment_key': 'consultation', 'timezone': 'UTC'}, context))['status'] == 'success'
         assert service.slots.call_args.args[1] == 'call:' + key
 

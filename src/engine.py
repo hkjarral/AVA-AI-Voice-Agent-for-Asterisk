@@ -7051,8 +7051,8 @@ class Engine:
             session._stasis_entry_id = channel.get("_stasis_entry_id")
             _cleanup_completed_at.pop(caller_channel_id, None)
             session.tool_runtime_generation = getattr(self, "_tool_generation", None)
-            self._resolve_session_tool_runtime(session)
             session.is_outbound = bool(is_outbound)
+            self._resolve_session_tool_runtime(session)
             # Per-provider VAD decision: local VAD active only when appropriate for this provider
             use_local = self._should_use_local_vad(session.provider_name)
             session.enhanced_vad_enabled = bool(self.vad_manager) and use_local
@@ -11424,10 +11424,21 @@ class Engine:
             except Exception:
                 pass
 
-            if (getattr(session, "transfer_state", None) == "conversation_completion"
-                    and not getattr(session, "_completion_dispatch_state", {}).get("started")
-                    and call_outcome == "transferred"):
-                call_outcome = "caller_hangup" if session.caller_stasis_ended else "agent_hangup"
+            if getattr(session, "transfer_state", None) == "conversation_completion":
+                dispatch = getattr(session, "_completion_dispatch_state", {})
+                settled = dispatch.get("settled")
+                if dispatch.get("started") and settled is not None and not settled.is_set():
+                    try:
+                        await asyncio.wait_for(settled.wait(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        pass
+                if dispatch.get("outcome") == "accepted":
+                    call_outcome = "transferred"
+                    session.transfer_destination = session.completion_action.get("next_step")
+                elif dispatch.get("started"):
+                    call_outcome = "error"  # PBX acceptance was unconfirmed when this report froze.
+                elif call_outcome == "transferred":
+                    call_outcome = "caller_hangup" if session.caller_stasis_ended else "agent_hangup"
 
             # Persist call_outcome onto the session BEFORE running any end-of-call tools,
             # so email_summary/request_transcript templates can reliably reference it.
@@ -11788,6 +11799,7 @@ class Engine:
                             # Build execution context
                             from src.tools.context import ToolExecutionContext
                             context = ToolExecutionContext(
+                                expected_session=session,
                                 call_id=call_id,
                                 caller_channel_id=session.caller_channel_id,
                                 bridge_id=session.bridge_id,
@@ -11831,6 +11843,7 @@ class Engine:
                                     # Build execution context
                                     from src.tools.context import ToolExecutionContext
                                     context = ToolExecutionContext(
+                                        expected_session=session,
                                         call_id=call_id,
                                         caller_channel_id=session.caller_channel_id,
                                         bridge_id=session.bridge_id,
@@ -12084,7 +12097,10 @@ class Engine:
             voicemail_unconfirmed = getattr(session, "voicemail_handoff_outcome", None) in {"pending", "indeterminate"}
             # Cleanup's frozen error also feeds post-call tools. A late ARI
             # result may update routing ownership, not rewrite that report.
-            if voicemail_unconfirmed or explicit_outcome == "error":
+            completion_unconfirmed = (getattr(session, "transfer_state", None) == "conversation_completion"
+                                      and getattr(session, "_completion_dispatch_state", {}).get("started")
+                                      and getattr(session, "_completion_dispatch_state", {}).get("outcome") != "accepted")
+            if voicemail_unconfirmed or completion_unconfirmed or explicit_outcome == "error":
                 outcome = "error"
             elif explicit_outcome == "no_input_timeout":
                 outcome = "no_input_timeout"
@@ -12092,7 +12108,7 @@ class Engine:
                 outcome = "error"
             elif self._session_was_transferred(session) and not (
                     getattr(session, "transfer_state", None) == "conversation_completion"
-                    and not getattr(session, "_completion_dispatch_state", {}).get("started")):
+                    and getattr(session, "_completion_dispatch_state", {}).get("outcome") != "accepted"):
                 outcome = "transferred"
             elif not session.conversation_history:
                 outcome = "abandoned"
@@ -16627,19 +16643,21 @@ class Engine:
                                 media_uri = hangup_cfg.get("fallback_media_uri") or hangup_cfg.get("farewell_fallback_media_uri")
                             media_uri = (media_uri or "").strip()
                             if media_uri:
-                                pb = await self.ari_client.play_media(session.caller_channel_id, media_uri)
-                                playback_id = pb.get("id") if isinstance(pb, dict) else None
-                                if playback_id:
-                                    waiter = asyncio.get_running_loop().create_future()
-                                    self._ari_playback_waiters[playback_id] = waiter
-                                    try:
+                                playback_id = f"completion-fallback:{uuid.uuid4().hex}"
+                                waiter = asyncio.get_running_loop().create_future()
+                                self._ari_playback_waiters[playback_id] = waiter
+                                try:
+                                    played_farewell_fallback = await self.ari_client.play_media_on_channel_with_id(
+                                        session.caller_channel_id, media_uri, playback_id)
+                                    if played_farewell_fallback:
                                         playback_result = await asyncio.wait_for(waiter, timeout=8.0)
                                         fallback_drain_confirmed = str((playback_result or {}).get("state") or "").lower() == "done"
-                                    except asyncio.TimeoutError:
-                                        pass
-                                    finally:
-                                        self._ari_playback_waiters.pop(playback_id, None)
-                                    played_farewell_fallback = True
+                                except asyncio.TimeoutError:
+                                    pass
+                                finally:
+                                    self._ari_playback_waiters.pop(playback_id, None)
+                                    if not waiter.done():
+                                        waiter.cancel()
                     except Exception:
                         logger.debug("Farewell fallback playback failed", call_id=call_id, exc_info=True)
 
@@ -17398,6 +17416,9 @@ class Engine:
                         return True
                     logger.warning("Terminal ARI hangup not accepted", call_id=call_id,
                                    reason=reason, attempt=attempt + 1)
+                from src.core.session_store import SessionStore
+                if isinstance(self.session_store, SessionStore):
+                    await self.session_store.release_failed_completion(owner_session)
                 return False
             finally:
                 if not completed and locks.get(call_id) is lock:
@@ -17477,16 +17498,12 @@ class Engine:
         action.update(channel_id=session.caller_channel_id, conversation_id=session.conversation_id,
                       context=dialplan_context, extension=str(route["target"]).strip(), priority=route.get("priority", 1))
         journal = HandoffJournal()
-        context = ToolExecutionContext(call_id=session.call_id, caller_channel_id=session.caller_channel_id,
+        context = ToolExecutionContext(expected_session=session, call_id=session.call_id, caller_channel_id=session.caller_channel_id,
             session_store=self.session_store, ari_client=self.ari_client, config=config)
         async def record_dispatch():
             action["result"] = "dispatching"
             await journal.write(action_id, action)
-        def mark_dispatch_started():
-            # Only a started POST is a transfer, not its earlier journal reservation.
-            session.call_outcome = "transferred"
-            session.transfer_destination = action["next_step"]
-        dispatch_state = {}
+        dispatch_state = {"settled": asyncio.Event()}
         session._completion_dispatch_state = dispatch_state
         try:
             result = await asyncio.wait_for(continue_to_dialplan(
@@ -17494,10 +17511,11 @@ class Engine:
                 transfer_type=route["type"], dialplan_context=dialplan_context, priority=action["priority"],
                 transfer_state="conversation_completion", require_valid_target=True,
                 before_dispatch=record_dispatch, expected_session=session, dispatch_state=dispatch_state,
-                expected_completion_action=action, on_dispatch_started=mark_dispatch_started,
+                expected_completion_action=action,
             ), timeout=10.0)
         except asyncio.CancelledError:
             action["result"] = "indeterminate" if dispatch_state.get("started") else "cancelled_before_dispatch"
+            dispatch_state["settled"].set()
             try:
                 await journal.write(action_id, action)
             except Exception:
@@ -17508,6 +17526,11 @@ class Engine:
         current = await self.session_store.get_by_call_id(session.call_id)
         if result.get("status") == "success":
             action["result"] = "accepted"
+            if current is session and not session.cleanup_in_progress:
+                session.call_outcome = "transferred"
+                session.transfer_destination = action["next_step"]
+        elif result.get("handoff_rejected"):
+            action["result"] = "rejected"
         elif result.get("handoff_indeterminate"):
             action["result"] = "indeterminate"
         elif result.get("ownership_lost") or current is not session or session.cleanup_in_progress:
@@ -17526,7 +17549,8 @@ class Engine:
                 self._fire_and_forget_for_call(session.call_id, self._reconcile_completion_handoff(session),
                                               name=f"completion-reconcile-{session.call_id}")
             return True
-        return action["result"] == "superseded"
+        return (action["result"] == "superseded" or result.get("ownership_lost", False)
+                or current is not session or session.cleanup_in_progress)
 
     async def _reconcile_completion_handoff(self, session: CallSession) -> None:
         """Observe without replaying the redirect or deleting an uncertain caller."""
@@ -17820,6 +17844,7 @@ class Engine:
             return True  # Another lifecycle owner won; never follow with hangup.
         tool = UnifiedTransferTool()
         context = ToolExecutionContext(
+            expected_session=session,
             call_id=session.call_id, caller_channel_id=session.caller_channel_id,
             session_store=self.session_store, ari_client=self.ari_client, config=config,
         )
@@ -19517,6 +19542,7 @@ class Engine:
                         
                         # Create execution context
                         tool_ctx = ToolExecutionContext(
+                            expected_session=session,
                             call_id=call_id,
                             caller_channel_id=getattr(session, "caller_channel_id", None) or call_id,
                             bridge_id=getattr(session, "bridge_id", None),
@@ -21237,7 +21263,10 @@ class Engine:
         hangup_cfg["policy"] = resolved_hangup["policy"]
         registry = generation.registry.clone()
         from src.tools.telephony.hangup import HangupCallTool
-        registry.register_instance(HangupCallTool(hangup_cfg.get("completion")))
+        completion_policy = hangup_cfg.get("completion")
+        if session.is_outbound or session.external_platform:
+            completion_policy = {"default_next_step": "hangup", "destination_keys": []}
+        registry.register_instance(HangupCallTool(completion_policy))
         inline_http = getattr(context_config, "in_call_http_tools", None) if context_config else None
         if isinstance(inline_http, dict) and inline_http:
             from src.tools.http.template import TemplateError
@@ -22721,6 +22750,7 @@ class Engine:
 
             # Create a per-call provider instance (providers are NOT concurrency-safe across calls).
             provider = factory()
+            provider._tool_owner_session = session
             # Apply per-call context/prompt/transport overrides before start_session reads config.
             self._apply_provider_overrides(provider, session)
             self._apply_provider_output_pacing(provider, session)
@@ -23105,7 +23135,7 @@ class Engine:
             context = str(getattr(self.config, "provider_failure_redirect_context", "") or "").strip()
             if context:
                 result = await continue_to_dialplan(
-                    context=ToolExecutionContext(call_id=session.call_id, caller_channel_id=session.caller_channel_id,
+                    context=ToolExecutionContext(expected_session=session, call_id=session.call_id, caller_channel_id=session.caller_channel_id,
                         session_store=self.session_store, ari_client=self.ari_client),
                     target=str(getattr(self.config, "provider_failure_redirect_extension", "s") or "s").strip(),
                     description=f"{context},{getattr(self.config, 'provider_failure_redirect_extension', 's')},{getattr(self.config, 'provider_failure_redirect_priority', 1)}",
@@ -23125,6 +23155,10 @@ class Engine:
         )
 
     async def _observe_provider_failure_handoff(self, session: CallSession) -> None:
+        await self._observe_uncertain_dialplan_handoff(session)
+
+    async def _observe_uncertain_dialplan_handoff(self, session: CallSession) -> None:
+        """Observe an uncertain owner without repeating routing or deleting the caller."""
         for _ in range(3):
             await asyncio.sleep(0.5)
             if await self.session_store.get_by_call_id(session.call_id) is not session or session.cleanup_in_progress:
@@ -23139,7 +23173,7 @@ class Engine:
                     str((channel.get("dialplan") or {}).get("app_name") or "").lower() not in {"", "stasis"})):
                 await self._cleanup_call(session.call_id, expected_session=session)
                 return
-        logger.warning("Provider failure handoff needs PBX inspection; no redirect retry or caller hangup", call_id=session.call_id)
+        logger.warning("Dialplan handoff needs PBX inspection; no redirect retry or caller hangup", call_id=session.call_id)
 
     async def _announce_provider_failure_and_hangup(self, call_id: str, channel_id: str) -> None:
         """HIGH-3: best-effort error prompt to the caller, then hang up the channel.
@@ -23455,6 +23489,7 @@ class Engine:
             else:
                 # Build tool execution context
                 context = ToolExecutionContext(
+                    expected_session=session,
                     call_id=call_id,
                     caller_channel_id=session.caller_channel_id,
                     bridge_id=session.bridge_id,
@@ -24255,6 +24290,7 @@ class Engine:
 
             provider_name = getattr(session, "provider_name", None) or getattr(self.config, "default_provider", None)
             context = ToolExecutionContext(
+                expected_session=session,
                 call_id=call_id,
                 caller_channel_id=getattr(session, "caller_channel_id", None) or call_id,
                 bridge_id=getattr(session, "bridge_id", None),

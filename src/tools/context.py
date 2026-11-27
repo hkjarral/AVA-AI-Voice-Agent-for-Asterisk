@@ -48,6 +48,10 @@ def resolve_scoped_tool_config(
     return {}
 
 
+class StaleToolContextError(RuntimeError):
+    """The captured conversation no longer owns this channel."""
+
+
 @dataclass
 class ToolExecutionContext:
     """
@@ -84,6 +88,8 @@ class ToolExecutionContext:
     tool_call_id: Optional[str] = None  # Upstream invocation ID; private runtime metadata
     tool_response_id: Optional[str] = None  # Native parent response, when available
 
+    expected_session: Any = field(default=None, repr=False)
+
     @staticmethod
     def is_pending_attended_transfer(session: Any) -> bool:
         """Return True when an attended transfer is awaiting a callee decision."""
@@ -111,9 +117,12 @@ class ToolExecutionContext:
             raise RuntimeError("SessionStore not available in context")
         
         session = await self.session_store.get_by_call_id(self.call_id)
+        if self.expected_session is not None and session is not self.expected_session:
+            raise StaleToolContextError("Tool context belongs to a retired conversation")
         if not session:
             raise RuntimeError(f"Session not found for call_id: {self.call_id}")
-        
+        if self.expected_session is None:
+            self.expected_session = session
         return session
     
     async def update_session(self, **kwargs):
@@ -134,10 +143,14 @@ class ToolExecutionContext:
         
         session = await self.get_session()
         
-        for key, value in kwargs.items():
-            setattr(session, key, value)
-        
-        await self.session_store.upsert_call(session)
+        from src.core.session_store import SessionStore
+        if isinstance(self.session_store, SessionStore):
+            if not await self.session_store.update_tool_session(session, kwargs):
+                raise StaleToolContextError("Tool context belongs to a retired conversation")
+        else:
+            for key, value in kwargs.items():
+                setattr(session, key, value)
+            await self.session_store.upsert_call(session)
         logger.debug(f"Updated session {self.call_id}: {kwargs}")
 
     async def get_tool_block_response(self, tool_name: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -147,6 +160,9 @@ class ToolExecutionContext:
         """
         try:
             session = await self.get_session()
+        except StaleToolContextError:
+            return {"status": "error", "error_code": "stale_conversation",
+                    "message": "This tool request belongs to a retired conversation.", "will_hangup": False}
         except Exception:
             logger.debug(
                 "Unable to load session while checking pending attended transfer guard for call_id=%s tool=%s",

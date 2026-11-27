@@ -4070,3 +4070,21 @@ def test_agent_runtime_resolution_preserves_vicidial_destinations():
         session.tool_runtime_config["tools"]["vicidial"]["timezone"]
         == "America/Phoenix"
     )
+
+
+@pytest.mark.parametrize('operation', ['dnc', 'callback', 'terminal'])
+def test_pending_actions_preserve_conversation_history_identity_without_changing_dedupe(tmp_path, operation):
+    db_path = str(tmp_path / 'vicidial.db')
+    payload = {'phone_number': '13165551212', 'campaign_id': 'TESTCAMP',
+               'lead_id': '42', 'callback_datetime': '2026-12-01 12:00:00',
+               'requested_status': 'N', 'retry_terminal': {'semantic': 'ai_hangup', 'session': {'external_call_id': 'external'}}}
+    kwargs = {'operation': operation, 'connection': _connection(), 'call_id': 'raw-channel'}
+    first = VicidialStore(db_path).enqueue_pending_action(payload={**payload, 'history_call_id': 'raw-channel:conversation'}, **kwargs)
+    duplicate = VicidialStore(db_path).enqueue_pending_action(payload={**payload, 'history_call_id': 'raw-channel:conversation'}, **kwargs)
+    assert duplicate['id'] == first['id']
+    persisted = VicidialStore(db_path).list_pending_actions()
+    assert len(persisted) == 1
+    assert persisted[0]['payload']['history_call_id'] == 'raw-channel:conversation'
+    # Backfill of internal audit metadata must not create another side effect.
+    legacy = VicidialStore(db_path).enqueue_pending_action(payload=payload, **kwargs)
+    assert legacy['id'] == first['id']

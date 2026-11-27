@@ -11,7 +11,7 @@ import aiohttp
 import structlog
 
 from ..base import Tool, ToolDefinition, ToolParameter, ToolCategory
-from ..context import ToolExecutionContext
+from ..context import ToolExecutionContext, StaleToolContextError
 from .deferred_transfer import (
     build_deferred_transfer_action,
     build_deferred_transfer_result,
@@ -173,28 +173,64 @@ class UnifiedTransferTool(Tool):
             if source_tool == "blind_transfer" and context.tool_response_id:
                 action["_tool_response_id"] = context.tool_response_id
             action["_preparing"] = True
+            preparation_owner = await context.get_session()
             try:
-                await store_pending_deferred_transfer(context, action)
-            except RuntimeError:
-                return {"status": "failed", "message": "Call no longer admits a transfer."}
-            await self._maybe_start_predial_transfer(context, action)
-            session = await context.get_session()
-            if (not session or session.cleanup_in_progress or session.cleanup_completed
-                    or (session.pending_deferred_transfer or {}).get("id") != action["id"]):
-                return {"status": "failed", "message": "Transfer was cancelled or call ownership changed."}
-            action["_preparing"] = False
-            await store_pending_deferred_transfer(context, action, session=session)
-            return build_deferred_transfer_result(
-                action=action,
-                message=f"Transferring you to {description} now.",
-                extra={
-                    "destination": target,
-                    "type": transfer_type,
-                },
-            )
+                try:
+                    await store_pending_deferred_transfer(context, action)
+                except RuntimeError:
+                    return {"status": "failed", "message": "Call no longer admits a transfer."}
+                await self._maybe_start_predial_transfer(context, action)
+                try:
+                    session = await context.get_session()
+                except StaleToolContextError:
+                    return {"status": "failed", "message": "Call ownership changed."}
+                if (not session or session.cleanup_in_progress or session.cleanup_completed
+                        or (session.pending_deferred_transfer or {}).get("id") != action["id"]):
+                    return {"status": "failed", "message": "Transfer was cancelled or call ownership changed."}
+                action["_preparing"] = False
+                await store_pending_deferred_transfer(context, action, session=session)
+                return build_deferred_transfer_result(
+                    action=action,
+                    message=f"Transferring you to {description} now.",
+                    extra={
+                        "destination": target,
+                        "type": transfer_type,
+                    },
+                )
+            except asyncio.CancelledError:
+                await self._retire_cancelled_preparation(context, preparation_owner, action)
+                raise
 
         action["_immediate"] = True
-        return await self.commit_deferred_action(action, context)
+        owner = await context.get_session()
+        result = await self.commit_deferred_action(action, context)
+        if result.get("handoff_indeterminate"):
+            engine = getattr(context.ari_client, "engine", None)
+            observer = getattr(engine, "_observe_uncertain_dialplan_handoff", None)
+            if callable(observer):
+                engine._fire_and_forget_for_call(context.call_id, observer(owner),
+                    name=f"immediate-transfer-reconcile-{context.call_id}")
+        return result
+
+    async def _retire_cancelled_preparation(self, context, session, action):
+        """Release this reservation; keep a cleanup owner for any known predial leg."""
+        from src.core.session_store import SessionStore
+        if not isinstance(context.session_store, SessionStore):
+            return
+        active = session.current_action or {}
+        channel_id = (active.get("predial_channel_id")
+                      if active.get("deferred_action_id") == action["id"] else None)
+        engine = getattr(context.ari_client, "engine", None)
+        on_cancel = None
+        if channel_id:
+            if not (callable(getattr(engine, "register_predial_transfer_channel", None))
+                    and callable(getattr(engine, "_schedule_deferred_predial_forced_hangup_retry", None))):
+                return  # Retain the known leg until a cleanup owner is available.
+            def on_cancel():
+                engine.register_predial_transfer_channel(context.call_id, channel_id)
+                engine._schedule_deferred_predial_forced_hangup_retry(
+                    call_id=context.call_id, channel_id=channel_id)
+        await context.session_store.cancel_deferred_transfer(session, action["id"], on_cancel=on_cancel)
 
     def _deferred_strategy(self, context: ToolExecutionContext) -> str:
         transfer_config = context.get_config_value("tools.transfer") or {}

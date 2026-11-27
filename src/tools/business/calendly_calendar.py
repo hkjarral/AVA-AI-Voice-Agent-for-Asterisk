@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from src.core.calendly_store import CalendlyStore
 from src.tools.base import Tool, ToolCategory, ToolDefinition
-from src.tools.context import resolve_scoped_tool_config
+from src.tools.context import resolve_scoped_tool_config, StaleToolContextError
 from src.tools.business.calendly_client import CalendlyError, instant
 from src.tools.business.calendly_service import CalendlyService
 
@@ -114,6 +114,9 @@ class CalendlyCalendarTool(Tool):
                         session._calendly_confirmation = {}
                 return result
             raise CalendlyError("unsupported_action")
+        except StaleToolContextError:
+            return {"status": "error", "code": "call_not_active",
+                    "message": "This conversation has ended. Ask staff to verify any pending booking before trying again."}
         except CalendlyError as exc:
             messages = {
                 "invalid_timezone": "Ask for the caller's timezone, then check availability with its IANA name. For next available, omit both dates to search the next seven days. No booking was submitted.",

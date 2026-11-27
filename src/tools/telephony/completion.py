@@ -1,6 +1,7 @@
 """Validated conversation completion policy. Routing inventory stays in transfer."""
 from __future__ import annotations
 import re
+import unicodedata
 from typing import Any
 
 ROUTE_TYPES = {"extension", "queue", "ringgroup", "dialplan"}
@@ -10,7 +11,7 @@ UNSAFE = re.compile(r"[,()\r\n\x00]")
 def valid_key(value: Any) -> bool:
     # These are existing inventory labels carried as JSON enum values, not
     # function names or dialplan expressions. Preserve spaces and Unicode.
-    return isinstance(value, str) and bool(value.strip()) and value == value.strip() and bool(KEY.fullmatch(value))
+    return isinstance(value, str) and bool(value.strip()) and value == value.strip() and bool(KEY.fullmatch(value)) and not any(unicodedata.category(c) == "Cc" for c in value)
 
 def executable_route(route: Any) -> bool:
     if not isinstance(route, dict) or not isinstance(route.get("type"), str) or route["type"] not in ROUTE_TYPES:
