@@ -1201,3 +1201,31 @@ async def test_stale_native_result_is_not_appended_to_returning_conversation():
         result={'status': 'error', 'error_code': 'stale_conversation', 'will_hangup': False})
     assert result is None
     assert not replacement.tool_calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('marker_channel', ['new-leg', None, 'old-leg'])
+async def test_old_predial_end_clears_only_matching_published_marker(marker_channel):
+    engine, session, _ = await setup_engine()
+    engine._release_deferred_predial_hangup_ownership = lambda channel: None
+    marker = {'type': 'predial_transfer', 'deferred_action_id': 'retry', 'bridged': False}
+    if marker_channel:
+        marker['predial_channel_id'] = marker_channel
+    session.current_action = marker
+    await engine._handle_unbridged_predial_transfer_channel_end(session, 'old-leg')
+    assert session.current_action == (None if marker_channel == 'old-leg' else marker)
+
+
+@pytest.mark.asyncio
+async def test_retired_context_cannot_correct_returning_conversations_metadata():
+    from src.tools.business.update_call_metadata import UpdateCallMetadataTool
+    engine, old, ctx = await setup_engine()
+    ctx.expected_session = old
+    replacement = CallSession(call_id='caller', caller_channel_id='caller')
+    replacement.call_metadata = {'preferred_name': 'Returning caller'}
+    replacement.call_metadata_policy = {'preferred_name': {'correctable': True}}
+    await engine.session_store.upsert_call(replacement)
+    tool = UpdateCallMetadataTool({'preferred_name': {'correctable': True}})
+    result = await tool.execute({'field': 'preferred_name', 'value': 'Retired request'}, ctx)
+    assert result['status'] == 'error'
+    assert replacement.call_metadata == {'preferred_name': 'Returning caller'}

@@ -282,6 +282,7 @@ class VoicemailTool(Tool):
     ) -> None:
         origin = action.get("_tool_history_origin") or {}
         await record_in_call_tool_result(
+            expected_session=context.expected_session,
             session_store=context.session_store, call_id=context.call_id,
             tool_call_id=origin.get("tool_call_id") or action.get("id"),
             tool_name="leave_voicemail", parameters={}, result=result,

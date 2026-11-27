@@ -443,3 +443,51 @@ async def test_provider_delivery_marks_all_normalized_failures_as_errors(provide
         assert kwargs["call_id"] == session.call_id
         assert kwargs["tool_name"] == "status_tool"
     assert session.tool_calls[0]["status"] == "failure"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['google', 'grok', 'openai', 'deepgram'])
+async def test_late_native_success_does_not_enter_replacement_history(kind):
+    from src.config import OpenAIRealtimeProviderConfig
+    from src.providers.openai_realtime import OpenAIRealtimeProvider
+    store, owner = await _session_store('shared-native')
+    replacement = CallSession(call_id=owner.call_id, caller_channel_id=owner.call_id)
+    called = []
+    async def retire_then_finish(*args, **kwargs):
+        called.append(True)
+        await store.upsert_call(replacement)
+        return {'status': 'success', 'event_id': 'old-event', 'function_call_id': 'old-tool', 'function_name': 'google_calendar'}
+    if kind == 'google':
+        provider = GoogleLiveProvider(GoogleProviderConfig(), on_event=None)
+        provider._tool_adapter = SimpleNamespace(registry=_GoogleRegistry(), execute_tool=retire_then_finish)
+        provider._send_message = AsyncMock()
+        provider._allowed_tools = ['google_calendar']
+    elif kind == 'grok':
+        provider = GrokProvider(GrokProviderConfig(api_key='test', model='grok', voice='eve'), on_event=None)
+    elif kind == 'openai':
+        provider = OpenAIRealtimeProvider(OpenAIRealtimeProviderConfig(api_key='test', model='gpt-test', voice='alloy'), on_event=None)
+    else:
+        provider = DeepgramProvider({}, LLMConfig(), on_event=None)
+    provider._tool_owner_session = owner
+    provider._session_store = store
+    provider._call_id = owner.call_id
+    provider.call_id = owner.call_id
+    if kind != 'google':
+        adapter = _DeepgramAdapter({}) if kind == 'deepgram' else _ProviderAdapter({})
+        adapter.handle_tool_call_event = retire_then_finish
+        provider.tool_adapter = adapter
+        provider.websocket = _OpenWebSocket()
+        provider._await_parent_response_done = AsyncMock()
+    registry = ToolRegistry.isolated()
+    registry.register_instance(_CalendarTool())
+    provider._call_tool_registry = registry
+    item = {'type': 'function_call', 'call_id': 'old-tool', 'id': 'old-tool', 'name': 'google_calendar', 'arguments': '{"action":"create_event"}'}
+    if kind == 'google':
+        await provider._handle_tool_call({'toolCall': {'functionCalls': [{'id': 'old-tool', 'name': 'google_calendar', 'args': {'action': 'create_event'}}]}})
+    elif kind == 'deepgram':
+        await provider._handle_function_call({'type': 'FunctionCallRequest', 'functions': [item]})
+    else:
+        await provider._handle_function_call({'response_id': 'response', 'item': item})
+    assert called == [True]
+    assert owner.tool_calls == []
+    assert replacement.tool_calls == []

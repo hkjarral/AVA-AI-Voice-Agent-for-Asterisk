@@ -4088,3 +4088,5 @@ def test_pending_actions_preserve_conversation_history_identity_without_changing
     # Backfill of internal audit metadata must not create another side effect.
     legacy = VicidialStore(db_path).enqueue_pending_action(payload=payload, **kwargs)
     assert legacy['id'] == first['id']
+    assert legacy['payload']['history_call_id'] == 'raw-channel:conversation'
+    assert VicidialStore(db_path).list_pending_actions()[0]['payload']['history_call_id'] == 'raw-channel:conversation'

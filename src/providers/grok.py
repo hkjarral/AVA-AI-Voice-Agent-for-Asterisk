@@ -862,6 +862,7 @@ class GrokProvider(AIProviderInterface):
                     )
 
             await record_in_call_tool_result(
+                expected_session=getattr(self, "_tool_owner_session", None),
                 session_store=getattr(self, "_session_store", None),
                 call_id=self._call_id,
                 tool_call_id=function_call_id,
@@ -943,6 +944,7 @@ class GrokProvider(AIProviderInterface):
         except asyncio.CancelledError:
             if not tool_result_recorded:
                 await record_in_call_tool_result(
+                    expected_session=getattr(self, "_tool_owner_session", None),
                     session_store=getattr(self, "_session_store", None),
                     call_id=self._call_id,
                     tool_call_id=function_call_id,
@@ -962,6 +964,7 @@ class GrokProvider(AIProviderInterface):
             )
             if not tool_result_recorded:
                 await record_in_call_tool_result(
+                    expected_session=getattr(self, "_tool_owner_session", None),
                     session_store=getattr(self, "_session_store", None),
                     call_id=self._call_id,
                     tool_call_id=function_call_id,

@@ -789,6 +789,8 @@ class ARIClient:
         if label:
             params["label"] = str(label)
         resp = await self.send_command("POST", f"channels/{channel_id}/continue", params=params)
+        if isinstance(resp, dict) and resp.get("request_started") is False:
+            return False  # Connector/URL failure proves the command was never submitted.
         status = resp.get("status") if isinstance(resp, dict) else None
         if status is None:
             return None

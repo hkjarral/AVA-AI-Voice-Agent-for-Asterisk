@@ -70,6 +70,8 @@ async def test_dialplan_target_exists_rejects_function_argument_injection():
         ({"status": 404}, False),
         ({"status": 500}, None),
         ({"status": 503}, None),
+        ({"status": 503, "request_started": False}, False),
+        ({"request_started": False}, False),
         ({"status": "invalid"}, None),
         ({}, None),
         (None, None),

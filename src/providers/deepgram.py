@@ -1494,6 +1494,7 @@ class DeepgramProvider(AIProviderInterface):
             func_name = result.get('function_name') or function_name
 
             await record_in_call_tool_result(
+                expected_session=getattr(self, "_tool_owner_session", None),
                 session_store=getattr(self, "_session_store", None),
                 call_id=invocation_call_id,
                 tool_call_id=function_call_id,
@@ -1513,6 +1514,7 @@ class DeepgramProvider(AIProviderInterface):
         except asyncio.CancelledError:
             if not tool_result_recorded:
                 await record_in_call_tool_result(
+                    expected_session=getattr(self, "_tool_owner_session", None),
                     session_store=getattr(self, "_session_store", None),
                     call_id=invocation_call_id,
                     tool_call_id=function_call_id,
@@ -1533,6 +1535,7 @@ class DeepgramProvider(AIProviderInterface):
             )
             if not tool_result_recorded:
                 await record_in_call_tool_result(
+                    expected_session=getattr(self, "_tool_owner_session", None),
                     session_store=getattr(self, "_session_store", None),
                     call_id=invocation_call_id,
                     tool_call_id=function_call_id,

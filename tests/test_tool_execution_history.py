@@ -502,3 +502,46 @@ async def test_non_deferred_attended_initiation_preserves_terminal_semantics(res
     await record_in_call_tool_result(session_store=store, call_id=session.call_id,
         tool_call_id="invocation", tool_name="attended_transfer", parameters={}, result=result)
     assert session.tool_calls[0]["action"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('result', [{'status': 'success'}, {'status': 'error', 'code': 'call_not_active'}])
+async def test_atomic_append_rejects_retired_owner_even_after_record_build(monkeypatch, result):
+    import asyncio
+    store = SessionStore()
+    old = CallSession(call_id='shared-channel', caller_channel_id='shared-channel')
+    await store.upsert_call(old)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = store.append_tool_call_and_bind_deferred_origin_if_active
+    async def delayed_append(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await original(*args, **kwargs)
+    monkeypatch.setattr(store, 'append_tool_call_and_bind_deferred_origin_if_active', delayed_append)
+    task = asyncio.create_task(record_in_call_tool_result(session_store=store, expected_session=old,
+        call_id=old.call_id, tool_call_id='old-invocation', tool_name='calendly_calendar', parameters={}, result=result))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        replacement = CallSession(call_id=old.call_id, caller_channel_id=old.call_id)
+        await store.upsert_call(replacement)
+        release.set()
+        assert await asyncio.wait_for(task, timeout=1) is None
+        assert replacement.tool_calls == []
+        assert old.tool_calls == []
+    finally:
+        release.set()
+        if not task.done(): task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_captured_active_owner_retains_history_and_deferred_origin():
+    store = SessionStore()
+    session = CallSession(call_id='active', caller_channel_id='active')
+    session.pending_deferred_transfer = {'id': 'transfer', 'kind': 'transfer'}
+    await store.upsert_call(session)
+    recorded = await record_in_call_tool_result(session_store=store, expected_session=session,
+        call_id=session.call_id, tool_call_id='invocation', tool_name='blind_transfer', parameters={},
+        result={'status': 'success', 'deferred_transfer': {'id': 'transfer', 'kind': 'transfer'}})
+    assert recorded is not None and session.tool_calls == [recorded]
+    assert session.pending_deferred_transfer['_tool_history_origin']['tool_call_id'] == 'invocation'

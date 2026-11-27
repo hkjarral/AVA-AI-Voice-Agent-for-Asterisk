@@ -2681,6 +2681,7 @@ class GoogleLiveProvider(AIProviderInterface):
                     )
 
                 await record_in_call_tool_result(
+                    expected_session=getattr(self, "_tool_owner_session", None),
                     session_store=getattr(self, "_session_store", None),
                     call_id=owner_call_id,
                     tool_call_id=call_id,
@@ -2848,6 +2849,7 @@ class GoogleLiveProvider(AIProviderInterface):
         except asyncio.CancelledError:
             if func_name and not tool_result_recorded:
                 await record_in_call_tool_result(
+                    expected_session=getattr(self, "_tool_owner_session", None),
                     session_store=getattr(self, "_session_store", None),
                     call_id=owner_call_id,
                     tool_call_id=call_id,
@@ -2867,6 +2869,7 @@ class GoogleLiveProvider(AIProviderInterface):
             )
             if func_name and not tool_result_recorded:
                 await record_in_call_tool_result(
+                    expected_session=getattr(self, "_tool_owner_session", None),
                     session_store=getattr(self, "_session_store", None),
                     call_id=owner_call_id,
                     tool_call_id=call_id,

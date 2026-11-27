@@ -946,7 +946,8 @@ async def get_call_recording_info(record_id: str):
     record = await store.get(record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Call record not found")
-    return await run_in_threadpool(_recording_info, record.call_id, record.start_time)
+    from api.logs import _call_log_channel_id
+    return await run_in_threadpool(_recording_info, _call_log_channel_id(record), record.start_time)
 
 
 class _RecordingFileResponse(FileResponse):
@@ -1007,7 +1008,8 @@ async def _stream_call_recording(record_id: str, download: bool = False):
     record = await store.get(record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Call record not found")
-    return await run_in_threadpool(_prepare_recording, record.call_id, record.start_time, download)
+    from api.logs import _call_log_channel_id
+    return await run_in_threadpool(_prepare_recording, _call_log_channel_id(record), record.start_time, download)
 
 
 @router.get("/calls/{record_id}/recording/audio")

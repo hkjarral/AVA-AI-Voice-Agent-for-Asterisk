@@ -219,11 +219,12 @@ class SessionStore:
     async def restore_no_input_transfer(self, session: CallSession, previous: dict) -> bool:
         return await self.restore_dialplan_handoff(session, previous, f"no-input:{session.conversation_id}")
 
-    async def append_tool_call_if_active(self, call_id: str, record: dict) -> bool:
+    async def append_tool_call_if_active(self, call_id: str, record: dict, *, expected_session: Optional[CallSession] = None) -> bool:
         """Append history only while the call is registered, under one lock."""
         return await self.append_tool_call_and_bind_deferred_origin_if_active(
             call_id,
             record,
+            expected_session=expected_session,
         )
 
     async def append_tool_call_and_bind_deferred_origin_if_active(
@@ -233,11 +234,12 @@ class SessionStore:
         *,
         deferred_action_id: str = "",
         deferred_origin: Optional[dict] = None,
+        expected_session: Optional[CallSession] = None,
     ) -> bool:
         """Append history and bind its deferred action origin atomically."""
         async with self._lock:
             session = self._sessions_by_call_id.get(call_id)
-            if session is None:
+            if session is None or (expected_session is not None and session is not expected_session):
                 return False
             if session.tool_calls is None:
                 session.tool_calls = []
@@ -260,6 +262,8 @@ class SessionStore:
         call_id: str,
         field_name: str,
         value: Any,
+        *,
+        expected_session: Optional[CallSession] = None,
     ) -> Dict[str, Any]:
         """Atomically correct one explicitly allowed metadata field.
 
@@ -277,7 +281,7 @@ class SessionStore:
 
         async with self._lock:
             session = self._sessions_by_call_id.get(call_id)
-            if session is None:
+            if session is None or (expected_session is not None and session is not expected_session):
                 return {"status": "error", "message": "The call is no longer active."}
             if bool(getattr(session, "cleanup_in_progress", False)) or bool(
                 getattr(session, "cleanup_completed", False)

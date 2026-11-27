@@ -207,6 +207,9 @@ audio waiting, with drain marked unconfirmed. Natural farewell detection without
 an accepted hangup tool request does not apply a configured completion default.
 
 History identifies each AI conversation with `<PBX channel ID>:<conversation UUID>`.
+Recording lookup uses the stored PBX channel ID; one PBX recording can span
+multiple AI conversations on that channel. Log previews and support bundles
+use that same PBX identity within the selected conversation time window.
 Pre-call and post-call webhook `call_id` retains the original PBX channel ID for
 existing integration correlation; internal history writes and durable external
 disposition retries use the separate conversation History key.

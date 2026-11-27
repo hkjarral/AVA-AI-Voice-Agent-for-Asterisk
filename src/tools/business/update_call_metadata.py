@@ -71,4 +71,5 @@ class UpdateCallMetadataTool(Tool):
             context.call_id,
             field,
             parameters.get("value"),
+            expected_session=getattr(context, "expected_session", None),
         )

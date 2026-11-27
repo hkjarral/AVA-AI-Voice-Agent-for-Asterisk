@@ -8248,11 +8248,14 @@ class Engine:
         call_id = session.call_id
         self._release_deferred_predial_hangup_ownership(predial_channel_id)
         try:
-            latest = await self.session_store.get_by_call_id(call_id) or session
+            latest = await self.session_store.get_by_call_id(call_id)
+            if latest is not session:
+                return
             action = dict(getattr(latest, "current_action", None) or {})
-            if action.get("type") == "predial_transfer" and not action.get("bridged"):
+            if (action.get("type") == "predial_transfer" and not action.get("bridged")
+                    and action.get("predial_channel_id") == predial_channel_id):
                 latest.current_action = None
-                await self._save_session(latest)
+                await self._save_session(latest, require_current=True)
         except Exception:
             logger.debug(
                 "Failed to clear unbridged predial transfer state",
@@ -10342,6 +10345,7 @@ class Engine:
         """Append terminal evidence without rewriting the initiating tool result."""
         origin = action.get("_tool_history_origin") or {}
         await record_in_call_tool_result(
+            expected_session=session,
             session_store=self.session_store,
             call_id=session.call_id,
             tool_call_id=origin.get("tool_call_id") or action.get("id") or action.get("agent_channel_id"),
@@ -19607,6 +19611,7 @@ class Engine:
                                     tool_result_recorded = True
                                     try:
                                         await record_in_call_tool_result(
+                                            expected_session=session,
                                             session_store=self.session_store,
                                             call_id=call_id,
                                             tool_call_id=function_call_id,
@@ -19801,6 +19806,7 @@ class Engine:
                                                             )
                                                             try:
                                                                 await record_in_call_tool_result(
+                                                                    expected_session=session,
                                                                     session_store=self.session_store,
                                                                     call_id=call_id,
                                                                     tool_call_id=next_function_call_id,
@@ -19857,6 +19863,7 @@ class Engine:
                                                                         await next_task
                                                                 try:
                                                                     await record_in_call_tool_result(
+                                                                        expected_session=session,
                                                                         session_store=self.session_store,
                                                                         call_id=call_id,
                                                                         tool_call_id=next_function_call_id,
@@ -19878,6 +19885,7 @@ class Engine:
                                                             except Exception as next_error:
                                                                 try:
                                                                     await record_in_call_tool_result(
+                                                                        expected_session=session,
                                                                         session_store=self.session_store,
                                                                         call_id=call_id,
                                                                         tool_call_id=next_function_call_id,
@@ -19905,6 +19913,7 @@ class Engine:
                                                                 raise
                                                             try:
                                                                 await record_in_call_tool_result(
+                                                                    expected_session=session,
                                                                     session_store=self.session_store,
                                                                     call_id=call_id,
                                                                     tool_call_id=next_function_call_id,
@@ -19967,6 +19976,7 @@ class Engine:
                                                         else:
                                                             try:
                                                                 await record_in_call_tool_result(
+                                                                    expected_session=session,
                                                                     session_store=self.session_store,
                                                                     call_id=call_id,
                                                                     tool_call_id=next_function_call_id,
@@ -19993,6 +20003,7 @@ class Engine:
                                     tool_result_recorded = True
                                     try:
                                         await record_in_call_tool_result(
+                                            expected_session=session,
                                             session_store=self.session_store,
                                             call_id=call_id,
                                             tool_call_id=function_call_id,
@@ -20018,6 +20029,7 @@ class Engine:
                                 if not tool_result_recorded:
                                     try:
                                         await record_in_call_tool_result(
+                                            expected_session=session,
                                             session_store=self.session_store,
                                             call_id=call_id,
                                             tool_call_id=function_call_id,
@@ -20041,6 +20053,7 @@ class Engine:
                                 if not tool_result_recorded:
                                     try:
                                         await record_in_call_tool_result(
+                                            expected_session=session,
                                             session_store=self.session_store,
                                             call_id=call_id,
                                             tool_call_id=function_call_id,
@@ -23552,6 +23565,7 @@ class Engine:
         except asyncio.CancelledError:
             try:
                 await record_in_call_tool_result(
+                    expected_session=session,
                     session_store=self.session_store,
                     call_id=call_id,
                     tool_call_id=function_call_id,
@@ -23583,6 +23597,7 @@ class Engine:
         try:
             canonical_name = tool_registry.canonicalize_tool_name(function_name)
             await record_in_call_tool_result(
+                expected_session=session,
                 session_store=self.session_store,
                 call_id=call_id,
                 tool_call_id=function_call_id,
@@ -24586,6 +24601,7 @@ class Engine:
         except (TypeError, ValueError):
             created_at = time.time()
         await record_in_call_tool_result(
+            expected_session=session,
             session_store=self.session_store,
             call_id=session.call_id,
             tool_call_id=tool_call_id,

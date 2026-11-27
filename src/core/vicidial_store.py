@@ -763,6 +763,16 @@ class VicidialStore:
         action_id = str(uuid.uuid4())
         now = _now()
         with self._lock, self._connection() as conn:
+            # Serialize the metadata merge across Admin and engine processes.
+            conn.execute("BEGIN IMMEDIATE")
+            if "history_call_id" not in action_payload:
+                existing = conn.execute(
+                    "SELECT payload_json FROM vicidial_pending_actions WHERE dedupe_key=?",
+                    (dedupe_key,),
+                ).fetchone()
+                saved = _decode(existing["payload_json"], {}) if existing else {}
+                if isinstance(saved, dict) and saved.get("history_call_id"):
+                    action_payload["history_call_id"] = saved["history_call_id"]
             conn.execute(
                 """
                 INSERT INTO vicidial_pending_actions (
