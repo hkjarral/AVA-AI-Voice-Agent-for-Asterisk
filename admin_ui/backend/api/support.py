@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from agents_store import AgentsStore
 from api.log_events import parse_log_line
-from api.logs import _call_log_channel_id, _compute_related_ids, _event_matches_call, _read_container_logs_sync
+from api.logs import _call_log_channel_id, _compute_related_ids, _event_matches_call, _extract_ids_from_kv, _read_container_logs_sync
 
 router = APIRouter()
 
@@ -293,6 +293,23 @@ def _parsed(text: str):
     return parsed
 
 
+def _contains_identifier(text: str, identifier: str) -> bool:
+    # PBX IDs include dots, colons and hyphens as well as Unicode word chars.
+    return bool(identifier) and re.search(
+        rf"(?<![\w.:-]){re.escape(identifier)}(?![\w.:-])", text,
+    ) is not None
+
+
+def _line_references_identifier(line: str, identifier: str) -> bool:
+    parsed = parse_log_line(line)
+    if parsed:
+        event, fields = parsed
+        if event.call_id or _extract_ids_from_kv(fields):
+            # An explicit different owner wins over a mention in message text.
+            return _event_matches_call(event, fields, {identifier}, set())
+    return _contains_identifier(line, identifier)
+
+
 def _filter_call_lines(text: str, call_id: str):
     parsed = _parsed(text)
     related_ids, bridge_ids = _compute_related_ids(parsed, call_id)
@@ -306,7 +323,7 @@ def _filter_call_lines(text: str, call_id: str):
             events.append(event)
     known_raw = {event.raw for event in events}
     for line in text.splitlines():
-        if call_id in line and line not in known_raw:
+        if _line_references_identifier(line, call_id) and line not in known_raw:
             matching.append(sanitize_text(line))
     return "\n".join(dict.fromkeys(matching)), events, related_ids, bridge_ids
 
@@ -316,7 +333,7 @@ def _filter_secondary_source(text: str, call_id: str) -> str:
     return "\n".join(
         sanitize_text(line)
         for line in text.splitlines()
-        if call_id in line
+        if _line_references_identifier(line, call_id)
     )
 
 

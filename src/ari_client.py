@@ -683,6 +683,7 @@ class ARIClient:
         data: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
         tolerate_statuses: Optional[List[int]] = None,
+        allow_redirects: bool = True,
     ) -> Dict[str, Any]:
         """Send a command to the ARI HTTP endpoint.
 
@@ -692,7 +693,12 @@ class ARIClient:
         url = f"{self.http_url}/{resource}"
         
         try:
-            async with self.http_session.request(method, url, json=data, params=params) as response:
+            options = {"json": data, "params": params}
+            if not allow_redirects:
+                options["allow_redirects"] = False
+            async with self.http_session.request(method, url, **options) as response:
+                if 300 <= response.status < 400:
+                    return {"status": response.status, "reason": await response.text()}
                 if response.status >= 400:
                     reason = await response.text()
                     # Common benign case: reading a missing channel variable.
@@ -729,8 +735,13 @@ class ARIClient:
                     return {"status": response.status}
                 return await response.json()
         except (aiohttp.ClientConnectorError, aiohttp.InvalidURL) as e:
-            logger.error("ARI HTTP request could not be dispatched", exc_info=True)
-            return {"status": 503, "reason": str(e), "request_started": False}
+            logger.error("ARI HTTP connection or URL failed", exc_info=True)
+            result = {"status": 503, "reason": str(e)}
+            # Redirect-enabled requests may have reached an earlier endpoint.
+            # Only a single-hop failure proves that no POST was submitted.
+            if not allow_redirects:
+                result["request_started"] = False
+            return result
         except aiohttp.ClientError as e:
             logger.error("ARI HTTP request failed", exc_info=True)
             return {"status": 500, "reason": str(e)}
@@ -788,7 +799,7 @@ class ARIClient:
         }
         if label:
             params["label"] = str(label)
-        resp = await self.send_command("POST", f"channels/{channel_id}/continue", params=params)
+        resp = await self.send_command("POST", f"channels/{channel_id}/continue", params=params, allow_redirects=False)
         if isinstance(resp, dict) and resp.get("request_started") is False:
             return False  # Connector/URL failure proves the command was never submitted.
         status = resp.get("status") if isinstance(resp, dict) else None

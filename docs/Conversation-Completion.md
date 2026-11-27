@@ -247,3 +247,8 @@ completion reservation after bounded retries while keeping the action evidence,
 so a later tool request or no-input policy can act on the still-owned caller.
 Cancelled transfer preparation similarly releases only its own reservation;
 known destination legs retain an independent cleanup owner.
+
+Handoff and predial requests use the configured ARI endpoint without following
+HTTP redirects. Configure its final API URL directly. A redirect remains an
+unknown routing outcome; a connector failure is treated as definitely unsent
+only for a request that cannot have followed a prior redirect.

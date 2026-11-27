@@ -26,7 +26,7 @@ def mock_ari_client():
     
     # Channel origination (returns channel dict)
     # Also handles blind transfer redirect (returns status 204)
-    async def send_command_mock(method, resource, data=None, params=None):
+    async def send_command_mock(method, resource, data=None, params=None, *, allow_redirects=True):
         if method == "POST" and "redirect" in resource:
             # Blind transfer redirect
             return {"status": 204}

@@ -82,6 +82,48 @@ async def test_invalid_http_url_is_reported_as_definitely_undispatched():
     client.http_url = 'invalid-local-ari-url'
     client.http_session = Mock()
     client.http_session.request.side_effect = aiohttp.InvalidURL('invalid-local-ari-url')
-    result = await client.send_command('POST', 'channels')
+    result = await client.send_command('POST', 'channels', allow_redirects=False)
     assert result['request_started'] is False
     assert result['status'] == 503
+
+
+@pytest.mark.asyncio
+async def test_connector_failure_with_redirects_allowed_is_not_proven_unsent():
+    import aiohttp
+    client = ARIClient.__new__(ARIClient)
+    client.http_url = 'http://asterisk.invalid/ari'
+    client.http_session = Mock()
+    client.http_session.request.side_effect = aiohttp.InvalidURL('invalid redirect destination')
+    result = await client.send_command('POST', 'channels')
+    assert result['status'] == 503
+    assert result.get('request_started') is not False
+
+
+@pytest.mark.asyncio
+async def test_continue_does_not_follow_redirect_or_report_acceptance():
+    import aiohttp
+    from aiohttp import web
+    seen = []
+    async def redirect(request):
+        seen.append('continue')
+        raise web.HTTPTemporaryRedirect(location='/redirect-target')
+    async def target(request):
+        seen.append('redirect-target')
+        return web.Response(status=204)
+    app = web.Application()
+    app.router.add_post('/ari/channels/caller/continue', redirect)
+    app.router.add_post('/redirect-target', target)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    try:
+        site = web.TCPSite(runner, '127.0.0.1', 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        async with aiohttp.ClientSession() as session:
+            client = ARIClient.__new__(ARIClient)
+            client.http_url = f'http://127.0.0.1:{port}/ari'
+            client.http_session = session
+            assert await client.continue_in_dialplan('caller', context='survey') is None
+        assert seen == ['continue']
+    finally:
+        await runner.cleanup()

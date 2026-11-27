@@ -310,6 +310,7 @@ class UnifiedTransferTool(Tool):
             result = await context.ari_client.send_command(
                 method="POST",
                 resource="channels",
+                allow_redirects=False,
                 data={
                     "variables": {
                         "AGENT_ACTION": "predial_transfer",

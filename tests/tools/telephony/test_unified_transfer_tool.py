@@ -151,6 +151,7 @@ class TestUnifiedTransferTool:
         assert tool_context.session_store.get_by_call_id.return_value.current_action["type"] == "predial_transfer"
         call_args = mock_ari_client.send_command.call_args.kwargs
         assert call_args["resource"] == "channels"
+        assert call_args["allow_redirects"] is False
         assert call_args["params"]["endpoint"] == "Local/6000@from-support"
         assert call_args["params"]["callerId"] == '"WIRELESS CALLER" <13164619284>'
         assert call_args["params"]["timeout"] == 12

@@ -381,3 +381,25 @@ def test_conversation_preview_and_bundle_correlate_pbx_id_without_losing_history
         text = archive.read(name).decode()
         assert 'RCA_CALL_START' in text and 'RCA_CALL_END' in text
         assert 'unrelated' not in text
+
+
+@pytest.mark.parametrize('other', ['channel:custom:420', 'channel:custom:42.1', 'channel:custom:42-other', 'channel:custom:42_other', 'channel:custom:42:other', 'channel:custom:42β'])
+def test_support_filters_never_export_prefix_collision_or_another_owners_mentions(other):
+    call_id = 'channel:custom:42'
+    text = ('2026-09-13T12:00:00Z [INFO] selected [src.engine] call_id=' + call_id + '\n'
+            '2026-09-13T12:00:01Z [INFO] private-other [src.engine] call_id=' + other + '\n'
+            'unstructured private-other call_id=' + other + '\n'
+            '2026-09-13T12:00:02Z [INFO] private-mention ' + call_id + ' [src.engine] call_id=other-owner')
+    primary, events, _, _ = support_api._filter_call_lines(text, call_id)
+    secondary = support_api._filter_secondary_source(text, call_id)
+    assert len(events) == 1
+    for filtered in (primary, secondary):
+        assert 'selected' in filtered
+        assert 'private-other' not in filtered
+        assert 'private-mention' not in filtered
+
+
+def test_support_raw_fallback_keeps_exact_identifier_in_ari_resource_url():
+    text = 'request failed url=https://asterisk.invalid/ari/channels/channel:custom:42/variable'
+    assert support_api._line_references_identifier(text, 'channel:custom:42') is True
+    assert support_api._line_references_identifier(text.replace('42/','420/'), 'channel:custom:42') is False
