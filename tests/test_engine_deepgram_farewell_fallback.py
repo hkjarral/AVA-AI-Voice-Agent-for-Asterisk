@@ -200,6 +200,8 @@ async def test_engine_records_hangup_ready_as_agent_hangup():
         reason="hangup_ready:farewell_without_tool",
         call_outcome="agent_hangup",
         audio_already_drained=False,
+        audio_drain_confirmed=True,
+        expected_session=session,
     )
 
 

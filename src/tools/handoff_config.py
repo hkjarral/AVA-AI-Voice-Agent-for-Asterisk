@@ -21,6 +21,8 @@ def normalize_local_handoff_providers(raw: Any) -> set[str]:
 def validate_handoff_config(tools: dict) -> None:
     if not isinstance(tools, dict):
         return
+    from src.tools.telephony.completion import validate_completion_config
+    validate_completion_config(tools)
     transfer = tools.get("transfer") or {}
     if not isinstance(transfer, dict):
         return

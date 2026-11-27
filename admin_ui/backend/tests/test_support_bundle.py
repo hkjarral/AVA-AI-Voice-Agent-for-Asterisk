@@ -355,3 +355,51 @@ def test_agent_bundle_never_returns_operator_supplied_structure_labels(tmp_path,
         agents = json.loads(bundle.read("agents_redacted.json"))
         assert [agent["slug"] for agent in agents] == ["routing"]
         assert "CANARY-" not in json.dumps(agents)
+
+
+def test_conversation_preview_and_bundle_correlate_pbx_id_without_losing_history_identity(monkeypatch):
+    raw_id = 'channel:custom:42'
+    history_id = raw_id + ':conversation-uuid'
+    now = datetime.now(timezone.utc)
+    call = CallRecord(call_id=history_id, start_time=now, end_time=now + timedelta(seconds=20),
+        diagnostics_snapshot={'caller_channel_id': raw_id})
+    log_text = ('2026-09-13T12:00:00Z [INFO] RCA_CALL_START [src.engine] call_id=' + raw_id + '\n'
+                '2026-09-13T12:00:01Z [INFO] RCA_CALL_END [src.engine] call_id=' + raw_id + '\n'
+                '2026-09-13T12:00:02Z [INFO] unrelated [src.engine] call_id=other')
+    client = _call_bundle_client(monkeypatch, log_text)
+    monkeypatch.setattr(support_api, '_call_store', lambda: _CallStore(call))
+    preview = client.get('/api/support/call-preview', params={'call_id': history_id})
+    assert preview.status_code == 200
+    assert preview.json()['call']['call_id'] == history_id
+    assert preview.json()['analysis']['event_count'] == 2
+    assert preview.json()['log_evidence']['matching_events'] == 2
+    bundle = client.post('/api/support/call-bundle', json={'call_id': history_id,
+        'include_local_ai_server': True, 'include_admin_ui': True})
+    assert bundle.status_code == 200
+    archive = zipfile.ZipFile(io.BytesIO(bundle.content))
+    for name in ('logs/ai_engine.log', 'logs/local_ai_server.log', 'logs/admin_ui.log'):
+        text = archive.read(name).decode()
+        assert 'RCA_CALL_START' in text and 'RCA_CALL_END' in text
+        assert 'unrelated' not in text
+
+
+@pytest.mark.parametrize('other', ['channel:custom:420', 'channel:custom:42.1', 'channel:custom:42-other', 'channel:custom:42_other', 'channel:custom:42:other', 'channel:custom:42β'])
+def test_support_filters_never_export_prefix_collision_or_another_owners_mentions(other):
+    call_id = 'channel:custom:42'
+    text = ('2026-09-13T12:00:00Z [INFO] selected [src.engine] call_id=' + call_id + '\n'
+            '2026-09-13T12:00:01Z [INFO] private-other [src.engine] call_id=' + other + '\n'
+            'unstructured private-other call_id=' + other + '\n'
+            '2026-09-13T12:00:02Z [INFO] private-mention ' + call_id + ' [src.engine] call_id=other-owner')
+    primary, events, _, _ = support_api._filter_call_lines(text, call_id)
+    secondary = support_api._filter_secondary_source(text, call_id)
+    assert len(events) == 1
+    for filtered in (primary, secondary):
+        assert 'selected' in filtered
+        assert 'private-other' not in filtered
+        assert 'private-mention' not in filtered
+
+
+def test_support_raw_fallback_keeps_exact_identifier_in_ari_resource_url():
+    text = 'request failed url=https://asterisk.invalid/ari/channels/channel:custom:42/variable'
+    assert support_api._line_references_identifier(text, 'channel:custom:42') is True
+    assert support_api._line_references_identifier(text.replace('42/','420/'), 'channel:custom:42') is False

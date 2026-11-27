@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Conversation completion destinations for `hangup_call.next_step`, global/Agent Admin controls, opt-in survey guidance, and custom dialplan destinations for mid-call blind transfers (#904). Existing calls retain farewell-and-hangup defaults; uncertain redirects preserve caller ownership.
+
 ## [7.7.5] - 2026-11-25
 
 Prepared from verified main `408407d4`, covering nine merged PRs after v7.7.4:

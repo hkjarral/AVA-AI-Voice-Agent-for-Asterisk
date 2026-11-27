@@ -64,6 +64,7 @@ def _queue_pending_workflow(
         from src.core.vicidial_store import get_vicidial_store
 
         queued_payload = dict(payload)
+        queued_payload["history_call_id"] = getattr(session, "history_call_id", None) or session.call_id
         queued_payload["requested_status"] = str(
             getattr(session, "external_requested_disposition", None) or ""
         )

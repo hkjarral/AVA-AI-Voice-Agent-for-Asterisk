@@ -236,3 +236,8 @@ Both figures come from `call_records.context_name` in `call_history.db` joined o
 - [OPERATOR_MIGRATION.md](OPERATOR_MIGRATION.md) — one-time YAML→agents.db migration, recovery, and rollback boundaries.
 - [Configuration-Reference.md](Configuration-Reference.md) — legacy YAML schema and current global configuration.
 - [FreePBX-Integration-Guide.md](FreePBX-Integration-Guide.md) — dialplan setup and channel variable reference.
+
+
+## After conversation
+
+Under Agent Tools, **After conversation** inherits or narrows the global completion destinations and default. The shared transfer resource policy still applies. Optional surveys require caller acceptance and an explicit `hangup_call.next_step`; explicit `hangup` disconnects after the farewell. Agent changes apply to new conversations. See [Conversation completion](Conversation-Completion.md).

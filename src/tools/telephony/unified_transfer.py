@@ -1,15 +1,17 @@
 """
-Unified Transfer Tool - Transfer calls to extensions, queues, or ring groups.
+Unified Transfer Tool - Transfer calls to configured PBX destinations.
 
 This tool implements the canonical `blind_transfer` tool and replaces the legacy
 `transfer_call` and `transfer_to_queue` tools with a single unified interface.
 """
 
 from typing import Dict, Any, Optional, Tuple, List, Callable, Awaitable
+import asyncio
+import aiohttp
 import structlog
 
 from ..base import Tool, ToolDefinition, ToolParameter, ToolCategory
-from ..context import ToolExecutionContext
+from ..context import ToolExecutionContext, StaleToolContextError
 from .deferred_transfer import (
     build_deferred_transfer_action,
     build_deferred_transfer_result,
@@ -38,7 +40,7 @@ class UnifiedTransferTool(Tool):
             name="blind_transfer",
             description=(
                 "Blind transfer the caller to another configured destination. "
-                "Supports Transfer Destinations of type extension, queue, and ring group. "
+                "Supports configured extensions, queues, ring groups, and custom dialplan routes such as IVRs. "
                 "Use a configured destination key from Tools -> Transfer Destinations. "
                 "The system validates that the destination exists before transferring. "
                 "Prefer exact destination keys exposed in the runtime prompt/context instead of inventing names."
@@ -93,16 +95,35 @@ class UnifiedTransferTool(Tool):
         description: str,
         dialplan_context: str,
         destination_key: Optional[str] = None,
+        priority: int = 1,
     ) -> Dict[str, Any]:
+        session = await context.get_session()
+        lock = getattr(session, "_transfer_dispatch_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            session._transfer_dispatch_lock = lock
+        async with lock:
+            if await context.session_store.get_by_call_id(context.call_id) is not session:
+                return {"status": "failed", "message": "Call ownership changed."}
+            return await self._prepare_transfer_locked(
+                context=context, source_tool=source_tool, transfer_type=transfer_type,
+                target=target, description=description, dialplan_context=dialplan_context,
+                destination_key=destination_key, priority=priority)
+
+    async def _prepare_transfer_locked(self, *, context, source_tool, transfer_type,
+                                       target, description, dialplan_context,
+                                       destination_key, priority):
         if transfer_deferral_enabled(context):
             try:
                 session = await context.get_session()
                 pending = getattr(session, "pending_deferred_transfer", None)
                 if isinstance(pending, dict) and pending.get("kind") == "transfer":
+                    pending_payload = pending.get("payload") if isinstance(pending.get("payload"), dict) else {}
                     same_pending_transfer = (
                         str(pending.get("transfer_type") or "").strip() == str(transfer_type or "").strip()
                         and str(pending.get("target") or "").strip() == str(target or "").strip()
                         and str(pending.get("dialplan_context") or "").strip() == str(dialplan_context or "").strip()
+                        and pending_payload.get("priority", 1) == priority
                     )
                     if not same_pending_transfer:
                         logger.warning(
@@ -145,23 +166,71 @@ class UnifiedTransferTool(Tool):
             description=description,
             dialplan_context=dialplan_context,
             destination_key=destination_key,
+            payload={"priority": priority},
         )
 
         if transfer_deferral_enabled(context):
             if source_tool == "blind_transfer" and context.tool_response_id:
                 action["_tool_response_id"] = context.tool_response_id
-            await self._maybe_start_predial_transfer(context, action)
-            await store_pending_deferred_transfer(context, action)
-            return build_deferred_transfer_result(
-                action=action,
-                message=f"Transferring you to {description} now.",
-                extra={
-                    "destination": target,
-                    "type": transfer_type,
-                },
-            )
+            action["_preparing"] = True
+            preparation_owner = await context.get_session()
+            try:
+                try:
+                    await store_pending_deferred_transfer(context, action)
+                except RuntimeError:
+                    return {"status": "failed", "message": "Call no longer admits a transfer."}
+                await self._maybe_start_predial_transfer(context, action)
+                try:
+                    session = await context.get_session()
+                except StaleToolContextError:
+                    return {"status": "failed", "message": "Call ownership changed."}
+                if (not session or session.cleanup_in_progress or session.cleanup_completed
+                        or (session.pending_deferred_transfer or {}).get("id") != action["id"]):
+                    return {"status": "failed", "message": "Transfer was cancelled or call ownership changed."}
+                action["_preparing"] = False
+                await store_pending_deferred_transfer(context, action, session=session)
+                return build_deferred_transfer_result(
+                    action=action,
+                    message=f"Transferring you to {description} now.",
+                    extra={
+                        "destination": target,
+                        "type": transfer_type,
+                    },
+                )
+            except asyncio.CancelledError:
+                await self._retire_cancelled_preparation(context, preparation_owner, action)
+                raise
 
-        return await self.commit_deferred_action(action, context)
+        action["_immediate"] = True
+        owner = await context.get_session()
+        result = await self.commit_deferred_action(action, context)
+        if result.get("handoff_indeterminate"):
+            engine = getattr(context.ari_client, "engine", None)
+            observer = getattr(engine, "_observe_uncertain_dialplan_handoff", None)
+            if callable(observer):
+                engine._fire_and_forget_for_call(context.call_id, observer(owner),
+                    name=f"immediate-transfer-reconcile-{context.call_id}")
+        return result
+
+    async def _retire_cancelled_preparation(self, context, session, action):
+        """Release this reservation; keep a cleanup owner for any known predial leg."""
+        from src.core.session_store import SessionStore
+        if not isinstance(context.session_store, SessionStore):
+            return
+        active = session.current_action or {}
+        channel_id = (active.get("predial_channel_id")
+                      if active.get("deferred_action_id") == action["id"] else None)
+        engine = getattr(context.ari_client, "engine", None)
+        on_cancel = None
+        if channel_id:
+            if not (callable(getattr(engine, "register_predial_transfer_channel", None))
+                    and callable(getattr(engine, "_schedule_deferred_predial_forced_hangup_retry", None))):
+                return  # Retain the known leg until a cleanup owner is available.
+            def on_cancel():
+                engine.register_predial_transfer_channel(context.call_id, channel_id)
+                engine._schedule_deferred_predial_forced_hangup_retry(
+                    call_id=context.call_id, channel_id=channel_id)
+        await context.session_store.cancel_deferred_transfer(session, action["id"], on_cancel=on_cancel)
 
     def _deferred_strategy(self, context: ToolExecutionContext) -> str:
         transfer_config = context.get_config_value("tools.transfer") or {}
@@ -192,7 +261,7 @@ class UnifiedTransferTool(Tool):
         context: ToolExecutionContext,
         action: Dict[str, Any],
     ) -> None:
-        if self._deferred_strategy(context) != "predial_then_bridge":
+        if action.get("transfer_type") == "dialplan" or self._deferred_strategy(context) != "predial_then_bridge":
             return
 
         endpoint = self._predial_endpoint_for_action(action)
@@ -210,7 +279,10 @@ class UnifiedTransferTool(Tool):
         destination_key = str(action.get("destination_key") or action.get("target") or "").strip()
         try:
             session = await context.get_session()
-            session.current_action = {
+            if (not session or session.cleanup_in_progress or session.cleanup_completed
+                    or (session.pending_deferred_transfer or {}).get("id") != action.get("id")):
+                return
+            marker = {
                 "type": "predial_transfer",
                 "deferred_action_id": action.get("id"),
                 "destination_key": destination_key,
@@ -223,14 +295,22 @@ class UnifiedTransferTool(Tool):
                 "ready_to_bridge": False,
                 "bridged": False,
             }
-            await context.session_store.upsert_call(session)
+            from src.core.session_store import SessionStore
+            if isinstance(context.session_store, SessionStore):
+                if not await context.session_store.update_deferred_predial(session, action["id"], marker, begin=True):
+                    return
+            else:
+                session.current_action = marker
+                await context.session_store.upsert_call(session)
         except Exception:
             logger.debug("Failed to persist predial transfer action state", call_id=context.call_id, exc_info=True)
+            return
 
         try:
             result = await context.ari_client.send_command(
                 method="POST",
                 resource="channels",
+                allow_redirects=False,
                 data={
                     "variables": {
                         "AGENT_ACTION": "predial_transfer",
@@ -242,20 +322,59 @@ class UnifiedTransferTool(Tool):
                 params={
                     "endpoint": endpoint,
                     "app": app,
-                    "appArgs": f"predial-transfer,{context.call_id},{destination_key}",
+                    "appArgs": f"predial-transfer,{context.call_id},{destination_key},{action['id']}",
                     "callerId": self._caller_id_for_predial(context),
                     "timeout": dial_timeout_sec,
                 },
             )
+        except (aiohttp.ClientConnectorError, aiohttp.InvalidURL):
+            from src.core.session_store import SessionStore
+            if isinstance(context.session_store, SessionStore):
+                await context.session_store.retire_failed_predial(session, action.get("id"))
+            else:
+                session.current_action = None
+                await context.session_store.upsert_call(session)
+            logger.warning("Predial originate could not be dispatched", call_id=context.call_id, exc_info=True)
+            return
         except Exception:
             logger.warning("Predial transfer originate failed", call_id=context.call_id, endpoint=endpoint, exc_info=True)
             return
 
         if not isinstance(result, dict) or not result.get("id"):
             logger.warning("Predial transfer originate returned no channel", call_id=context.call_id, endpoint=endpoint, response=result)
+            if not (isinstance(result, dict) and (result.get("request_started") is False
+                    or isinstance(result.get("status"), int) and 400 <= result["status"] < 500)):
+                return  # No channel ID is not proof that a possibly submitted POST was rejected.
+            from src.core.session_store import SessionStore
+            if isinstance(context.session_store, SessionStore):
+                await context.session_store.retire_failed_predial(session, action.get("id"))
+            elif isinstance(session.current_action, dict) and session.current_action.get("deferred_action_id") == action.get("id"):
+                session.current_action = None
+                await context.session_store.upsert_call(session)
             return
 
         predial_channel_id = str(result["id"])
+        from src.core.session_store import SessionStore
+        if isinstance(context.session_store, SessionStore):
+            published = await context.session_store.update_deferred_predial(
+                session, action["id"], {"predial_channel_id": predial_channel_id})
+        else:
+            latest = await context.session_store.get_by_call_id(context.call_id)
+            published = (latest is session and not session.cleanup_in_progress and not session.cleanup_completed
+                         and (session.pending_deferred_transfer or {}).get("id") == action.get("id")
+                         and (session.current_action or {}).get("deferred_action_id") == action.get("id"))
+        if not published:
+            engine = getattr(context.ari_client, "engine", None)
+            if engine and hasattr(engine, "_unregister_predial_transfer_channel"):
+                engine._unregister_predial_transfer_channel(predial_channel_id)
+            retained = engine and callable(getattr(engine, "_schedule_deferred_predial_forced_hangup_retry", None))
+            if retained:
+                engine.register_predial_transfer_channel(context.call_id, predial_channel_id)
+                engine._schedule_deferred_predial_forced_hangup_retry(call_id=context.call_id, channel_id=predial_channel_id)
+            accepted = await context.ari_client.hangup_channel(predial_channel_id)
+            if retained and accepted is True:
+                engine._release_deferred_predial_hangup_ownership(predial_channel_id)
+            return
         action["payload"] = {
             **(action.get("payload") if isinstance(action.get("payload"), dict) else {}),
             "predial": {
@@ -266,8 +385,7 @@ class UnifiedTransferTool(Tool):
             },
         }
         try:
-            session = await context.get_session()
-            if isinstance(session.current_action, dict) and session.current_action.get("type") == "predial_transfer":
+            if not isinstance(context.session_store, SessionStore):
                 session.current_action["predial_channel_id"] = predial_channel_id
                 await context.session_store.upsert_call(session)
             engine = getattr(context.ari_client, "engine", None)
@@ -523,6 +641,14 @@ class UnifiedTransferTool(Tool):
                 dialplan_context=dialplan_context,
                 destination_key=str(destination),
             )
+        elif transfer_type == 'dialplan':
+            if getattr(await context.get_session(), "external_platform", None) or getattr(await context.get_session(), "is_outbound", False):
+                return {"status": "failed", "message": "Dialplan handoff is unavailable for externally owned calls."}
+            return await self._defer_or_commit_transfer(
+                context=context, source_tool="blind_transfer", transfer_type="dialplan",
+                target=target, description=description, dialplan_context=dialplan_context,
+                destination_key=str(destination), priority=dest_config.get("priority", 1),
+            )
         elif transfer_type == 'ringgroup':
             return await self._defer_or_commit_transfer(
                 context=context,
@@ -545,6 +671,8 @@ class UnifiedTransferTool(Tool):
         action: Dict[str, Any],
         context: ToolExecutionContext,
     ) -> Dict[str, Any]:
+        if action.get("_preparing"):
+            return {"status": "pending", "message": "Transfer preparation is in progress."}
         transfer_type = str(action.get("transfer_type") or "").strip()
         target = str(action.get("target") or "").strip()
         description = str(action.get("description") or target or "").strip()
@@ -564,12 +692,15 @@ class UnifiedTransferTool(Tool):
                     result=result,
                 )
 
-        if transfer_type == "extension":
-            return await self._transfer_to_extension(context, target, description, dialplan_context=dialplan_context)
-        if transfer_type == "queue":
-            return await self._transfer_to_queue(context, target, description, dialplan_context=dialplan_context)
-        if transfer_type == "ringgroup":
-            return await self._transfer_to_ringgroup(context, target, description, dialplan_context=dialplan_context)
+        if transfer_type in {"dialplan", "extension", "queue", "ringgroup"}:
+            return await self._continue_to_dialplan(
+                context=context, target=target, description=description, transfer_type=transfer_type,
+                dialplan_context=dialplan_context, priority=payload.get("priority", 1),
+                transfer_state={"dialplan": "blind_transferred", "extension": "transferring",
+                                "queue": "in_queue", "ringgroup": "in_ringgroup"}[transfer_type],
+                require_valid_target=transfer_type == "dialplan",
+                expected_deferred_id=None if action.get("_immediate") else action.get("id"),
+            )
 
         return {
             "status": "failed",
@@ -691,161 +822,6 @@ class UnifiedTransferTool(Tool):
             transfer_state="in_ringgroup",
         )
 
-    async def _continue_to_dialplan(
-        self,
-        *,
-        context: ToolExecutionContext,
-        target: str,
-        description: str,
-        transfer_type: str,
-        dialplan_context: str,
-        transfer_state: str,
-        claim_ownership: Optional[Callable[[dict], Awaitable[bool]]] = None,
-        release_ownership: Optional[Callable[[dict], Awaitable[bool]]] = None,
-    ) -> Dict[str, Any]:
-        """Validate and hand caller ownership to a concrete dialplan target."""
-        priority = 1
-        target_exists: Optional[bool] = None
-        validator = getattr(context.ari_client, "dialplan_target_exists", None)
-        if callable(validator):
-            try:
-                target_exists = await validator(
-                    context.caller_channel_id,
-                    context=dialplan_context,
-                    extension=target,
-                    priority=priority,
-                )
-            except Exception:
-                logger.warning(
-                    "Dialplan target validation unavailable",
-                    call_id=context.call_id,
-                    transfer_type=transfer_type,
-                    target=target,
-                    context=dialplan_context,
-                    exc_info=True,
-                )
-
-        if target_exists is False:
-            logger.error(
-                "Transfer dialplan target does not exist",
-                call_id=context.call_id,
-                transfer_type=transfer_type,
-                target=target,
-                context=dialplan_context,
-                priority=priority,
-            )
-            return {
-                "status": "failed",
-                "message": f"Transfer destination {description} is not available.",
-                "destination": target,
-                "type": transfer_type,
-            }
-
-        if target_exists is not True:
-            logger.warning(
-                "Dialplan target could not be pre-validated; attempting guarded transfer",
-                call_id=context.call_id,
-                transfer_type=transfer_type,
-                target=target,
-                context=dialplan_context,
-                priority=priority,
-            )
-
-        session = await context.get_session()
-        previous_transfer_state = {
-            "transfer_active": bool(getattr(session, "transfer_active", False)),
-            "transfer_state": getattr(session, "transfer_state", None),
-            "transfer_target": getattr(session, "transfer_target", None),
-        }
-
-        # StasisEnd can race the HTTP response. Claim transfer ownership before
-        # continue so normal cleanup cannot hang up a successfully handed-off leg.
-        changes = dict(transfer_active=True, transfer_state=transfer_state, transfer_target=description)
-        if claim_ownership is not None:
-            if not await claim_ownership(changes):
-                return {"status": "failed", "ownership_lost": True}
-        else:
-            await context.update_session(**changes)
-
-        try:
-            handed_off = await context.ari_client.continue_in_dialplan(
-                context.caller_channel_id,
-                context=dialplan_context,
-                extension=target,
-                priority=priority,
-            )
-        except Exception:
-            handed_off = None
-            logger.warning(
-                "Transfer dialplan handoff raised",
-                call_id=context.call_id,
-                transfer_type=transfer_type,
-                target=target,
-                context=dialplan_context,
-                exc_info=True,
-            )
-
-        handoff_indeterminate = handed_off is not True and handed_off is not False
-
-        if handed_off is True:
-            logger.info(
-                "Dialplan transfer initiated",
-                call_id=context.call_id,
-                transfer_type=transfer_type,
-                target=target,
-                context=dialplan_context,
-            )
-            return {
-                "status": "success",
-                "message": f"Transferring you to {description} now.",
-                "destination": target,
-                "type": transfer_type,
-            }
-
-        # Only an explicit rejection proves the channel remained under AAVA
-        # ownership. An indeterminate response may have followed an accepted
-        # handoff, so retain the transfer guard and avoid destructive cleanup.
-        restore_ownership = handed_off is False
-        if restore_ownership:
-            try:
-                if release_ownership is not None:
-                    if not await release_ownership(previous_transfer_state):
-                        return {"status": "failed", "ownership_lost": True}
-                else:
-                    await context.update_session(**previous_transfer_state)
-            except Exception:
-                logger.error(
-                    "Failed to restore transfer ownership after unconfirmed handoff",
-                    call_id=context.call_id,
-                    transfer_type=transfer_type,
-                    target=target,
-                    context=dialplan_context,
-                    exc_info=True,
-                )
-        else:
-            logger.warning(
-                "Transfer handoff outcome indeterminate; retaining transfer ownership",
-                call_id=context.call_id,
-                transfer_type=transfer_type,
-                target=target,
-                context=dialplan_context,
-            )
-
-        logger.error(
-            "Transfer dialplan handoff was not confirmed",
-            call_id=context.call_id,
-            transfer_type=transfer_type,
-            target=target,
-            context=dialplan_context,
-            handoff_indeterminate=handoff_indeterminate,
-            ownership_restored=restore_ownership,
-        )
-        result = {
-            "status": "failed",
-            "message": f"Unable to transfer to {description}.",
-            "destination": target,
-            "type": transfer_type,
-        }
-        if handoff_indeterminate:
-            result["handoff_indeterminate"] = True
-        return result
+    async def _continue_to_dialplan(self, **kwargs) -> Dict[str, Any]:
+        from .dialplan_handoff import continue_to_dialplan
+        return await continue_to_dialplan(**kwargs)

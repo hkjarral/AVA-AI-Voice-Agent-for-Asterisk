@@ -145,7 +145,7 @@ async def test_reconciliation_observes_target_without_reissuing_transfer():
     }
     await engine._reconcile_no_input_handoff(session)
     assert session.no_input_state["action_result"] == "confirmed_by_lookup"
-    engine._cleanup_call.assert_awaited_once_with(session.call_id)
+    engine._cleanup_call.assert_awaited_once_with(session.call_id, expected_session=session)
     engine.ari_client.continue_in_dialplan.assert_awaited_once()
     engine._terminate_call_after_audio.assert_not_awaited()
 

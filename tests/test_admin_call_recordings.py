@@ -347,3 +347,19 @@ def test_file_changes_during_copy_fail_closed(recording_api, monkeypatch):
         return value
     monkeypatch.setattr(calls.os, 'fstat', racing_stat)
     assert client.get('/api/calls/record-1/recording/download').status_code == 409
+
+
+@pytest.mark.parametrize('tail', ['recording', 'recording/audio', 'recording.wav', 'recording/download'])
+def test_conversation_history_rows_resolve_shared_pbx_recording(recording_api, tail):
+    client, root, store = recording_api
+    raw_id = store.get.return_value.call_id
+    audio = write_pcm(root / ('call-' + raw_id + '.wav'))
+    for conversation in ['first', 'second']:
+        store.get.return_value.call_id = raw_id + ':' + conversation
+        store.get.return_value.diagnostics_snapshot = {'caller_channel_id': raw_id}
+        response = client.get('/api/calls/record-1/' + tail)
+        assert response.status_code == 200
+        if tail == 'recording':
+            assert response.json()['has_recording'] is True
+        else:
+            assert response.content == audio

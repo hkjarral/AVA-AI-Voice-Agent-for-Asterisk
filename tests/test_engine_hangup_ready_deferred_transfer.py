@@ -81,6 +81,8 @@ async def test_hangup_ready_hangs_up_when_no_transfer_is_pending():
         reason="hangup_ready:farewell_without_tool",
         call_outcome="agent_hangup",
         audio_already_drained=False,
+        audio_drain_confirmed=True,
+        expected_session=session,
     )
 
 

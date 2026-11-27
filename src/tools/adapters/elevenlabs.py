@@ -152,6 +152,7 @@ class ElevenLabsToolAdapter:
             if isinstance(context, dict):
                 exec_context = ToolExecutionContext(
                     call_id=str(context.get("call_id") or ""),
+                    expected_session=context.get("expected_session"),
                     caller_channel_id=context.get("caller_channel_id"),
                     bridge_id=context.get("bridge_id"),
                     caller_number=context.get("caller_number"),

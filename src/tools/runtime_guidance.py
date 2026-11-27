@@ -178,7 +178,7 @@ def _build_attended_destination_lines(config: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: Iterable[str]) -> str:
+def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: Iterable[str], *, completion_eligible: bool = True) -> str:
     """
     Build provider-agnostic runtime prompt guidance for config-backed in-call tools.
 
@@ -305,6 +305,19 @@ def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: I
                     ]
                 )
             )
+
+    if "hangup_call" in allowed:
+        from src.tools.telephony.completion import effective_completion
+        completion = effective_completion(config) if completion_eligible else {"default_next_step": "hangup", "destination_keys": []}
+        routes = ((config.get("tools") or {}).get("transfer") or {}).get("destinations") or {}
+        lines = ["Conversation completion:",
+            f"- Call hangup_call once with farewell_message. Omitted next_step uses `{completion['default_next_step']}`.",
+            "- Explicit next_step=hangup disconnects after farewell. Use it if the caller declines an offer or asks to disconnect."]
+        for key in completion["destination_keys"]:
+            route = routes[key]
+            lines.append(f"- next_step `{key}`: {route.get('description') or key}. " +
+                         ("Offer first; select only after explicit caller acceptance." if route.get("requires_opt_in") else "Approved destination."))
+        sections.append("\n".join(lines))
 
     if "blind_transfer" in allowed:
         transfer_lines = _build_transfer_destination_lines(config)

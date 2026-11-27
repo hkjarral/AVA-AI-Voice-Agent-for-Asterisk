@@ -5,6 +5,8 @@ export interface TransferDestination {
     description: string;
     attendedAllowed?: boolean;
     liveAgent?: boolean;
+    completionAllowed?: boolean;
+    requiresOptIn?: boolean;
 }
 
 export function inactivityFallbackDestinations(
@@ -30,5 +32,6 @@ export function transferDestinationsFromConfig(value: unknown): TransferDestinat
             description: String(destination.description || destination.name || ''),
             attendedAllowed: destination.attended_allowed === true,
             liveAgent: destination.live_agent === true,
+            ...(destination.requires_opt_in === undefined ? {} : { requiresOptIn: destination.requires_opt_in === true }),
         }));
 }

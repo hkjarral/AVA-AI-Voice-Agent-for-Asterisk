@@ -1,3 +1,4 @@
+import CompletionSettings from './CompletionSettings';
 import { ToolSection } from './toolSections';
 import TransferHandoffFields from './TransferHandoffFields';
 import EndpointDiscoveryModal from './EndpointDiscoveryModal';
@@ -1481,6 +1482,10 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 
     const handleSaveDestination = () => {
         if (!destinationForm.key) return;
+        if (destinationForm.key === 'hangup') { toast.error('The destination key hangup is reserved.'); return; }
+        if (destinationForm.type === 'dialplan' && (!destinationForm.target?.trim() || !destinationForm.dialplan_context?.trim() || !Number.isInteger(destinationForm.priority ?? 1) || (destinationForm.priority ?? 1) < 1)) {
+            toast.error('Enter a dialplan context, extension, and positive integer priority.'); return;
+        }
         if (destinationForm.handoff?.mode === 'custom' && !destinationForm.handoff.message?.trim()) {
             toast.error('Enter a custom transfer announcement before saving.');
             return;
@@ -1722,7 +1727,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 		                                    options={[
 			                                        { value: '', label: 'Not set (auto: destinations.live_agent or key live_agent)' },
 			                                        ...Object.entries(config.transfer?.destinations || {})
-			                                            .filter(([, dest]) => dest && typeof dest === 'object')
+			                                            .filter(([, dest]) => dest && typeof dest === 'object' && (!('type' in dest) || dest.type !== 'dialplan'))
 			                                            .map(([key, dest]: [string, any]) => ({
 	                                                        key,
 	                                                        type: dest?.type || 'extension',
@@ -2169,6 +2174,9 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                             <p className="text-xs text-muted-foreground">
                                 Farewell audio drains before hangup. The legacy farewell_hangup_delay_sec setting is deprecated and ignored.
                             </p>
+                            <CompletionSettings value={config.hangup_call?.completion}
+                                destinations={config.transfer?.destinations || {}} disabled={config.transfer?.enabled === false}
+                                onChange={value => updateNestedConfig('hangup_call', 'completion', value)} />
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <FormInput
                                     label="Default Farewell Message"
@@ -4098,9 +4106,10 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                             { value: 'extension', label: 'Extension' },
                             { value: 'queue', label: 'Queue' },
                             { value: 'ringgroup', label: 'Ring Group' },
+                            { value: 'dialplan', label: 'Dialplan (IVR, survey, announcement)' },
                         ]}
                         value={destinationForm.type || 'extension'}
-                        onChange={(e) => setDestinationForm({ ...destinationForm, type: e.target.value })}
+                        onChange={(e) => setDestinationForm({ ...destinationForm, type: e.target.value, ...(e.target.value === 'dialplan' ? { attended_allowed: false, live_agent: false, priority: 1 } : {}) })}
                     />
                     {destinationForm.type === 'extension' && (
                         <FormSwitch
@@ -4119,7 +4128,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 		                        }
 			                        checked={showLiveAgentRoutingAdvanced ? (destinationForm.live_agent ?? false) : false}
 			                        onChange={(e) => setDestinationForm({ ...destinationForm, live_agent: e.target.checked })}
-		                        disabled={!showLiveAgentRoutingAdvanced}
+		                        disabled={!showLiveAgentRoutingAdvanced || destinationForm.type === 'dialplan'}
 		                    />
 	                    <FormInput
 	                        label="Target Number"
@@ -4140,6 +4149,12 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                             }
                             tooltip="Optional per-destination Asterisk dialplan context. Leave blank to use the transfer tool default for this destination type."
                         />
+                    {destinationForm.type === 'dialplan' && <FormInput label="Dialplan priority" type="number" min={1} step={1}
+                        value={destinationForm.priority ?? 1} onChange={event => setDestinationForm({ ...destinationForm, priority: Number(event.target.value) })}
+                        tooltip="Positive integer priority at which Asterisk resumes in the configured context and extension." />}
+                    <FormSwitch label="Require caller opt-in" checked={destinationForm.requires_opt_in === true}
+                        onChange={event => setDestinationForm({ ...destinationForm, requires_opt_in: event.target.checked })}
+                        description="Use for optional surveys. The agent must obtain acceptance first; this destination cannot be an automatic completion default." />
 	                    <FormInput
 	                        label="Description"
 	                        value={destinationForm.description || ''}

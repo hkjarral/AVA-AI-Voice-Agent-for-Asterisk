@@ -64,7 +64,7 @@ class LiveAgentTransferTool(Tool):
             cfg = destinations.get(configured_key)
             # An explicit override is operator intent; allow it to point at any
             # configured transfer destination (extension, queue, or ring group).
-            if isinstance(cfg, dict):
+            if isinstance(cfg, dict) and cfg.get("type") != "dialplan":
                 return configured_key, "config.live_agent_destination_key"
             return None, "configured_key_missing"
 
@@ -88,14 +88,14 @@ class LiveAgentTransferTool(Tool):
 
         live_agent_keys: List[str] = []
         for key, cfg in destinations.items():
-            if isinstance(cfg, dict) and bool(cfg.get("live_agent")):
+            if isinstance(cfg, dict) and cfg.get("type") != "dialplan" and bool(cfg.get("live_agent")):
                 live_agent_keys.append(str(key))
         if len(live_agent_keys) == 1:
             return live_agent_keys[0], "destinations.<key>.live_agent"
         if len(live_agent_keys) > 1:
             return None, "destinations.live_agent_ambiguous"
 
-        if "live_agent" in destinations:
+        if isinstance(destinations.get("live_agent"), dict) and destinations["live_agent"].get("type") != "dialplan":
             return "live_agent", "default.live_agent_key"
 
         return None, "unconfigured"

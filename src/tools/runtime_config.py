@@ -135,6 +135,7 @@ def normalize_agent_tool_configs(value: Any) -> Dict[str, Any]:
         MICROSOFT_CALENDAR_SCOPE,
         CALENDLY_SCOPE,
         VOICEMAIL_SCOPE,
+        "hangup_call",
     }
     unknown_scopes = sorted(set(value) - supported_scopes)
     if unknown_scopes:
@@ -143,6 +144,12 @@ def normalize_agent_tool_configs(value: Any) -> Dict[str, Any]:
         )
 
     result: Dict[str, Any] = {}
+    if "hangup_call" in value:
+        from src.tools.telephony.completion import normalize_completion
+        try:
+            result["hangup_call"] = normalize_completion(value["hangup_call"], agent=True)
+        except ValueError as exc:
+            raise ToolConfigPolicyError(str(exc)) from exc
     raw_transfer = value.get(TRANSFER_SCOPE)
     if raw_transfer is not None:
         result[TRANSFER_SCOPE] = _normalize_multi_resource_scope(
@@ -198,7 +205,7 @@ def dump_agent_tool_configs(value: Any) -> Optional[str]:
     stored = {
         scope: config
         for scope, config in normalized.items()
-        if config.get(inherited_policy_fields[scope]) != "inherit"
+        if (scope == "hangup_call" and config) or (scope != "hangup_call" and config.get(inherited_policy_fields[scope]) != "inherit")
     }
     if not stored:
         return None
@@ -438,6 +445,12 @@ def resolve_agent_tool_config(
         configured_live_key = str(transfer.get("live_agent_destination_key") or "").strip()
         if configured_live_key and configured_live_key not in effective:
             transfer.pop("live_agent_destination_key", None)
+
+    from src.tools.telephony.completion import effective_completion
+    hangup = tools.get("hangup_call")
+    if not isinstance(hangup, dict):
+        hangup = tools["hangup_call"] = {}
+    hangup["completion"] = effective_completion(config, policies.get("hangup_call"))
 
     resource_results = {
         GOOGLE_CALENDAR_SCOPE: _apply_multi_resource_policy(

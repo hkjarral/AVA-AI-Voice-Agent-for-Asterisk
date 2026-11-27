@@ -1634,3 +1634,68 @@ async def test_call_truncation_fallback_does_not_swallow_other_failures(error):
     with pytest.raises(error):
         await Engine._generate_pipeline_response(adapter, "call", "hello", {}, {})
     adapter.generate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('followup', [False, True])
+@pytest.mark.parametrize('drained', [False, True])
+async def test_pipeline_terminal_tool_routes_captured_survey_after_farewell(monkeypatch, tmp_path, followup, drained):
+    from tests.test_conversation_completion import config as completion_config
+    from src.core.models import CallSession
+    from src.tools.telephony.hangup import HangupCallTool
+    monkeypatch.setenv('HANDOFF_JOURNAL_PATH', str(tmp_path / 'actions.db'))
+    class SurveyLLM(LLMComponent):
+        def __init__(self):
+            self.calls = 0
+        async def generate(self, call_id, transcript, context, options):
+            self.calls += 1
+            name = 'transcript_tool' if followup and self.calls == 1 else 'hangup_call'
+            return LLMResponse(text='', tool_calls=[{'id': f'tool-{self.calls}', 'name': name,
+                'parameters': {} if name == 'transcript_tool' else {'next_step': 'survey', 'farewell_message': 'Please stay for the survey.'}}])
+    cfg = completion_config()
+    engine = Engine(AppConfig(default_provider='local', providers={'local': {'enabled': True}},
+        asterisk={'host': '127.0.0.1', 'username': 'u', 'password': 'p'},
+        llm={'initial_greeting': '', 'prompt': 'Help'}, tools=cfg['tools'],
+        pipelines={'survey': {}}, active_pipeline='survey', audio_transport='audiosocket', downstream_mode='file'))
+    engine.pipeline_orchestrator._started = True
+    stt = _ResultStreamingStubSTT()
+    resolution = _StubResolution(stt_adapter=stt, stt_options={'streaming': True, 'chunk_ms': 80}, llm_adapter=SurveyLLM())
+    monkeypatch.setattr(engine.pipeline_orchestrator, 'get_pipeline', lambda *args, **kw: resolution)
+    monkeypatch.setattr(engine.transport_orchestrator, 'get_context_config', lambda *args, **kw: SimpleNamespace(
+        prompt=None, greeting=None, tools=['hangup_call', 'transcript_tool'], in_call_http_tools={}, disable_global_in_call_tools=[]))
+    engine.ari_client.set_channel_var = AsyncMock(return_value=True)
+    engine.ari_client.hangup_channel = AsyncMock(return_value=True)
+    engine.ari_client.dialplan_target_exists = AsyncMock(return_value=True)
+    async def play_audio(*args, playback_id=None, **kwargs):
+        if drained:
+            await engine._on_playback_finished({'playback': {'id': playback_id, 'state': 'done'}})
+        return playback_id
+    engine.playback_manager.play_audio = AsyncMock(side_effect=play_audio)
+    engine.playback_manager.on_playback_finished = AsyncMock()
+    engine.playback_manager.wait_for_playback_end = AsyncMock(return_value=True)
+    dispatched = asyncio.Event()
+    async def redirect(*args, **kwargs):
+        assert engine.playback_manager.play_audio.await_count == 1
+        dispatched.set()
+        return True
+    engine.ari_client.continue_in_dialplan = AsyncMock(side_effect=redirect)
+    session = CallSession(call_id=f'pipeline-survey-{followup}-{drained}', caller_channel_id='caller')
+    session.pipeline_name = 'survey'
+    session.context_name = 'survey'
+    session.allowed_tools = ['hangup_call', 'transcript_tool']
+    session.tool_runtime_config = cfg
+    registry = ToolRegistry.isolated()
+    registry.register_instance(_TranscriptTool())
+    registry.register_instance(HangupCallTool())
+    session.tool_runtime_registry = registry
+    await engine.session_store.upsert_call(session)
+    try:
+        await engine._ensure_pipeline_runner(session, forced=True)
+        await asyncio.wait_for(stt.started.wait(), timeout=2)
+        await stt.results.put('Yes, please connect me to the survey.')
+        await asyncio.wait_for(dispatched.wait(), timeout=5)
+        engine.ari_client.hangup_channel.assert_not_awaited()
+        assert session.completion_action['next_step'] == 'survey'
+        assert session.completion_action['audio_drained'] is drained
+    finally:
+        await engine._cleanup_call(session.call_id)

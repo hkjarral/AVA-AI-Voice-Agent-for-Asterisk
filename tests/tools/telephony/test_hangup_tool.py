@@ -48,7 +48,9 @@ class TestHangupCallTool:
         assert definition.max_execution_time == 5
         
         # Check parameters
-        assert len(definition.parameters) == 1
+        assert len(definition.parameters) == 2
+        assert definition.parameters[1].name == "next_step"
+        assert definition.parameters[1].enum == ["hangup"]
         
         farewell_param = definition.parameters[0]
         assert farewell_param.name == "farewell_message"

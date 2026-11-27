@@ -460,6 +460,7 @@ async def record_in_call_tool_result(
     duration_ms: float = 0.0,
     canonical_name: Optional[str] = None,
     redaction_mode: Optional[str] = None,
+    expected_session: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """Append one terminal result to ``CallSession.tool_calls`` best-effort.
 
@@ -467,6 +468,8 @@ async def record_in_call_tool_result(
     before provider delivery, so a failed provider response and retry retain
     the original execution fact under the upstream ``tool_call_id``.
     """
+    if isinstance(result, dict) and result.get("error_code") == "stale_conversation":
+        return None  # A retired request must not appear in a returning caller's history.
     record: Optional[Dict[str, Any]] = None
     try:
         record = build_in_call_tool_record(
@@ -511,12 +514,14 @@ async def record_in_call_tool_result(
             "append_tool_call_and_bind_deferred_origin_if_active",
             None,
         )
+        owner_kwargs = {"expected_session": expected_session} if expected_session is not None else {}
         if callable(atomic_append_and_bind):
             if not await atomic_append_and_bind(
                 call_id,
                 record,
                 deferred_action_id=deferred_action_id,
                 deferred_origin=deferred_origin if deferred_action_id else None,
+                **owner_kwargs,
             ):
                 logger.debug(
                     "Tool result history skipped; session no longer active",
@@ -529,7 +534,7 @@ async def record_in_call_tool_result(
 
         atomic_append = getattr(session_store, "append_tool_call_if_active", None)
         if callable(atomic_append):
-            if not await atomic_append(call_id, record):
+            if not await atomic_append(call_id, record, **owner_kwargs):
                 logger.debug(
                     "Tool result history skipped; session no longer active",
                     call_id=call_id,
@@ -543,7 +548,7 @@ async def record_in_call_tool_result(
         # They still never receive the retained CallSession fallback that
         # previously resurrected completed production sessions.
         current = await session_store.get_by_call_id(call_id)
-        if current is None:
+        if current is None or (expected_session is not None and current is not expected_session):
             logger.debug(
                 "Tool result history skipped; session not found",
                 call_id=call_id,

@@ -353,6 +353,26 @@ from src.core.credential_fields import mask_business_data
 def _record_to_response(record, agent_names: Optional[Dict[str, str]] = None) -> CallRecordResponse:
     """Convert a CallRecord to a response model."""
     agent_slug, agent_name = _resolve_agent(record, agent_names)
+    diagnostics = dict(getattr(record, "diagnostics_snapshot", {}) or {})
+    completion = diagnostics.get("conversation_completion") or {}
+    if isinstance(completion, dict) and completion.get("id"):
+        try:
+            from src.core.handoff_journal import HandoffJournal
+            current = HandoffJournal().get(completion["id"])
+            if current and current.get("conversation_id") == diagnostics.get("conversation_id"):
+                diagnostics["conversation_completion"] = current
+        except Exception:
+            pass  # Historical evidence remains available if the journal was archived.
+    completion = diagnostics.get("conversation_completion")
+    if isinstance(completion, dict):
+        completion = dict(completion)
+        from src.tools.telephony.completion import executable_route, valid_key
+        eligible_request = (completion.get("result") == "ineligible"
+                            and valid_key(completion.get("requested_next_step"))
+                            and executable_route(completion.get("route")))
+        if not eligible_request and (completion.get("requested_next_step") not in ("hangup", completion.get("next_step")) or completion.get("result") == "unavailable"):
+            completion["requested_next_step"] = "<invalid>"
+        diagnostics["conversation_completion"] = completion
     return CallRecordResponse(
         id=record.id,
         call_id=record.call_id,
@@ -395,7 +415,7 @@ def _record_to_response(record, agent_names: Optional[Dict[str, str]] = None) ->
         caller_audio_format=record.caller_audio_format,
         codec_alignment_ok=record.codec_alignment_ok,
         barge_in_count=record.barge_in_count,
-        diagnostics_snapshot=getattr(record, "diagnostics_snapshot", {}) or {},
+        diagnostics_snapshot=diagnostics,
         created_at=record.created_at.isoformat() if record.created_at else None,
     )
 
@@ -685,7 +705,7 @@ async def get_call(record_id: str):
     if not record:
         raise HTTPException(status_code=404, detail="Call record not found")
     
-    return _record_to_response(record, _agent_name_map())
+    return await asyncio.to_thread(_record_to_response, record, _agent_name_map())
 
 
 @router.get("/calls/{record_id}/transcript")
@@ -926,7 +946,8 @@ async def get_call_recording_info(record_id: str):
     record = await store.get(record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Call record not found")
-    return await run_in_threadpool(_recording_info, record.call_id, record.start_time)
+    from api.logs import _call_log_channel_id
+    return await run_in_threadpool(_recording_info, _call_log_channel_id(record), record.start_time)
 
 
 class _RecordingFileResponse(FileResponse):
@@ -987,7 +1008,8 @@ async def _stream_call_recording(record_id: str, download: bool = False):
     record = await store.get(record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Call record not found")
-    return await run_in_threadpool(_prepare_recording, record.call_id, record.start_time, download)
+    from api.logs import _call_log_channel_id
+    return await run_in_threadpool(_prepare_recording, _call_log_channel_id(record), record.start_time, download)
 
 
 @router.get("/calls/{record_id}/recording/audio")
@@ -1124,10 +1146,13 @@ async def export_calls_json(
     
     # Convert to JSON-serializable format
     agent_names = _agent_name_map()
+    converted = await asyncio.to_thread(
+        lambda: [_record_to_response(r, agent_names).model_dump() for r in records]
+    )
     data = {
         "exported_at": datetime.now().isoformat(),
         "total_records": len(records),
-        "records": [_record_to_response(r, agent_names).model_dump() for r in records]
+        "records": converted
     }
     
     json_content = json.dumps(data, indent=2)

@@ -5,6 +5,7 @@ This module defines the typed data structures that replace the dict soup
 in the original engine.py implementation.
 """
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Optional, Set, Dict, Any, List, TYPE_CHECKING
 import time
@@ -173,6 +174,11 @@ class CallSession:
     last_provider_audio_ts: float = 0.0
     
     # Cleanup and lifecycle
+    conversation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    history_call_id: Optional[str] = None
+    completion_action: Dict[str, Any] = field(default_factory=dict)
+    completion_reserved: Optional[bool] = None  # False releases failed intent, retaining audit evidence.
+    handoff_action_id: Optional[str] = None
     cleanup_after_tts: bool = False
     cleanup_in_progress: bool = False
     cleanup_completed: bool = False

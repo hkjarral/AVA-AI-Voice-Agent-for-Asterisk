@@ -2182,3 +2182,8 @@ do not break a shared PBX or create real voicemail/campaign traffic to simulate
 409/503 responses. See the official [channel API](https://docs.asterisk.org/Latest_API/API_Documentation/Asterisk_REST_Interface/Channels_REST_API/)
 and [playback API](https://docs.asterisk.org/Latest_API/API_Documentation/Asterisk_REST_Interface/Playbacks_REST_API/)
 for the continue, DELETE and playback-ID contracts.
+
+
+## Conversation completion and IVR return
+
+`hangup_call` optionally accepts `next_step` to route after the farewell. For optional surveys, offer first, select the approved survey key after acceptance, and explicitly select `hangup` after a decline. Use `blind_transfer` with a configured dialplan destination for a mid-conversation return to an IVR. See [Conversation completion](Conversation-Completion.md) for UI setup, scoped configuration, prompts and recovery.

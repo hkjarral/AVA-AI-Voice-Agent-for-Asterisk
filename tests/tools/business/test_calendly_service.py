@@ -942,3 +942,39 @@ async def test_erasing_a_verified_cancelled_call_does_not_reblock_another_calls_
     assert result['reservation_status'] == 'confirmed' and fake.posts == 2
     assert store.attempt(old['id'])['state'] == 'erased'
     assert store.attempt(old['id'])['private'] == store.attempt(old['id'])['public'] == '{}'
+
+async def test_native_reentry_uses_conversation_history_identity_for_booking_privacy(setup, monkeypatch):
+    from src.tools.business import calendly_calendar as native
+    from src.tools.context import ToolExecutionContext
+    from src.core.models import CallSession
+    from src.core.session_store import SessionStore
+    from unittest.mock import AsyncMock
+    store, service, _, cfg = setup
+    monkeypatch.setattr(native, 'CalendlyStore', lambda: store)
+    monkeypatch.setattr(native, 'CalendlyService', lambda _: service)
+    service.slots = AsyncMock(return_value={'status': 'success', 'slots': []})
+    sessions = SessionStore()
+    for key in ['same-channel:first', 'same-channel:second']:
+        session = CallSession(call_id='same-channel', caller_channel_id='same-channel', history_call_id=key)
+        await sessions.upsert_call(session)
+        context = ToolExecutionContext(call_id='same-channel', expected_session=session, session_store=sessions, config={'tools': {'calendly_calendar': cfg}})
+        assert (await native.CalendlyCalendarTool().execute({'action': 'get_available_slots', 'appointment_key': 'consultation', 'timezone': 'UTC'}, context))['status'] == 'success'
+        assert service.slots.call_args.args[1] == 'call:' + key
+
+
+async def test_native_booking_does_not_adopt_replacement_conversation(setup, monkeypatch):
+    from src.core.models import CallSession
+    tool, context, session, _, recap = await native_confirmation(setup, monkeypatch)
+    _, service, fake, _ = setup
+    old_current = service.current
+    replacement = CallSession(call_id=session.call_id, caller_channel_id=session.call_id)
+    async def replace_before_submission(*args, **kwargs):
+        result = await old_current(*args, **kwargs)
+        await context.session_store.remove_call(session.call_id)
+        await context.session_store.upsert_call(replacement)
+        return result
+    monkeypatch.setattr(service, 'current', replace_before_submission)
+    result = await tool.execute({'action': 'create_booking', 'confirmation_reference': recap['confirmation_reference'], 'email_confirmed': True, 'booking_confirmed': True}, context)
+    assert result['code'] == 'call_not_active'
+    assert fake.posts == 0
+    assert not getattr(replacement, '_calendly_confirmation', None)

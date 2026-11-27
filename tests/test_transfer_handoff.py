@@ -329,7 +329,7 @@ async def test_store_handoff_preserves_attended_recording_prompt_and_snapshot():
         return result
     context = SimpleNamespace(get_session=AsyncMock(return_value=session), get_config_value=value,
                               provider_name="google_live", call_id="screening", session_store=engine.session_store)
-    action = {"id": "screening-action", "source_tool": "attended_transfer", "payload": {
+    action = {"id": session.pending_deferred_transfer["id"], "source_tool": "attended_transfer", "payload": {
         "screening_mode": "caller_recording", "caller_screening_prompt": "Please say your name and reason."}}
     await store_pending_deferred_transfer(context, action)
     assert action["handoff"]["message"] == MESSAGE + " Please say your name and reason."

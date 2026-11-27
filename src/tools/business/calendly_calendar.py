@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from src.core.calendly_store import CalendlyStore
 from src.tools.base import Tool, ToolCategory, ToolDefinition
-from src.tools.context import resolve_scoped_tool_config
+from src.tools.context import resolve_scoped_tool_config, StaleToolContextError
 from src.tools.business.calendly_client import CalendlyError, instant
 from src.tools.business.calendly_service import CalendlyService
 
@@ -48,7 +48,8 @@ class CalendlyCalendarTool(Tool):
             allowed = cfg.get("selected_appointments")
             if allowed is None:
                 allowed = list((cfg.get("appointments") or {}).keys())
-            operation = "call:" + context.call_id
+            conversation = await context.get_session() if getattr(context, "session_store", None) is not None else None
+            operation = "call:" + (getattr(conversation, "history_call_id", None) or context.call_id)
             store = await asyncio.to_thread(CalendlyStore)
             service = CalendlyService(store)
             if parameters.get("action") == "list_appointment_types":
@@ -76,11 +77,13 @@ class CalendlyCalendarTool(Tool):
             if parameters.get("action") == "create_booking":
                 async def active():
                     session = await context.get_session()
-                    if not session or getattr(session, "cleanup_in_progress", False) or getattr(session, "cleanup_completed", False):
+                    if session is not conversation or not session or getattr(session, "cleanup_in_progress", False) or getattr(session, "cleanup_completed", False):
                         raise CalendlyError("call_not_active")
                     if await context.get_tool_block_response("calendly_calendar"):
                         raise CalendlyError("call_not_active")
                 session = await context.get_session() if getattr(context, "session_store", None) is not None else None
+                if conversation is not None:
+                    await active()
                 request = dict(parameters)
                 reference = request.get("confirmation_reference")
                 if reference and not await asyncio.to_thread(store.prior, operation):
@@ -97,6 +100,7 @@ class CalendlyCalendarTool(Tool):
                         raise CalendlyError("confirmation_details_required")
                 result = await service.book(cfg, operation, request, active)
                 if session is not None:
+                    await active()
                     if result.get("status") == "confirmation_required":
                         prepared = {"action": "create_booking", "slot_reference": request["slot_reference"],
                                     "name": result["confirmation_recap"]["name"], "email": result["confirmation_recap"]["email"],
@@ -110,6 +114,9 @@ class CalendlyCalendarTool(Tool):
                         session._calendly_confirmation = {}
                 return result
             raise CalendlyError("unsupported_action")
+        except StaleToolContextError:
+            return {"status": "error", "code": "call_not_active",
+                    "message": "This conversation has ended. Ask staff to verify any pending booking before trying again."}
         except CalendlyError as exc:
             messages = {
                 "invalid_timezone": "Ask for the caller's timezone, then check availability with its IANA name. For next available, omit both dates to search the next seven days. No booking was submitted.",

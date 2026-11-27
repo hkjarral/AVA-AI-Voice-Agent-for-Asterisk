@@ -148,6 +148,7 @@ class TestCancelTransferTool:
                 }
             },
         }
+        mock_ari_client.hangup_channel.return_value = True
         engine = Mock()
         mock_ari_client.engine = engine
 
@@ -157,7 +158,8 @@ class TestCancelTransferTool:
         )
 
         assert result["status"] == "success"
-        engine._unregister_predial_transfer_channel.assert_called_once_with("SIP/6000-00000004")
+        engine._schedule_deferred_predial_forced_hangup_retry.assert_called_once_with(call_id=tool_context.call_id, channel_id="SIP/6000-00000004")
+        engine._release_deferred_predial_hangup_ownership.assert_called_once_with("SIP/6000-00000004")
         mock_ari_client.hangup_channel.assert_awaited_once_with("SIP/6000-00000004")
         updated_session = mock_session_store.upsert_call.call_args[0][0]
         assert updated_session.current_action is None

@@ -2642,6 +2642,7 @@ class GoogleLiveProvider(AIProviderInterface):
                 from src.tools.context import ToolExecutionContext
                 tool_context = ToolExecutionContext(
                     call_id=owner_call_id,
+                    expected_session=getattr(self, "_tool_owner_session", None),
                     caller_channel_id=getattr(self, '_caller_channel_id', None),
                     bridge_id=getattr(self, '_bridge_id', None),
                     caller_number=getattr(self, '_caller_number', None),
@@ -2680,6 +2681,7 @@ class GoogleLiveProvider(AIProviderInterface):
                     )
 
                 await record_in_call_tool_result(
+                    expected_session=getattr(self, "_tool_owner_session", None),
                     session_store=getattr(self, "_session_store", None),
                     call_id=owner_call_id,
                     tool_call_id=call_id,
@@ -2847,6 +2849,7 @@ class GoogleLiveProvider(AIProviderInterface):
         except asyncio.CancelledError:
             if func_name and not tool_result_recorded:
                 await record_in_call_tool_result(
+                    expected_session=getattr(self, "_tool_owner_session", None),
                     session_store=getattr(self, "_session_store", None),
                     call_id=owner_call_id,
                     tool_call_id=call_id,
@@ -2866,6 +2869,7 @@ class GoogleLiveProvider(AIProviderInterface):
             )
             if func_name and not tool_result_recorded:
                 await record_in_call_tool_result(
+                    expected_session=getattr(self, "_tool_owner_session", None),
                     session_store=getattr(self, "_session_store", None),
                     call_id=owner_call_id,
                     tool_call_id=call_id,
