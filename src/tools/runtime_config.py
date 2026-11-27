@@ -447,7 +447,9 @@ def resolve_agent_tool_config(
             transfer.pop("live_agent_destination_key", None)
 
     from src.tools.telephony.completion import effective_completion
-    hangup = tools.setdefault("hangup_call", {})
+    hangup = tools.get("hangup_call")
+    if not isinstance(hangup, dict):
+        hangup = tools["hangup_call"] = {}
     hangup["completion"] = effective_completion(config, policies.get("hangup_call"))
 
     resource_results = {

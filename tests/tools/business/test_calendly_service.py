@@ -942,3 +942,21 @@ async def test_erasing_a_verified_cancelled_call_does_not_reblock_another_calls_
     assert result['reservation_status'] == 'confirmed' and fake.posts == 2
     assert store.attempt(old['id'])['state'] == 'erased'
     assert store.attempt(old['id'])['private'] == store.attempt(old['id'])['public'] == '{}'
+
+async def test_native_reentry_uses_conversation_history_identity_for_booking_privacy(setup, monkeypatch):
+    from src.tools.business import calendly_calendar as native
+    from src.tools.context import ToolExecutionContext
+    from src.core.models import CallSession
+    from src.core.session_store import SessionStore
+    from unittest.mock import AsyncMock
+    store, service, _, cfg = setup
+    monkeypatch.setattr(native, 'CalendlyStore', lambda: store)
+    monkeypatch.setattr(native, 'CalendlyService', lambda _: service)
+    service.slots = AsyncMock(return_value={'status': 'success', 'slots': []})
+    sessions = SessionStore()
+    context = ToolExecutionContext(call_id='same-channel', session_store=sessions, config={'tools': {'calendly_calendar': cfg}})
+    for key in ['same-channel:first', 'same-channel:second']:
+        session = CallSession(call_id='same-channel', caller_channel_id='same-channel', history_call_id=key)
+        await sessions.upsert_call(session)
+        assert (await native.CalendlyCalendarTool().execute({'action': 'get_available_slots', 'appointment_key': 'consultation', 'timezone': 'UTC'}, context))['status'] == 'success'
+        assert service.slots.call_args.args[1] == 'call:' + key

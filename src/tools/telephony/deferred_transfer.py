@@ -82,8 +82,13 @@ async def store_pending_deferred_transfer(
         handoff["owner"] = ("engine" if local and kind in local and not session.pipeline_name
                             and action.get("source_tool") != "leave_voicemail" else "provider")
         action["handoff"] = handoff
-    session.pending_deferred_transfer = dict(action)
-    await context.session_store.upsert_call(session)
+    from src.core.session_store import SessionStore
+    if isinstance(context.session_store, SessionStore):
+        if not await context.session_store.store_deferred_transfer(session, action):
+            raise RuntimeError("Call no longer admits a deferred transfer")
+    else:
+        session.pending_deferred_transfer = dict(action)
+        await context.session_store.upsert_call(session)
     logger.info(
         "Deferred transfer armed",
         call_id=context.call_id,

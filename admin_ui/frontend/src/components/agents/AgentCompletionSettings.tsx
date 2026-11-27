@@ -8,14 +8,19 @@ export default function AgentCompletionSettings({state, destinations, globalDefa
     const effective = allowed.filter(item => !state.completionSelected || selected.includes(item.key));
     const defaults = effective.filter(item => !item.requiresOptIn);
     const saved = state.completionDefault || '';
+    const selectDestinations = (keys: string[], selectedPolicy = state.completionSelected) => {
+        const permitted = selectedPolicy ? keys : allowed.map(item => item.key);
+        onChange({...state, completionSelected: selectedPolicy, completionDestinationKeys: keys,
+            completionDefault: saved && saved !== 'hangup' && !permitted.includes(saved) ? 'hangup' : saved});
+    };
     return <section className="space-y-3 border border-border rounded-lg p-4" aria-label="Agent conversation completion">
         <h3 className="text-sm font-medium">After conversation</h3>
         <p className="text-xs text-muted-foreground">The farewell finishes before the selected handoff or hangup. Global tool disables and destination access always win. Changes apply to new conversations.</p>
         <FormSelect label="Agent completion destinations" value={state.completionSelected ? 'selected' : 'inherit'}
             options={[{value:'inherit',label:'Inherit allowed global destinations'},{value:'selected',label:'Select destinations (empty disables handoff)'}]}
-            onChange={event => onChange({...state,completionSelected:event.target.value === 'selected'})} />
-        {state.completionSelected && allowed.map(item => <label key={item.key} className="flex gap-2 text-sm"><input type="checkbox" checked={selected.includes(item.key)} onChange={event => onChange({...state,completionDestinationKeys:event.target.checked ? [...selected,item.key] : selected.filter(key => key !== item.key)})} />{item.key}{item.requiresOptIn ? ' · caller opt-in required' : ''}</label>)}
-        {selected.filter(key => !allowed.some(item => item.key === key)).map(key => <p key={key} className="text-xs text-amber-700">Unavailable or disallowed saved destination: {key}. It cannot receive calls.</p>)}
+            onChange={event => selectDestinations(selected, event.target.value === 'selected')} />
+        {state.completionSelected && allowed.map(item => <label key={item.key} className="flex gap-2 text-sm"><input type="checkbox" checked={selected.includes(item.key)} onChange={event => selectDestinations(event.target.checked ? [...selected,item.key] : selected.filter(key => key !== item.key))} />{item.key}{item.requiresOptIn ? ' · caller opt-in required' : ''}</label>)}
+        {selected.filter(key => !allowed.some(item => item.key === key)).map(key => <p key={key} className="text-xs text-amber-700">Unavailable or disallowed saved destination: {key}. It cannot receive calls. <button type="button" onClick={() => selectDestinations(selected.filter(item => item !== key))}>Remove {key}</button></p>)}
         <FormSelect label="Agent default after conversation" value={saved}
             options={[{value:'',label:`Inherit global default (${globalDefault})`},{value:'hangup',label:'End call'},...defaults.map(item => ({value:item.key,label:`Hand off to ${item.key}`})),
                 ...(saved && saved !== 'hangup' && !defaults.some(item => item.key === saved) ? [{value:saved,label:`Unavailable: ${saved} (falls back to hangup)`}] : [])]}

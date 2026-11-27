@@ -83,23 +83,61 @@ class SessionStore:
 
     async def arm_completion(self, session: CallSession, selected: dict) -> bool:
         async with self._lock:
+            action = session.current_action or {}
             if (self._sessions_by_call_id.get(session.call_id) is not session
                     or session.cleanup_in_progress or session.cleanup_completed
                     or getattr(session, "transfer_active", False) or getattr(session, "transfer_state", None)
-                    or session.transfer_destination or session.pending_deferred_transfer):
+                    or session.transfer_destination or session.pending_deferred_transfer
+                    or (isinstance(action, dict) and action.get("type") in {
+                        "transfer", "attended_transfer", "predial_transfer", "voicemail"})):
                 return False
             if not session.completion_action:
                 session.completion_action = selected
             session.cleanup_after_tts = True
             return True
 
-    async def claim_dialplan_handoff(self, session: CallSession, changes: dict, action_id: str) -> bool:
+    async def store_deferred_transfer(self, session: CallSession, action: dict) -> bool:
+        async with self._lock:
+            if (self._sessions_by_call_id.get(session.call_id) is not session
+                    or session.cleanup_in_progress or session.cleanup_completed
+                    or getattr(session, "transfer_active", False) or session.handoff_action_id
+                    or session.completion_action):
+                return False
+            session.pending_deferred_transfer = dict(action)
+            return True
+
+    async def cancel_deferred_transfer(self, session: CallSession, expected_id: str) -> bool:
+        async with self._lock:
+            pending = session.pending_deferred_transfer or {}
+            if (self._sessions_by_call_id.get(session.call_id) is not session
+                    or session.cleanup_in_progress or session.cleanup_completed
+                    or session.handoff_action_id or getattr(session, "transfer_active", False)
+                    or pending.get("id") != expected_id):
+                return False
+            session.current_action = None
+            session.pending_deferred_transfer = None
+            session.transfer_context = None
+            session.audio_capture_enabled = True
+            return True
+
+    async def retire_failed_predial(self, session: CallSession, expected_id: str) -> None:
+        async with self._lock:
+            action = session.current_action or {}
+            if (self._sessions_by_call_id.get(session.call_id) is session
+                    and action.get("type") == "predial_transfer"
+                    and action.get("deferred_action_id") == expected_id
+                    and not action.get("predial_channel_id") and not action.get("bridged")):
+                session.current_action = None
+
+    async def claim_dialplan_handoff(self, session: CallSession, changes: dict, action_id: str,
+                                     *, expected_deferred_id: Optional[str] = None) -> bool:
         async with self._lock:
             action = session.current_action or {}
             if (self._sessions_by_call_id.get(session.call_id) is not session
                     or session.cleanup_in_progress or session.cleanup_completed
                     or getattr(session, "transfer_active", False) or getattr(session, "transfer_state", None)
                     or session.transfer_destination
+                    or ((session.pending_deferred_transfer or {}).get("id") != expected_deferred_id)
                     or (isinstance(action, dict) and action.get("type") in {
                         "attended_transfer", "predial_transfer", "blind_transfer", "queue_transfer", "ring_group_transfer", "voicemail"})):
                 return False
@@ -107,6 +145,15 @@ class SessionStore:
                 setattr(session, name, value)
             session.handoff_action_id = action_id
             return True
+
+    async def owns_dialplan_handoff(self, session: CallSession, action_id: str,
+                                    *, expected_deferred_id: Optional[str] = None) -> bool:
+        async with self._lock:
+            return (self._sessions_by_call_id.get(session.call_id) is session
+                    and not session.cleanup_in_progress and not session.cleanup_completed
+                    and session.handoff_action_id == action_id
+                    and bool(getattr(session, "transfer_active", False))
+                    and (session.pending_deferred_transfer or {}).get("id") == expected_deferred_id)
 
     async def restore_dialplan_handoff(self, session: CallSession, previous: dict, action_id: str) -> bool:
         async with self._lock:

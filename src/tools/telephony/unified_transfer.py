@@ -163,6 +163,7 @@ class UnifiedTransferTool(Tool):
                 },
             )
 
+        action["_immediate"] = True
         return await self.commit_deferred_action(action, context)
 
     def _deferred_strategy(self, context: ToolExecutionContext) -> str:
@@ -255,6 +256,12 @@ class UnifiedTransferTool(Tool):
 
         if not isinstance(result, dict) or not result.get("id"):
             logger.warning("Predial transfer originate returned no channel", call_id=context.call_id, endpoint=endpoint, response=result)
+            from src.core.session_store import SessionStore
+            if isinstance(context.session_store, SessionStore):
+                await context.session_store.retire_failed_predial(session, action.get("id"))
+            elif isinstance(session.current_action, dict) and session.current_action.get("deferred_action_id") == action.get("id"):
+                session.current_action = None
+                await context.session_store.upsert_call(session)
             return
 
         predial_channel_id = str(result["id"])
@@ -574,18 +581,15 @@ class UnifiedTransferTool(Tool):
                     result=result,
                 )
 
-        if transfer_type == "dialplan":
+        if transfer_type in {"dialplan", "extension", "queue", "ringgroup"}:
             return await self._continue_to_dialplan(
                 context=context, target=target, description=description, transfer_type=transfer_type,
                 dialplan_context=dialplan_context, priority=payload.get("priority", 1),
-                transfer_state="blind_transferred", require_valid_target=True,
+                transfer_state={"dialplan": "blind_transferred", "extension": "transferring",
+                                "queue": "in_queue", "ringgroup": "in_ringgroup"}[transfer_type],
+                require_valid_target=transfer_type == "dialplan",
+                expected_deferred_id=None if action.get("_immediate") else action.get("id"),
             )
-        if transfer_type == "extension":
-            return await self._transfer_to_extension(context, target, description, dialplan_context=dialplan_context)
-        if transfer_type == "queue":
-            return await self._transfer_to_queue(context, target, description, dialplan_context=dialplan_context)
-        if transfer_type == "ringgroup":
-            return await self._transfer_to_ringgroup(context, target, description, dialplan_context=dialplan_context)
 
         return {
             "status": "failed",

@@ -145,9 +145,11 @@ and preserves its configured priority.
 
 The phone call continues after handoff, but the current AI conversation ends.
 If the IVR sends the same live channel back into AVA, cleanup finishes before
-admission of a fresh conversation. Subsequent conversation history uses a suffixed
-history call ID; diagnostics retain the original caller channel ID and a unique
-conversation ID. Post-call tools run for each completed AI conversation, not at
+admission of a fresh conversation. Every new conversation uses a history call ID
+of `<caller_channel_id>:<conversation_id>`; existing records keep their IDs.
+Diagnostics retain the original caller channel ID and a unique conversation ID.
+Calendly bookings use the same conversation history key, so History erasure
+scrubs only that conversation's booking evidence. Post-call tools run for each completed AI conversation, not at
 the final end of the entire PBX call.
 
 ## Handoff outcomes, recovery and rollback
@@ -193,3 +195,6 @@ on 2026-11-26: `POST /channels/{channelId}/continue` accepts context, extension 
 priority for leaving Stasis. The existing ARI client's accepted/rejected/uncertain
 response contract is preserved. Live qualification must record the actual Asterisk
 version, provider, transport, test call IDs and raw private evidence.
+
+For setup validation and survey/IVR acceptance scenarios, use the
+[conversation completion testing guide](CONVERSATION_COMPLETION_TESTING.md).

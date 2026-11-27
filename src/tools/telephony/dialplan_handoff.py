@@ -1,5 +1,6 @@
 """Shared guarded ARI handoff. Audio sequencing belongs to the engine."""
 from __future__ import annotations
+import asyncio
 from typing import Any, Dict, Optional, Callable, Awaitable
 import structlog
 from src.tools.context import ToolExecutionContext
@@ -10,7 +11,13 @@ async def continue_to_dialplan(*, context: ToolExecutionContext, target: str,
     priority: int = 1, require_valid_target: bool = False,
     claim_ownership: Optional[Callable[[dict], Awaitable[bool]]] = None,
     release_ownership: Optional[Callable[[dict], Awaitable[bool]]] = None,
-    before_dispatch: Optional[Callable[[], Awaitable[None]]] = None) -> Dict[str, Any]:
+    before_dispatch: Optional[Callable[[], Awaitable[None]]] = None,
+    expected_session=None, expected_deferred_id: Optional[str] = None,
+    dispatch_state: Optional[dict] = None) -> Dict[str, Any]:
+    # Bind identity before any target-validation await. Channel IDs may re-enter.
+    session = expected_session if expected_session is not None else await context.get_session()
+    dispatch_state = dispatch_state if dispatch_state is not None else {}
+    dispatch_state["started"] = False
     target_exists: Optional[bool] = None
     validator = getattr(context.ari_client, "dialplan_target_exists", None)
     if callable(validator):
@@ -57,12 +64,13 @@ async def continue_to_dialplan(*, context: ToolExecutionContext, target: str,
             priority=priority,
         )
 
-    session = await context.get_session()
     from src.core.session_store import SessionStore
     import uuid
     action_id = str(uuid.uuid4())
-    if claim_ownership is None and isinstance(context.session_store, SessionStore):
-        claim_ownership = lambda changes: context.session_store.claim_dialplan_handoff(session, changes, action_id)
+    default_claim = claim_ownership is None and isinstance(context.session_store, SessionStore)
+    if default_claim:
+        claim_ownership = lambda changes: context.session_store.claim_dialplan_handoff(
+            session, changes, action_id, expected_deferred_id=expected_deferred_id)
         release_ownership = lambda previous: context.session_store.restore_dialplan_handoff(session, previous, action_id)
     previous_transfer_state = {
         "transfer_active": bool(getattr(session, "transfer_active", False)),
@@ -79,19 +87,35 @@ async def continue_to_dialplan(*, context: ToolExecutionContext, target: str,
     else:
         await context.update_session(**changes)
 
-    if before_dispatch is not None:
-        try:
+    async def release_preparation():
+        if release_ownership is not None:
+            return await release_ownership(previous_transfer_state)
+        await context.update_session(**previous_transfer_state)
+        return True
+
+    try:
+        if before_dispatch is not None:
             await before_dispatch()
-        except Exception:
-            if release_ownership is not None and not await release_ownership(previous_transfer_state):
+        if isinstance(context.session_store, SessionStore):
+            current = await context.session_store.get_by_call_id(context.call_id)
+            owned = (await context.session_store.owns_dialplan_handoff(
+                session, action_id, expected_deferred_id=expected_deferred_id)
+                if default_claim else current is session and not session.cleanup_in_progress
+                and not session.cleanup_completed and bool(getattr(session, "transfer_active", False))
+                and not session.pending_deferred_transfer)
+            if not owned:
+                await release_preparation()
                 return {"status": "failed", "ownership_lost": True}
-            return {"status": "failed", "message": "Handoff preparation failed before dispatch."}
-    if isinstance(context.session_store, SessionStore):
-        current = await context.session_store.get_by_call_id(context.call_id)
-        if (current is not session or session.cleanup_in_progress or session.cleanup_completed
-                or not getattr(session, "transfer_active", False)
-                or getattr(session, "transfer_state", None) != transfer_state):
+    except asyncio.CancelledError:
+        await release_preparation()
+        raise
+    except Exception:
+        if not await release_preparation():
             return {"status": "failed", "ownership_lost": True}
+        return {"status": "failed", "message": "Handoff preparation failed before dispatch."}
+    # No await between this flag and starting the POST. Cancellation from this
+    # point may mean PBX acceptance, so ownership must be retained.
+    dispatch_state["started"] = True
     try:
         handed_off = await context.ari_client.continue_in_dialplan(
             context.caller_channel_id,

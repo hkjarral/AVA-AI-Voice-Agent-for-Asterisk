@@ -48,7 +48,8 @@ class CalendlyCalendarTool(Tool):
             allowed = cfg.get("selected_appointments")
             if allowed is None:
                 allowed = list((cfg.get("appointments") or {}).keys())
-            operation = "call:" + context.call_id
+            conversation = await context.get_session() if getattr(context, "session_store", None) is not None else None
+            operation = "call:" + (getattr(conversation, "history_call_id", None) or context.call_id)
             store = await asyncio.to_thread(CalendlyStore)
             service = CalendlyService(store)
             if parameters.get("action") == "list_appointment_types":

@@ -4128,7 +4128,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 		                        }
 			                        checked={showLiveAgentRoutingAdvanced ? (destinationForm.live_agent ?? false) : false}
 			                        onChange={(e) => setDestinationForm({ ...destinationForm, live_agent: e.target.checked })}
-		                        disabled={!showLiveAgentRoutingAdvanced}
+		                        disabled={!showLiveAgentRoutingAdvanced || destinationForm.type === 'dialplan'}
 		                    />
 	                    <FormInput
 	                        label="Target Number"

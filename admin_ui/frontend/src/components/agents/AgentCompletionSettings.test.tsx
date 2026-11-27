@@ -28,3 +28,25 @@ describe('agent completion policy',()=>{
         expect(JSON.parse(serializeAgentConfig(parseAgentConfig({tool_configs_json:JSON.stringify(original)})).tool_configs_json || '{}')).toEqual(original);
     });
 });
+
+it('clears defaults excluded by narrowing and removes one stale key at a time',()=>{
+    function SavedHarness() {
+        const [state,setState]=useState(parseAgentConfig({tool_configs_json:JSON.stringify({hangup_call:{default_next_step:'menu',destination_keys:['menu','deleted','survey']}})}));
+        return <><AgentCompletionSettings state={state} destinations={destinations} globalDefault="menu" onChange={setState}/><output data-testid="saved">{serializeAgentConfig(state).tool_configs_json}</output></>;
+    }
+    render(<SavedHarness/>);
+    fireEvent.click(screen.getByRole('button',{name:'Remove deleted'}));
+    expect(JSON.parse(screen.getByTestId('saved').textContent || '{}').hangup_call).toEqual({default_next_step:'menu',destination_keys:['menu','survey']});
+    fireEvent.click(screen.getByLabelText('menu'));
+    expect(JSON.parse(screen.getByTestId('saved').textContent || '{}').hangup_call).toEqual({default_next_step:'hangup',destination_keys:['survey']});
+});
+
+it('resets an inherited-inventory default when an empty selection disables handoff',()=>{
+    function SavedHarness() {
+        const [state,setState]=useState(parseAgentConfig({tool_configs_json:JSON.stringify({hangup_call:{default_next_step:'menu'}})}));
+        return <AgentCompletionSettings state={state} destinations={destinations} globalDefault="menu" onChange={setState}/>;
+    }
+    render(<SavedHarness/>);
+    fireEvent.change(screen.getByLabelText('Agent completion destinations'),{target:{value:'selected'}});
+    expect(screen.getByLabelText('Agent default after conversation')).toHaveValue('hangup');
+});

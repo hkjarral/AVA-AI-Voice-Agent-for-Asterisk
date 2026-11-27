@@ -264,7 +264,7 @@ async def test_listener_cancel_after_hangup_intent_preserves_only_live_call(call
     else:
         engine._terminate_call_after_audio.assert_awaited_once_with(
             call_id, reason="local_asterisk_farewell", call_outcome="agent_hangup",
-            audio_already_drained=True,
+            audio_already_drained=True, audio_drain_confirmed=True,
         )
     assert not engine._local_asterisk_farewell_pending
 
@@ -326,7 +326,7 @@ async def test_old_local_audio_done_cannot_preempt_asterisk_farewell(monkeypatch
 
     engine._terminate_call_after_audio.assert_awaited_once_with(
         call_id, reason="local_asterisk_farewell", call_outcome="agent_hangup",
-        audio_already_drained=True,
+        audio_already_drained=True, audio_drain_confirmed=True,
     )
     assert call_id not in engine._local_asterisk_farewell_pending
     # The real ARI payload is also "done" for stopped/canceled playback.
@@ -482,7 +482,7 @@ async def test_overlapping_hangup_is_coalesced_into_first_farewell():
     await asyncio.wait_for(first, timeout=1)
     engine._terminate_call_after_audio.assert_awaited_once_with(
         call_id, reason="local_asterisk_farewell", call_outcome="agent_hangup",
-        audio_already_drained=True,
+        audio_already_drained=True, audio_drain_confirmed=True,
     )
     assert call_id not in engine._local_asterisk_farewell_pending
 
@@ -576,7 +576,7 @@ async def test_listener_cancellation_preserves_call_owned_asterisk_farewell(boun
         await asyncio.wait_for(asyncio.shield(finalizer), timeout=1)
         engine._terminate_call_after_audio.assert_awaited_once_with(
             call_id, reason="local_asterisk_farewell", call_outcome="agent_hangup",
-            audio_already_drained=True,
+            audio_already_drained=True, audio_drain_confirmed=boundary == "finished",
         )
     assert not engine._local_asterisk_farewell_pending
     assert not engine._ari_playback_waiters

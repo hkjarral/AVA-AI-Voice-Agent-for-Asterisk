@@ -178,7 +178,7 @@ def _build_attended_destination_lines(config: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: Iterable[str]) -> str:
+def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: Iterable[str], *, completion_eligible: bool = True) -> str:
     """
     Build provider-agnostic runtime prompt guidance for config-backed in-call tools.
 
@@ -308,7 +308,7 @@ def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: I
 
     if "hangup_call" in allowed:
         from src.tools.telephony.completion import effective_completion
-        completion = effective_completion(config)
+        completion = effective_completion(config) if completion_eligible else {"default_next_step": "hangup", "destination_keys": []}
         routes = ((config.get("tools") or {}).get("transfer") or {}).get("destinations") or {}
         lines = ["Conversation completion:",
             f"- Call hangup_call once with farewell_message. Omitted next_step uses `{completion['default_next_step']}`.",

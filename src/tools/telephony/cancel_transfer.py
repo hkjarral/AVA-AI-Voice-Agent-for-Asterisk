@@ -104,6 +104,17 @@ class CancelTransferTool(Tool):
                     "status": "error",
                     "message": "The transfer has already been connected. I cannot cancel it now."
                 }
+
+            # Serialize cancellation against the shared dialplan claim before
+            # any IO. A dispatched (or uncertain) handoff cannot be cancelled.
+            from src.core.session_store import SessionStore
+            cancelled_atomically = False
+            if isinstance(context.session_store, SessionStore) and pending_deferred:
+                cancelled_atomically = await context.session_store.cancel_deferred_transfer(
+                    session, pending_deferred.get("id"),
+                )
+                if not cancelled_atomically:
+                    return {"status": "error", "message": "The transfer has already started or changed; cancellation was not confirmed."}
             
             # Hangup the transfer channel if it exists
             if channel_id:
@@ -133,14 +144,12 @@ class CancelTransferTool(Tool):
                 logger.warning(f"Failed to stop MOH: {e}")
             
             # Clear the action from session
-            session.current_action = None
-            session.pending_deferred_transfer = None
-            session.transfer_context = None
-            try:
+            if not cancelled_atomically:
+                session.current_action = None
+                session.pending_deferred_transfer = None
+                session.transfer_context = None
                 session.audio_capture_enabled = True
-            except Exception:
-                pass
-            await context.session_store.upsert_call(session)
+                await context.session_store.upsert_call(session)
             try:
                 if engine and hasattr(engine, "_cancel_attended_transfer_screening"):
                     engine._cancel_attended_transfer_screening(context.call_id, reason="cancel-transfer")

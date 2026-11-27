@@ -695,7 +695,7 @@ async def get_call(record_id: str):
     if not record:
         raise HTTPException(status_code=404, detail="Call record not found")
     
-    return _record_to_response(record, _agent_name_map())
+    return await asyncio.to_thread(_record_to_response, record, _agent_name_map())
 
 
 @router.get("/calls/{record_id}/transcript")
@@ -1134,10 +1134,13 @@ async def export_calls_json(
     
     # Convert to JSON-serializable format
     agent_names = _agent_name_map()
+    converted = await asyncio.to_thread(
+        lambda: [_record_to_response(r, agent_names).model_dump() for r in records]
+    )
     data = {
         "exported_at": datetime.now().isoformat(),
         "total_records": len(records),
-        "records": [_record_to_response(r, agent_names).model_dump() for r in records]
+        "records": converted
     }
     
     json_content = json.dumps(data, indent=2)
