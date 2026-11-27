@@ -135,6 +135,13 @@ def _ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
+def _call_log_channel_id(record: Any) -> str:
+    """Resolve the PBX log identity without parsing opaque conversation keys."""
+    diagnostics = getattr(record, "diagnostics_snapshot", None)
+    value = diagnostics.get("caller_channel_id") if isinstance(diagnostics, dict) else None
+    return value.strip() if isinstance(value, str) and value.strip() else record.call_id
+
+
 async def _resolve_call_history_window(
     call_id: str, pad_seconds: int = 10
 ) -> Tuple[Optional[int], Optional[int], Optional[Dict[str, Any]]]:
@@ -161,7 +168,7 @@ async def _resolve_call_history_window(
 
         call_meta: Dict[str, Any] = {
             "call_id": record.call_id,
-            "caller_channel_id": (getattr(record, "diagnostics_snapshot", None) or {}).get("caller_channel_id") or record.call_id,
+            "caller_channel_id": _call_log_channel_id(record),
             "caller_number": record.caller_number,
             "caller_name": record.caller_name,
             "start_time": start.isoformat() if start else None,

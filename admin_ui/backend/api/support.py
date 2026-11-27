@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from agents_store import AgentsStore
 from api.log_events import parse_log_line
-from api.logs import _compute_related_ids, _event_matches_call, _read_container_logs_sync
+from api.logs import _call_log_channel_id, _compute_related_ids, _event_matches_call, _read_container_logs_sync
 
 router = APIRouter()
 
@@ -493,7 +493,7 @@ async def _call_evidence(call_id: str):
     raw, meta = await _read_window(
         "ai_engine", since, until, limit=CORRELATION_MAX_BYTES
     )
-    filtered, events, related_ids, bridge_ids = _filter_call_lines(raw, call_id)
+    filtered, events, related_ids, bridge_ids = _filter_call_lines(raw, _call_log_channel_id(call))
     filtered = _sanitize_call_text(filtered, call)
     filtered, call_truncated, matched_original_size = _bounded_text(filtered.encode("utf-8"))
     fmt, levels = _event_format_and_levels(filtered)
@@ -598,7 +598,7 @@ async def call_bundle(request: CallBundleRequest):
                 manifest["sources"][container] = {"selected": False}
                 continue
             text, meta = await _read_window(container, since, until)
-            text = _filter_secondary_source(text, call.call_id)
+            text = _filter_secondary_source(text, _call_log_channel_id(call))
             text = _sanitize_call_text(text, call)
             meta["matching_lines"] = len(text.splitlines()) if text else 0
             manifest["sources"][container] = meta
