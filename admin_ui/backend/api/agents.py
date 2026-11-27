@@ -498,6 +498,37 @@ def _validate_agent_inactivity(data: dict) -> None:
     except (ValueError, TypeError, AttributeError):
         raise HTTPException(422, "Invalid inactivity fallback: choose an available destination within this Agent's transfer scope and a valid message") from None
 
+def _validate_agent_completion(data: dict, previous: dict | None = None) -> None:
+    from src.tools.runtime_config import normalize_agent_tool_configs, resolve_agent_tool_config
+    from services.onboarding import effective_config
+    try:
+        raw = json.loads(data.get("tool_configs_json") or "{}")
+    except (ValueError, TypeError):
+        return  # Already-restored opaque historical policies must round-trip.
+    if not isinstance(raw, dict) or "hangup_call" not in raw:
+        return
+    if previous is not None:
+        try:
+            old = json.loads(previous.get("tool_configs_json") or "{}")
+            if isinstance(old, dict) and old.get("hangup_call") == raw["hangup_call"]:
+                return  # Preserve unchanged stale selections; runtime remains fail closed.
+        except (ValueError, TypeError):
+            pass
+    try:
+        policies = normalize_agent_tool_configs(raw)
+        policy = policies.get("hangup_call") or {}
+        if not policy:
+            return
+        config = resolve_agent_tool_config(effective_config(), data.get("tool_configs_json")).config
+        effective = config["tools"]["hangup_call"]["completion"]
+        requested = policy.get("default_next_step", "hangup")
+        if requested != "hangup" and requested != effective["default_next_step"]:
+            raise ValueError("Default must be an approved, scoped destination without an opt-in requirement")
+        if set(policy.get("destination_keys", [])) - set(effective["destination_keys"]):
+            raise ValueError("Completion destinations must be globally approved and inside the Agent transfer scope")
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise HTTPException(422, str(exc)) from None
+
 @router.post("/agents", status_code=201, response_model=AgentOut)
 def create_agent(body: AgentIn, request: Request):
     try:
@@ -507,6 +538,7 @@ def create_agent(body: AgentIn, request: Request):
     if not _engine_ok(data.get("provider"), data.get("extra_json")):
         raise HTTPException(422, "agent must have a provider or a pipeline")
     _validate_agent_inactivity(data)
+    _validate_agent_completion(data)
     data["provider"] = (data.get("provider") or "").strip()
     try:
         return _store_for_agent_write().create(**data)
@@ -548,6 +580,7 @@ def _apply_agent_patch(store, slug, body):
         fields["provider"] = (fields["provider"] or "").strip()
     if "extra_json" in fields or "tool_configs_json" in fields:
         _validate_agent_inactivity({**existing, **fields})
+        _validate_agent_completion({**existing, **fields}, existing)
     # Write restored fields while the connection still holds its initial lock.
     # AgentsStore's public mutators commit their own transactions.
     active = fields.pop("is_active", None)

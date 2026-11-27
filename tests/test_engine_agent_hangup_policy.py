@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from src.core.models import CallSession
 from src.engine import Engine
+from src.tools.registry import ToolRegistry
 
 
 def _generation(global_config):
@@ -21,7 +22,7 @@ def _generation(global_config):
     return SimpleNamespace(
         generation_id=7,
         config_hash="global-hash",
-        registry=SimpleNamespace(),
+        registry=ToolRegistry.isolated(),
         for_agent=for_agent,
     )
 

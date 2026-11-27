@@ -104,6 +104,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, 
     const [catalogError, setCatalogError] = useState(false);
     const [disabledTools, setDisabledTools] = useState<Set<string>>(new Set());
     const [transferDestinations, setTransferDestinations] = useState<TransferDestination[]>([]);
+    const [completionGlobalDefault, setCompletionGlobalDefault] = useState("hangup");
     const [fallbackTransferEnabled, setFallbackTransferEnabled] = useState(false);
     const [googleCalendars, setGoogleCalendars] = useState<AgentResourceOption[]>([]);
     const [microsoftAccounts, setMicrosoftAccounts] = useState<AgentResourceOption[]>([]);
@@ -215,9 +216,13 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, 
             const toolsBlock = (parsed.tools as Record<string, unknown>) || {};
             setFallbackTransferEnabled((toolsBlock.transfer as Record<string, unknown> | undefined)?.enabled !== false);
             const transferBlock = (toolsBlock.transfer as Record<string, unknown>) || {};
-            setTransferDestinations(
-                transferDestinationsFromConfig(transferBlock.destinations)
-            );
+            const hangupBlock = (toolsBlock.hangup_call as Record<string, unknown>) || {};
+            const completion = (hangupBlock.completion as Record<string, unknown>) || {};
+            setCompletionGlobalDefault(String(completion.default_next_step || 'hangup'));
+            const completionKeys = Array.isArray(completion.destination_keys) ? completion.destination_keys : [];
+            setTransferDestinations(transferDestinationsFromConfig(transferBlock.destinations).map(destination => ({
+                ...destination, completionAllowed: hangupBlock.enabled !== false && transferBlock.enabled !== false && completionKeys.includes(destination.key),
+            })));
 
             const asRecord = (value: unknown): Record<string, unknown> =>
                 value && typeof value === 'object' && !Array.isArray(value)
@@ -812,6 +817,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent, 
                     state={toolState}
                     onChange={setToolState}
                     transferDestinations={transferDestinations}
+                    completionGlobalDefault={completionGlobalDefault}
                     googleCalendars={googleCalendars}
                     microsoftAccounts={microsoftAccounts}
                     calendlyAppointments={calendlyAppointments}

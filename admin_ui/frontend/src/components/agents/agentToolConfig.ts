@@ -22,6 +22,9 @@ export interface AgentToolState {
     backgroundMusic: string;          // extra.background_music
     connectionAudio: string;          // extra.connection_audio (Asterisk media URI)
     noInput: Record<string, unknown>; // extra.no_input per-agent policy overrides
+    completionDefault?: string;
+    completionDestinationKeys?: string[];
+    completionSelected?: boolean;
     hangupMarkerStrategy: 'inherit' | 'extend' | 'replace';
     hangupEndCallMarkers: string[];
     extraPassthrough: Record<string, unknown>; // extra keys we do not own (+ object-form in_call_http_tools)
@@ -179,6 +182,9 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
         backgroundMusic: asString(extra['background_music']),
         connectionAudio: asString(extra['connection_audio']),
         noInput: asObject(extra['no_input']),
+        completionDefault: asString(asObject(toolConfigs['hangup_call'])['default_next_step']),
+        completionSelected: Object.prototype.hasOwnProperty.call(asObject(toolConfigs['hangup_call']), 'destination_keys'),
+        completionDestinationKeys: asStrArray(asObject(toolConfigs['hangup_call'])['destination_keys']),
         hangupMarkerStrategy,
         hangupEndCallMarkers: hangupMarkerStrategy === 'inherit'
             ? [] : asStrArray(hangupPolicy['end_call']),
@@ -231,6 +237,12 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
     else delete extra['no_input'];
 
     const toolConfigs: Record<string, unknown> = {};
+    if (state.completionDefault || state.completionSelected) {
+        toolConfigs.hangup_call = {
+            ...(state.completionDefault ? { default_next_step: state.completionDefault } : {}),
+            ...(state.completionSelected ? { destination_keys: [...new Set(state.completionDestinationKeys || [])] } : {}),
+        };
+    }
     if (state.calendlyPolicy && state.calendlyPolicy !== 'inherit') {
         toolConfigs.calendly_calendar = {
             appointment_policy: state.calendlyPolicy,

@@ -1,3 +1,4 @@
+import AgentCompletionSettings from './AgentCompletionSettings';
 import React, { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { FormLabel } from '../ui/FormComponents';
@@ -15,6 +16,7 @@ interface Props {
     state: AgentToolState;
     onChange: (next: AgentToolState) => void;
     transferDestinations: TransferDestination[];
+    completionGlobalDefault?: string;
     googleCalendars: AgentResourceOption[];
     microsoftAccounts: AgentResourceOption[];
     calendlyAppointments?: AgentResourceOption[];
@@ -40,6 +42,7 @@ const AgentToolPicker: React.FC<Props> = ({
     state,
     onChange,
     transferDestinations,
+    completionGlobalDefault = "hangup",
     googleCalendars,
     microsoftAccounts,
     calendlyAppointments = [],
@@ -71,6 +74,10 @@ const AgentToolPicker: React.FC<Props> = ({
             {state.storedJson?.tool_configs_json && (
                 <p className="text-sm text-muted-foreground">This Agent has stored tool policies that the form cannot display. Saving preserves those policies.</p>
             )}
+            {!state.storedJson?.tool_configs_json && <>
+                <AgentCompletionSettings state={state} destinations={transferDestinations} globalDefault={completionGlobalDefault} onChange={onChange} />
+                {!transferEditorToolName && <TransferAccessEditor destinations={transferDestinations} state={state} onChange={onChange} />}
+            </>}
             {PHASES.map(({ key, label, hint }) => {
                 const tools = catalog
                     .filter((t) => phaseOf(t) === key)

@@ -81,33 +81,49 @@ class SessionStore:
         async with self._lock:
             return self._sessions_by_call_id.get(call_id)
 
-    async def claim_no_input_transfer(self, session: CallSession, changes: dict) -> bool:
-        """Atomically claim the timeout action after asynchronous validation."""
+    async def arm_completion(self, session: CallSession, selected: dict) -> bool:
+        async with self._lock:
+            if (self._sessions_by_call_id.get(session.call_id) is not session
+                    or session.cleanup_in_progress or session.cleanup_completed
+                    or getattr(session, "transfer_active", False) or getattr(session, "transfer_state", None)
+                    or session.transfer_destination or session.pending_deferred_transfer):
+                return False
+            if not session.completion_action:
+                session.completion_action = selected
+            session.cleanup_after_tts = True
+            return True
+
+    async def claim_dialplan_handoff(self, session: CallSession, changes: dict, action_id: str) -> bool:
         async with self._lock:
             action = session.current_action or {}
             if (self._sessions_by_call_id.get(session.call_id) is not session
                     or session.cleanup_in_progress or session.cleanup_completed
-                    or getattr(session, "transfer_active", False)
-                    or getattr(session, "transfer_state", None)
+                    or getattr(session, "transfer_active", False) or getattr(session, "transfer_state", None)
                     or session.transfer_destination
                     or (isinstance(action, dict) and action.get("type") in {
-                        "attended_transfer", "predial_transfer", "blind_transfer",
-                        "queue_transfer", "ring_group_transfer", "voicemail",
-                    })):
+                        "attended_transfer", "predial_transfer", "blind_transfer", "queue_transfer", "ring_group_transfer", "voicemail"})):
                 return False
-            for name in ("transfer_active", "transfer_state", "transfer_target"):
-                setattr(session, name, changes[name])
+            for name, value in changes.items():
+                setattr(session, name, value)
+            session.handoff_action_id = action_id
             return True
 
-    async def restore_no_input_transfer(self, session: CallSession, previous: dict) -> bool:
-        """An explicit rejection releases only this call's timeout handoff."""
+    async def restore_dialplan_handoff(self, session: CallSession, previous: dict, action_id: str) -> bool:
         async with self._lock:
             if (self._sessions_by_call_id.get(session.call_id) is not session
-                    or getattr(session, "transfer_state", None) != "no_input_fallback"):
+                    or session.cleanup_in_progress or session.cleanup_completed
+                    or session.handoff_action_id != action_id):
                 return False
-            for name in ("transfer_active", "transfer_state", "transfer_target"):
-                setattr(session, name, previous[name])
+            for name, value in previous.items():
+                setattr(session, name, value)
+            session.handoff_action_id = None
             return True
+
+    async def claim_no_input_transfer(self, session: CallSession, changes: dict) -> bool:
+        return await self.claim_dialplan_handoff(session, changes, f"no-input:{session.conversation_id}")
+
+    async def restore_no_input_transfer(self, session: CallSession, previous: dict) -> bool:
+        return await self.restore_dialplan_handoff(session, previous, f"no-input:{session.conversation_id}")
 
     async def append_tool_call_if_active(self, call_id: str, record: dict) -> bool:
         """Append history only while the call is registered, under one lock."""

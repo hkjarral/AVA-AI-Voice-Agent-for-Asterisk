@@ -49,6 +49,7 @@ interface CallRecordSummary {
 }
 
 interface CallRecordDetail extends CallRecordSummary {
+    diagnostics_snapshot?: { conversation_id?: string; caller_channel_id?: string; conversation_completion?: { requested_next_step?: string; next_step?: string; result?: string; audio_drained?: boolean; context?: string; extension?: string; priority?: number; }; };
     pipeline_components: Record<string, string>;
     conversation_history: Array<{ role: string; content: string; timestamp?: number | string }>;
     transfer_destination: string | null;
@@ -1325,6 +1326,11 @@ return (
                                 </div>
                             )}
 
+                            {selectedCall?.diagnostics_snapshot?.conversation_completion?.next_step && <section className="rounded-lg border border-border p-4 mb-4" aria-label="Conversation completion result">
+                                <h3 className="font-semibold">Conversation completion</h3>
+                                <p>Requested: {selectedCall.diagnostics_snapshot.conversation_completion.requested_next_step || 'default'} · Resolved: {selectedCall.diagnostics_snapshot.conversation_completion.next_step} · Result: {selectedCall.diagnostics_snapshot.conversation_completion.result || 'pending'}</p>
+                                <p className="text-xs text-muted-foreground">Farewell audio drained: {selectedCall.diagnostics_snapshot.conversation_completion.audio_drained ? 'yes' : 'not confirmed'}</p>
+                            </section>}
                             {selectedCall && Object.keys(selectedCall.call_metadata || {}).length > 0 && (
                                 <div>
                                     <h3 className="font-semibold mb-2">Call Metadata</h3>

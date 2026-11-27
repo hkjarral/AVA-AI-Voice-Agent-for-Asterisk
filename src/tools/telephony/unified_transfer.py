@@ -1,5 +1,5 @@
 """
-Unified Transfer Tool - Transfer calls to extensions, queues, or ring groups.
+Unified Transfer Tool - Transfer calls to configured PBX destinations.
 
 This tool implements the canonical `blind_transfer` tool and replaces the legacy
 `transfer_call` and `transfer_to_queue` tools with a single unified interface.
@@ -38,7 +38,7 @@ class UnifiedTransferTool(Tool):
             name="blind_transfer",
             description=(
                 "Blind transfer the caller to another configured destination. "
-                "Supports Transfer Destinations of type extension, queue, and ring group. "
+                "Supports configured extensions, queues, ring groups, and custom dialplan routes such as IVRs. "
                 "Use a configured destination key from Tools -> Transfer Destinations. "
                 "The system validates that the destination exists before transferring. "
                 "Prefer exact destination keys exposed in the runtime prompt/context instead of inventing names."
@@ -93,6 +93,7 @@ class UnifiedTransferTool(Tool):
         description: str,
         dialplan_context: str,
         destination_key: Optional[str] = None,
+        priority: int = 1,
     ) -> Dict[str, Any]:
         if transfer_deferral_enabled(context):
             try:
@@ -145,6 +146,7 @@ class UnifiedTransferTool(Tool):
             description=description,
             dialplan_context=dialplan_context,
             destination_key=destination_key,
+            payload={"priority": priority},
         )
 
         if transfer_deferral_enabled(context):
@@ -192,7 +194,7 @@ class UnifiedTransferTool(Tool):
         context: ToolExecutionContext,
         action: Dict[str, Any],
     ) -> None:
-        if self._deferred_strategy(context) != "predial_then_bridge":
+        if action.get("transfer_type") == "dialplan" or self._deferred_strategy(context) != "predial_then_bridge":
             return
 
         endpoint = self._predial_endpoint_for_action(action)
@@ -523,6 +525,14 @@ class UnifiedTransferTool(Tool):
                 dialplan_context=dialplan_context,
                 destination_key=str(destination),
             )
+        elif transfer_type == 'dialplan':
+            if getattr(await context.get_session(), "external_platform", None) or getattr(await context.get_session(), "is_outbound", False):
+                return {"status": "failed", "message": "Dialplan handoff is unavailable for externally owned calls."}
+            return await self._defer_or_commit_transfer(
+                context=context, source_tool="blind_transfer", transfer_type="dialplan",
+                target=target, description=description, dialplan_context=dialplan_context,
+                destination_key=str(destination), priority=dest_config.get("priority", 1),
+            )
         elif transfer_type == 'ringgroup':
             return await self._defer_or_commit_transfer(
                 context=context,
@@ -564,6 +574,12 @@ class UnifiedTransferTool(Tool):
                     result=result,
                 )
 
+        if transfer_type == "dialplan":
+            return await self._continue_to_dialplan(
+                context=context, target=target, description=description, transfer_type=transfer_type,
+                dialplan_context=dialplan_context, priority=payload.get("priority", 1),
+                transfer_state="blind_transferred", require_valid_target=True,
+            )
         if transfer_type == "extension":
             return await self._transfer_to_extension(context, target, description, dialplan_context=dialplan_context)
         if transfer_type == "queue":
@@ -691,161 +707,6 @@ class UnifiedTransferTool(Tool):
             transfer_state="in_ringgroup",
         )
 
-    async def _continue_to_dialplan(
-        self,
-        *,
-        context: ToolExecutionContext,
-        target: str,
-        description: str,
-        transfer_type: str,
-        dialplan_context: str,
-        transfer_state: str,
-        claim_ownership: Optional[Callable[[dict], Awaitable[bool]]] = None,
-        release_ownership: Optional[Callable[[dict], Awaitable[bool]]] = None,
-    ) -> Dict[str, Any]:
-        """Validate and hand caller ownership to a concrete dialplan target."""
-        priority = 1
-        target_exists: Optional[bool] = None
-        validator = getattr(context.ari_client, "dialplan_target_exists", None)
-        if callable(validator):
-            try:
-                target_exists = await validator(
-                    context.caller_channel_id,
-                    context=dialplan_context,
-                    extension=target,
-                    priority=priority,
-                )
-            except Exception:
-                logger.warning(
-                    "Dialplan target validation unavailable",
-                    call_id=context.call_id,
-                    transfer_type=transfer_type,
-                    target=target,
-                    context=dialplan_context,
-                    exc_info=True,
-                )
-
-        if target_exists is False:
-            logger.error(
-                "Transfer dialplan target does not exist",
-                call_id=context.call_id,
-                transfer_type=transfer_type,
-                target=target,
-                context=dialplan_context,
-                priority=priority,
-            )
-            return {
-                "status": "failed",
-                "message": f"Transfer destination {description} is not available.",
-                "destination": target,
-                "type": transfer_type,
-            }
-
-        if target_exists is not True:
-            logger.warning(
-                "Dialplan target could not be pre-validated; attempting guarded transfer",
-                call_id=context.call_id,
-                transfer_type=transfer_type,
-                target=target,
-                context=dialplan_context,
-                priority=priority,
-            )
-
-        session = await context.get_session()
-        previous_transfer_state = {
-            "transfer_active": bool(getattr(session, "transfer_active", False)),
-            "transfer_state": getattr(session, "transfer_state", None),
-            "transfer_target": getattr(session, "transfer_target", None),
-        }
-
-        # StasisEnd can race the HTTP response. Claim transfer ownership before
-        # continue so normal cleanup cannot hang up a successfully handed-off leg.
-        changes = dict(transfer_active=True, transfer_state=transfer_state, transfer_target=description)
-        if claim_ownership is not None:
-            if not await claim_ownership(changes):
-                return {"status": "failed", "ownership_lost": True}
-        else:
-            await context.update_session(**changes)
-
-        try:
-            handed_off = await context.ari_client.continue_in_dialplan(
-                context.caller_channel_id,
-                context=dialplan_context,
-                extension=target,
-                priority=priority,
-            )
-        except Exception:
-            handed_off = None
-            logger.warning(
-                "Transfer dialplan handoff raised",
-                call_id=context.call_id,
-                transfer_type=transfer_type,
-                target=target,
-                context=dialplan_context,
-                exc_info=True,
-            )
-
-        handoff_indeterminate = handed_off is not True and handed_off is not False
-
-        if handed_off is True:
-            logger.info(
-                "Dialplan transfer initiated",
-                call_id=context.call_id,
-                transfer_type=transfer_type,
-                target=target,
-                context=dialplan_context,
-            )
-            return {
-                "status": "success",
-                "message": f"Transferring you to {description} now.",
-                "destination": target,
-                "type": transfer_type,
-            }
-
-        # Only an explicit rejection proves the channel remained under AAVA
-        # ownership. An indeterminate response may have followed an accepted
-        # handoff, so retain the transfer guard and avoid destructive cleanup.
-        restore_ownership = handed_off is False
-        if restore_ownership:
-            try:
-                if release_ownership is not None:
-                    if not await release_ownership(previous_transfer_state):
-                        return {"status": "failed", "ownership_lost": True}
-                else:
-                    await context.update_session(**previous_transfer_state)
-            except Exception:
-                logger.error(
-                    "Failed to restore transfer ownership after unconfirmed handoff",
-                    call_id=context.call_id,
-                    transfer_type=transfer_type,
-                    target=target,
-                    context=dialplan_context,
-                    exc_info=True,
-                )
-        else:
-            logger.warning(
-                "Transfer handoff outcome indeterminate; retaining transfer ownership",
-                call_id=context.call_id,
-                transfer_type=transfer_type,
-                target=target,
-                context=dialplan_context,
-            )
-
-        logger.error(
-            "Transfer dialplan handoff was not confirmed",
-            call_id=context.call_id,
-            transfer_type=transfer_type,
-            target=target,
-            context=dialplan_context,
-            handoff_indeterminate=handoff_indeterminate,
-            ownership_restored=restore_ownership,
-        )
-        result = {
-            "status": "failed",
-            "message": f"Unable to transfer to {description}.",
-            "destination": target,
-            "type": transfer_type,
-        }
-        if handoff_indeterminate:
-            result["handoff_indeterminate"] = True
-        return result
+    async def _continue_to_dialplan(self, **kwargs) -> Dict[str, Any]:
+        from .dialplan_handoff import continue_to_dialplan
+        return await continue_to_dialplan(**kwargs)

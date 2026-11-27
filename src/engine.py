@@ -1235,6 +1235,7 @@ class Engine:
             logger.debug("Call-history store warm-up failed", exc_info=True)
         # Call-history retention cleanup (HIGH-7): only runs when retention is set
         # (CALL_HISTORY_RETENTION_DAYS>0); otherwise the loop idles and exits.
+        await self._recover_completion_handoffs()
         if not getattr(self, "_calendly_recovery_task", None):
             from .tools.business.calendly_service import recovery_loop
             self._calendly_recovery_task = asyncio.create_task(recovery_loop())
@@ -6925,6 +6926,17 @@ class Engine:
         
         # Check if call is already in progress
         existing_session = await self.session_store.get_by_call_id(caller_channel_id)
+        if caller_channel_id in _cleanup_in_progress or (existing_session and (existing_session.cleanup_in_progress or self._session_was_transferred(existing_session))):
+            # Session removal precedes final media/capture cleanup. Wait for both
+            # owners before admitting a returning live channel.
+            for _ in range(100):
+                await asyncio.sleep(0.1)
+                if caller_channel_id not in _cleanup_in_progress and await self.session_store.get_by_call_id(caller_channel_id) is None:
+                    existing_session = None
+                    break
+            else:
+                logger.error("Same-channel re-entry could not retire previous conversation", call_id=caller_channel_id)
+                return
         if existing_session:
             logger.warning("🎯 HYBRID ARI - Caller already in progress", channel_id=caller_channel_id)
             return
@@ -6986,6 +6998,19 @@ class Engine:
                 audio_capture_enabled=True,  # FIX #1: Start with capture enabled, only disable when TTS actually starts
                 status="connected",
                 start_time=datetime.now(timezone.utc)  # Track call start time (UTC for consistent storage)
+            )
+            # A channel-local marker survives dialplan continuation and engine
+            # restarts. Re-entry history must not depend on the cleanup TTL.
+            previous_conversation = await self.ari_client.send_command(
+                "GET", f"channels/{caller_channel_id}/variable",
+                params={"variable": "AAVA_CONVERSATION_ID"}, tolerate_statuses=[404],
+            )
+            if (isinstance(previous_conversation, dict) and previous_conversation.get("value")) or caller_channel_id in _cleanup_completed_at:
+                session.history_call_id = f"{caller_channel_id}:{session.conversation_id}"
+            _cleanup_completed_at.pop(caller_channel_id, None)
+            await self.ari_client.send_command(
+                "POST", f"channels/{caller_channel_id}/variable",
+                params={"variable": "AAVA_CONVERSATION_ID", "value": session.conversation_id},
             )
             session.tool_runtime_generation = getattr(self, "_tool_generation", None)
             self._resolve_session_tool_runtime(session)
@@ -11931,6 +11956,7 @@ class Engine:
                         call_id=resolved_call_id,
                         exc_info=True,
                     )
+                session.cleanup_completed = True
                 _cleanup_in_progress.discard(resolved_call_id)
                 seen_caller_stasis = getattr(self, "_seen_caller_stasis_channels", None)
                 if seen_caller_stasis is not None:
@@ -11967,6 +11993,7 @@ class Engine:
 
     async def _persist_call_history(self, session: CallSession, call_id: str) -> None:
         """Persist call record to history database (Milestone 21)."""
+        call_id = getattr(session, "history_call_id", None) or call_id
         try:
             from src.core.call_history import CallRecord, get_call_history_store_async
             
@@ -12045,7 +12072,9 @@ class Engine:
                 caller_audio_format=session.caller_audio_format,
                 codec_alignment_ok=session.codec_alignment_ok,
                 barge_in_count=barge_in_count,
-                diagnostics_snapshot=build_call_diagnostics_snapshot(getattr(self, "config", None), session),
+                diagnostics_snapshot={**build_call_diagnostics_snapshot(getattr(self, "config", None), session),
+                    "conversation_completion": dict(session.completion_action), "conversation_id": session.conversation_id,
+                    "caller_channel_id": session.caller_channel_id},
                 external_platform=getattr(session, 'external_platform', None),
                 external_call_id=getattr(session, 'external_call_id', None),
                 external_direction=getattr(session, 'external_direction', None),
@@ -17273,6 +17302,10 @@ class Engine:
                             started.discard(call_id)
                     completed = finalized
                     return finalized
+                if call_outcome == "agent_hangup" and not getattr(session, "is_outbound", False) and not getattr(session, "external_platform", None):
+                    if await self._complete_conversation_handoff(session, audio_drained=drained):
+                        completed = True
+                        return True
                 # DELETE is idempotent; ARIClient treats already-gone (404) as
                 # success. Bound attempts and revalidate ownership before each one.
                 for attempt in range(3):
@@ -17325,6 +17358,112 @@ class Engine:
                                 release()
                             except Exception:
                                 logger.warning("Failed to release native terminal protection", call_id=call_id)
+
+    async def _complete_conversation_handoff(self, session: CallSession, *, audio_drained: bool) -> bool:
+        """True means another lifecycle owner holds the caller; never follow with DELETE."""
+        from src.tools.telephony.completion import resolve_completion
+        from src.tools.telephony.dialplan_handoff import continue_to_dialplan
+        from src.tools.telephony.unified_transfer import UnifiedTransferTool
+        from src.tools.context import ToolExecutionContext
+        from src.core.handoff_journal import HandoffJournal
+        config = self._tool_config_for_session(session)
+        action = session.completion_action
+        if not action:
+            action = resolve_completion(config)
+            session.completion_action = action
+        action["audio_drained"] = audio_drained
+        if action.get("next_step", "hangup") == "hangup":
+            if action.get("result") == "pending":
+                action["result"] = "hangup"
+            return False
+        route = action["route"]
+        action_id = action.setdefault("id", str(uuid.uuid4()))
+        dialplan_context = UnifiedTransferTool._resolve_dialplan_context(route["type"], route, config["tools"]["transfer"])
+        action.update(channel_id=session.caller_channel_id, conversation_id=session.conversation_id,
+                      context=dialplan_context, extension=str(route["target"]), priority=route.get("priority", 1))
+        journal = HandoffJournal()
+        context = ToolExecutionContext(call_id=session.call_id, caller_channel_id=session.caller_channel_id,
+            session_store=self.session_store, ari_client=self.ari_client, config=config)
+        async def record_dispatch():
+            action["result"] = "dispatching"
+            await journal.write(action_id, action)
+            # Set before continue so early StasisEnd history reports a handoff.
+            session.call_outcome = "transferred"
+            session.transfer_destination = action["next_step"]
+        try:
+            result = await asyncio.wait_for(continue_to_dialplan(
+                context=context, target=action["extension"], description=action["next_step"],
+                transfer_type=route["type"], dialplan_context=dialplan_context, priority=action["priority"],
+                transfer_state="conversation_completion", require_valid_target=True,
+                before_dispatch=record_dispatch,
+            ), timeout=10.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            result = {"status": "failed", "handoff_indeterminate": bool(getattr(session, "transfer_active", False))}
+        current = await self.session_store.get_by_call_id(session.call_id)
+        if result.get("status") == "success":
+            action["result"] = "accepted"
+        elif result.get("handoff_indeterminate"):
+            action["result"] = "indeterminate"
+        elif result.get("ownership_lost") or current is not session or session.cleanup_in_progress:
+            action["result"] = "superseded"
+        else:
+            action["result"] = "rejected"
+            session.call_outcome = "agent_hangup"
+            session.transfer_destination = None
+        try:
+            await journal.write(action_id, action)
+        except Exception:
+            logger.warning("Could not update completion handoff journal", call_id=session.call_id, exc_info=True)
+        logger.info("Conversation completion action", call_id=session.call_id, next_step=action["next_step"], result=action["result"])
+        if action["result"] in {"accepted", "indeterminate"}:
+            if current is session and not session.cleanup_in_progress:
+                self._fire_and_forget_for_call(session.call_id, self._reconcile_completion_handoff(session),
+                                              name=f"completion-reconcile-{session.call_id}")
+            return True
+        return action["result"] == "superseded"
+
+    async def _reconcile_completion_handoff(self, session: CallSession) -> None:
+        """Observe without replaying the redirect or deleting an uncertain caller."""
+        from src.core.handoff_journal import HandoffJournal
+        action = session.completion_action
+        for _ in range(3):
+            await asyncio.sleep(0.5)
+            if await self.session_store.get_by_call_id(session.call_id) is not session or session.cleanup_in_progress:
+                return
+            try:
+                channel = await asyncio.wait_for(self.ari_client.send_command(
+                    "GET", f"channels/{session.caller_channel_id}", tolerate_statuses=[404]), timeout=0.5)
+            except Exception:
+                continue
+            if not isinstance(channel, dict):
+                continue
+            if channel.get("status") == 404 or (channel.get("id") == session.caller_channel_id
+                    and str((channel.get("dialplan") or {}).get("app_name") or "").lower() not in {"", "stasis"}):
+                action["result"] = "confirmed_gone" if channel.get("status") == 404 else "confirmed_by_lookup"
+                await HandoffJournal().write(action["id"], action)
+                await self._cleanup_call(session.call_id)
+                return
+        logger.warning("Completion handoff needs PBX inspection; no redirect retry or caller hangup", call_id=session.call_id)
+
+    async def _recover_completion_handoffs(self) -> None:
+        """Reconcile durable pending evidence after restart without mutating channels."""
+        from src.core.handoff_journal import HandoffJournal
+        journal = HandoffJournal()
+        try:
+            for action_id, action in await journal.pending():
+                channel = await self.ari_client.send_command("GET", f"channels/{action['channel_id']}", tolerate_statuses=[404])
+                if isinstance(channel, dict) and channel.get("status") == 404:
+                    action["result"] = "gone_after_restart"
+                elif isinstance(channel, dict) and str((channel.get("dialplan") or {}).get("app_name") or "").lower() not in {"", "stasis"}:
+                    action["result"] = "outside_stasis_after_restart"
+                else:
+                    logger.warning("Unresolved completion handoff after restart; inspect PBX", call_id=action.get("channel_id"))
+                    continue
+                await journal.write(action_id, action)
+        except Exception:
+            logger.warning("Completion handoff recovery unavailable", exc_info=True)
 
     def _schedule_terminal_fallback(
         self,
@@ -20988,10 +21127,11 @@ class Engine:
             hangup_cfg = {}
             tools_cfg["hangup_call"] = hangup_cfg
         hangup_cfg["policy"] = resolved_hangup["policy"]
-        registry = generation.registry
+        registry = generation.registry.clone()
+        from src.tools.telephony.hangup import HangupCallTool
+        registry.register_instance(HangupCallTool(hangup_cfg.get("completion")))
         inline_http = getattr(context_config, "in_call_http_tools", None) if context_config else None
         if isinstance(inline_http, dict) and inline_http:
-            registry = generation.registry.clone()
             from src.tools.http.template import TemplateError
             try:
                 registry.initialize_in_call_http_tools_from_config(
@@ -22851,101 +22991,21 @@ class Engine:
             return
 
         if on_failure == "dialplan_redirect":
-            context = str(
-                getattr(self.config, "provider_failure_redirect_context", "") or ""
-            ).strip()
-            extension = str(
-                getattr(self.config, "provider_failure_redirect_extension", "s") or "s"
-            ).strip()
-            priority = int(
-                getattr(self.config, "provider_failure_redirect_priority", 1) or 1
-            )
+            from src.tools.context import ToolExecutionContext
+            from src.tools.telephony.dialplan_handoff import continue_to_dialplan
+            context = str(getattr(self.config, "provider_failure_redirect_context", "") or "").strip()
             if context:
-                try:
-                    target_exists = await self.ari_client.dialplan_target_exists(
-                        session.caller_channel_id,
-                        context=context,
-                        extension=extension,
-                        priority=priority,
-                    )
-                except Exception:
-                    target_exists = False
-                    logger.warning(
-                        "Provider-failure dialplan target validation raised",
-                        call_id=session.call_id,
-                        context=context,
-                        extension=extension,
-                        priority=priority,
-                        exc_info=True,
-                    )
-                if not target_exists:
-                    logger.error(
-                        "Provider-failure dialplan target does not exist; announcing and hanging up",
-                        call_id=session.call_id,
-                        context=context,
-                        extension=extension,
-                        priority=priority,
-                    )
-                else:
-                    session.transfer_active = True
-                    session.transfer_state = "provider_failure_redirect"
-                    session.transfer_target = f"{context},{extension},{priority}"
-                    await self._save_session(session)
-                    try:
-                        redirected = await self.ari_client.continue_in_dialplan(
-                            session.caller_channel_id,
-                            context=context,
-                            extension=extension,
-                            priority=priority,
-                        )
-                    except Exception:
-                        redirected = None
-                        logger.warning(
-                            "Provider-failure dialplan redirect raised",
-                            call_id=session.call_id,
-                            context=context,
-                            extension=extension,
-                            priority=priority,
-                            exc_info=True,
-                        )
-                    if redirected is True:
-                        logger.info(
-                            "Provider-failure dialplan redirect initiated",
-                            call_id=session.call_id,
-                            context=context,
-                            extension=extension,
-                            priority=priority,
-                        )
-                        return
-
-                    if redirected is None:
-                        logger.warning(
-                            "Provider-failure redirect indeterminate; retaining transfer ownership",
-                            call_id=session.call_id,
-                            context=context,
-                            extension=extension,
-                            priority=priority,
-                        )
-                        return
-
-                    # Only an explicit rejection can safely restore cleanup
-                    # ownership before using the announcement/hangup fallback.
-                    session.transfer_active = False
-                    session.transfer_state = None
-                    session.transfer_target = None
-                    await self._save_session(session)
-                    logger.error(
-                        "Provider-failure dialplan redirect failed; announcing and hanging up",
-                        call_id=session.call_id,
-                        context=context,
-                        extension=extension,
-                        priority=priority,
-                    )
-            else:
-                logger.error(
-                    "Provider-failure dialplan redirect has no context; announcing and hanging up",
-                    call_id=session.call_id,
+                result = await continue_to_dialplan(
+                    context=ToolExecutionContext(call_id=session.call_id, caller_channel_id=session.caller_channel_id,
+                        session_store=self.session_store, ari_client=self.ari_client),
+                    target=str(getattr(self.config, "provider_failure_redirect_extension", "s") or "s").strip(),
+                    description=f"{context},{getattr(self.config, 'provider_failure_redirect_extension', 's')},{getattr(self.config, 'provider_failure_redirect_priority', 1)}",
+                    transfer_type="dialplan", dialplan_context=context,
+                    priority=int(getattr(self.config, "provider_failure_redirect_priority", 1) or 1),
+                    transfer_state="provider_failure_redirect", require_valid_target=True,
                 )
+                if result.get("status") == "success" or result.get("handoff_indeterminate") or result.get("ownership_lost"):
+                    return
 
         await self._announce_provider_failure_and_hangup(
             session.call_id, session.caller_channel_id
@@ -25072,6 +25132,7 @@ class Engine:
         from src.tools.base import ToolPhase
         from src.tools.context import PostCallContext
         tool_registry = self._tool_registry_for_session(session)
+        call_id = getattr(session, "history_call_id", None) or call_id
         
         try:
             # Get context config for this call

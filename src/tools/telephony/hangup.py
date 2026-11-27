@@ -29,13 +29,17 @@ class HangupCallTool(Tool):
     Only available to full agents (not partial/assistant agents).
     """
     
+    def __init__(self, completion=None):
+        self.completion = completion or {}
+
     @property
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             name="hangup_call",
             description=(
                 "End the current call. Call this when the caller says goodbye or thank you and is ready to hang up. "
-                "Set farewell_message to your goodbye sentence."
+                "Set farewell_message to your final sentence. next_step selects an approved destination after the farewell; "
+                "use hangup when the caller declines a survey or wants to disconnect. Omission uses the configured default."
             ),
             category=ToolCategory.TELEPHONY,
             requires_channel=True,
@@ -46,7 +50,10 @@ class HangupCallTool(Tool):
                     type="string",
                     description="Farewell message to speak before hanging up. Should be warm and professional.",
                     required=False
-                )
+                ),
+                ToolParameter(name="next_step", type="string", required=False,
+                    description="After the farewell: hangup or an approved destination key. Offer opt-in surveys first; select them only after acceptance.",
+                    enum=["hangup", *self.completion.get("destination_keys", [])])
             ]
         )
     
@@ -90,7 +97,20 @@ class HangupCallTool(Tool):
         
         try:
             # Mark the session so the engine will hang up after the farewell audio finishes.
-            await context.update_session(cleanup_after_tts=True)
+            from .completion import resolve_completion
+            session = await context.get_session()
+            selected = resolve_completion(context.config or {}, parameters.get("next_step"), supplied="next_step" in parameters)
+            if getattr(session, "is_outbound", False) or getattr(session, "external_platform", None):
+                selected = {**selected, "next_step": "hangup", "result": "ineligible"}
+            # First accepted terminal request wins, including a deliberate decline.
+            from src.core.session_store import SessionStore
+            if isinstance(context.session_store, SessionStore):
+                if not await context.session_store.arm_completion(session, selected):
+                    return {"status": "error", "message": "The call is no longer available for completion."}
+            else:
+                if not getattr(session, "completion_action", None):
+                    session.completion_action = selected
+                await context.update_session(cleanup_after_tts=True)
             logger.info("✅ Call will hangup after farewell", call_id=context.call_id)
             
             return {
@@ -99,7 +119,8 @@ class HangupCallTool(Tool):
                 # Canonical terminal-audio field for provider adapters. Keep
                 # `message` for backwards compatibility with generic tools.
                 "farewell_message": farewell,
-                "will_hangup": True
+                "will_hangup": True,
+                "next_step": session.completion_action["next_step"],
             }
             
         except Exception as e:
