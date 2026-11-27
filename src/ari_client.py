@@ -728,6 +728,9 @@ class ARIClient:
                 if response.status == 204: # No Content
                     return {"status": response.status}
                 return await response.json()
+        except (aiohttp.ClientConnectorError, aiohttp.InvalidURL) as e:
+            logger.error("ARI HTTP request could not be dispatched", exc_info=True)
+            return {"status": 503, "reason": str(e), "request_started": False}
         except aiohttp.ClientError as e:
             logger.error("ARI HTTP request failed", exc_info=True)
             return {"status": 500, "reason": str(e)}

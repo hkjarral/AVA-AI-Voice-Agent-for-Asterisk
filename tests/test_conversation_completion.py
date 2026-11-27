@@ -363,7 +363,7 @@ async def test_reconcile_cleanup_survives_failed_confirmation_write(monkeypatch)
     engine._cleanup_call = AsyncMock()
     monkeypatch.setattr(HandoffJournal, 'write', AsyncMock(side_effect=OSError('read-only')))
     await engine._reconcile_completion_handoff(session)
-    engine._cleanup_call.assert_awaited_once_with('caller')
+    engine._cleanup_call.assert_awaited_once_with('caller', expected_session=session)
 
 
 @pytest.mark.asyncio
@@ -518,17 +518,34 @@ async def test_concurrent_predial_reserves_before_originate_and_never_overwrites
     engine.ari_client.send_command.side_effect = originate
     tool = UnifiedTransferTool()
     first = asyncio.create_task(tool.execute({'destination': 'desk'}, ctx))
-    await started.wait()
-    action_id = session.pending_deferred_transfer['id']
-    other = asyncio.create_task(tool.execute({'destination': second}, ctx))
-    await asyncio.sleep(0)
-    release.set()
-    results = await asyncio.gather(first, other)
-    assert results[0]['status'] == 'success'
-    assert (results[1].get('duplicate_suppressed') is True) if second == 'desk' else results[1]['status'] == 'failed'
-    assert session.pending_deferred_transfer['id'] == action_id
-    assert session.current_action['predial_channel_id'] == 'destination-leg'
-    engine.ari_client.send_command.assert_awaited_once()
+    waiter = asyncio.create_task(started.wait())
+    workers = [first, waiter]
+    try:
+        done, _ = await asyncio.wait(workers, timeout=2, return_when=asyncio.FIRST_COMPLETED)
+        if first in done:
+            await first  # Surface an early worker exception.
+        assert started.is_set(), 'Originate did not start before the worker ended or timed out'
+        action_id = session.pending_deferred_transfer['id']
+        other = asyncio.create_task(tool.execute({'destination': second}, ctx))
+        workers.append(other)
+        await asyncio.sleep(0)
+        release.set()
+        results = await asyncio.wait_for(asyncio.gather(first, other), timeout=2)
+        assert results[0]['status'] == 'success'
+        if second == 'desk':
+            assert results[1].get('duplicate_suppressed') is True
+        else:
+            assert results[1]['status'] == 'failed'
+        assert session.pending_deferred_transfer['id'] == action_id
+        assert session.current_action['predial_channel_id'] == 'destination-leg'
+        engine.ari_client.send_command.assert_awaited_once()
+    finally:
+        release.set()
+        for worker in workers:
+            if not worker.done():
+                worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+
 
 
 @pytest.mark.asyncio
@@ -612,11 +629,14 @@ async def test_recovery_cannot_overwrite_live_terminal_result_during_lookup():
 @pytest.mark.asyncio
 async def test_later_stasis_start_retires_transferred_owner_when_end_was_lost():
     engine, session, ctx = await setup_engine()
+    engine._seen_caller_stasis_channels = {'caller'}
     session.transfer_active = True
     session._stasis_entry_id = '2026-11-27T01:00:00.000+0000'
-    async def retire(call_id):
+    async def retire(call_id, **kwargs):
+        assert kwargs.get("expected_session") is session
         assert await engine.session_store.get_by_call_id(call_id) is session
         await engine.session_store.remove_call(call_id)
+        engine._seen_caller_stasis_channels.discard(call_id)
     engine._cleanup_call = AsyncMock(side_effect=retire)
     class Admitted(BaseException):
         pass
@@ -624,6 +644,7 @@ async def test_later_stasis_start_retires_transferred_owner_when_end_was_lost():
     with pytest.raises(Admitted):
         await engine._handle_caller_stasis_start_hybrid('caller', {'caller': {}, '_stasis_entry_id': '2026-11-27T01:01:00.000+0000'})
     engine._cleanup_call.assert_awaited_once()
+    assert 'caller' in engine._seen_caller_stasis_channels
     engine.ari_client.hangup_channel.assert_not_awaited()
 
 
@@ -736,3 +757,261 @@ async def test_predial_answer_is_bound_to_attempt_even_when_destination_label_ha
     else:
         assert 'predial_channel_id' not in session.current_action
         engine.ari_client.hangup_channel.assert_awaited_once_with('leg')
+
+
+@pytest.mark.asyncio
+async def test_stale_observer_cannot_claim_cleanup_of_replacement_conversation():
+    engine, old, _ = await setup_engine()
+    replacement = CallSession(call_id='caller', caller_channel_id='caller')
+    await engine.session_store.upsert_call(replacement)
+    await engine._cleanup_call('caller', expected_session=old)
+    assert await engine.session_store.get_by_call_id('caller') is replacement
+    assert not replacement.cleanup_in_progress
+    engine.ari_client.hangup_channel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delayed_stasis_end_does_not_retire_a_later_stasis_entry():
+    engine, session, _ = await setup_engine()
+    session._stasis_entry_id = '2026-11-27T03:00:01.000+0000'
+    await engine._cleanup_call('caller', stasis_end_channel={'id': 'caller'}, stasis_end_timestamp='2026-11-27T03:00:00.000+0000')
+    assert await engine.session_store.get_by_call_id('caller') is session
+    assert not session.cleanup_in_progress
+    assert not session.caller_stasis_ended
+    engine.ari_client.hangup_channel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('bound', [False, True])
+async def test_cleanup_rechecks_conversation_after_waiting_for_claim(monkeypatch, bound):
+    import src.engine as module
+    engine, old, _ = await setup_engine()
+    lock = asyncio.Lock()
+    monkeypatch.setattr(module, '_cleanup_lock', lock)
+    module._cleanup_completed_at.pop('caller', None)
+    await lock.acquire()
+    task = asyncio.create_task(engine._cleanup_call('caller', **({'expected_session': old} if bound else {})))
+    await asyncio.sleep(0)
+    replacement = CallSession(call_id='caller', caller_channel_id='caller')
+    await engine.session_store.upsert_call(replacement)
+    lock.release()
+    await task
+    assert await engine.session_store.get_by_call_id('caller') is replacement
+    assert not replacement.cleanup_in_progress
+    engine.ari_client.hangup_channel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_old_terminal_request_cannot_retarget_after_waiting_for_terminal_lock():
+    engine, old, _ = await setup_engine()
+    lock = asyncio.Lock()
+    engine._terminal_hangup_locks = {'caller': lock}
+    await lock.acquire()
+    task = asyncio.create_task(engine._terminate_call_after_audio('caller', reason='old-farewell', call_outcome='agent_hangup', expected_session=old))
+    await asyncio.sleep(0)
+    replacement = CallSession(call_id='caller', caller_channel_id='caller')
+    await engine.session_store.upsert_call(replacement)
+    lock.release()
+    assert await task is False
+    assert not replacement.cleanup_after_tts
+    engine.ari_client.hangup_channel.assert_not_awaited()
+    engine.ari_client.continue_in_dialplan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_immediate_transfer_cannot_override_accepted_completion_owner():
+    engine, session, ctx = await setup_engine()
+    await HangupCallTool().execute({'next_step': 'survey'}, ctx)
+    assert (await UnifiedTransferTool().execute({'destination': 'menu'}, ctx))['status'] != 'success'
+    engine.ari_client.continue_in_dialplan.assert_not_awaited()
+    await engine._terminate_call_after_audio('caller', reason='winner', call_outcome='agent_hangup')
+    engine.ari_client.continue_in_dialplan.assert_awaited_once_with('caller', context='ava-survey', extension='s', priority=2)
+
+
+@pytest.mark.parametrize('route', [{'type': 'extension'}, {'type': 'extension', 'target': ''}, {'type': ['extension'], 'target': '6000'}])
+def test_incomplete_completion_routes_fail_closed_and_cannot_be_defaults(route):
+    cfg = config()
+    cfg['tools']['transfer']['destinations']['menu'] = route
+    cfg['tools']['hangup_call']['completion']['default_next_step'] = 'menu'
+    assert resolve_completion(cfg)['next_step'] == 'hangup'
+    with pytest.raises(ValueError, match='Default'):
+        validate_completion_config(cfg['tools'])
+
+
+@pytest.mark.parametrize('key', [['desk'], {'desk': True}, True])
+def test_malformed_live_agent_selector_has_validation_error(key):
+    cfg = config()
+    cfg['tools']['transfer']['live_agent_destination_key'] = key
+    with pytest.raises(ValueError, match='must be a string'):
+        validate_completion_config(cfg['tools'])
+
+
+def test_stasis_ordering_uses_instants_across_clock_offset_change():
+    assert Engine._stasis_instant('2026-11-01T01:00:03.000-0500') > Engine._stasis_instant('2026-11-01T01:59:58.000-0400')
+    assert Engine._stasis_instant('2026-11-01T06:00:03.000Z') == Engine._stasis_instant('2026-11-01T01:00:03.000-0500')
+
+
+@pytest.mark.asyncio
+async def test_completion_validates_and_dispatches_the_same_normalized_extension():
+    engine, session, ctx = await setup_engine()
+    ctx.config['tools']['transfer']['destinations']['survey']['target'] = ' s '
+    await HangupCallTool().execute({'next_step': 'survey'}, ctx)
+    await engine._terminate_call_after_audio('caller', reason='test', call_outcome='agent_hangup')
+    engine.ari_client.dialplan_target_exists.assert_awaited_once_with('caller', context='ava-survey', extension='s', priority=2)
+    engine.ari_client.continue_in_dialplan.assert_awaited_once_with('caller', context='ava-survey', extension='s', priority=2)
+
+
+@pytest.mark.asyncio
+async def test_predial_definite_undispatched_failure_can_fall_back_without_an_orphan():
+    import aiohttp
+    engine, session, ctx = await setup_engine()
+    ctx.config['tools']['transfer'].update(defer_until_playback_complete=True, deferred_strategy='predial_then_bridge')
+    ctx.config['tools']['transfer']['destinations']['desk'] = {'type': 'extension', 'target': '6000'}
+    engine.ari_client.send_command.side_effect = aiohttp.InvalidURL('invalid-local-ari-url')
+    tool = UnifiedTransferTool()
+    await tool.execute({'destination': 'desk'}, ctx)
+    assert session.current_action is None
+    assert (await tool.commit_deferred_action(session.pending_deferred_transfer, ctx))['status'] == 'success'
+
+
+@pytest.mark.asyncio
+async def test_cancelled_dispatched_completion_is_journaled_as_indeterminate():
+    engine, session, ctx = await setup_engine()
+    await HangupCallTool().execute({'next_step': 'survey'}, ctx)
+    async def cancelled(*args, **kwargs):
+        raise asyncio.CancelledError
+    engine.ari_client.continue_in_dialplan.side_effect = cancelled
+    with pytest.raises(asyncio.CancelledError):
+        await engine._complete_conversation_handoff(session, audio_drained=True)
+    assert HandoffJournal().get(session.completion_action['id'])['result'] == 'indeterminate'
+    assert session.transfer_active
+    engine.ari_client.hangup_channel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_early_drain_trigger_preserves_preparation_until_result_delivery_commits_once(monkeypatch):
+    from tests.test_deferred_transfer_commit_audio_gate import _build_engine, _armed_session
+    engine = _build_engine()
+    session = await _armed_session(engine, 'preparation')
+    action = session.pending_deferred_transfer
+    action['_preparing'] = True
+    engine._play_deferred_transfer_local_handoff = AsyncMock(return_value=False)
+    engine._wait_for_deferred_transfer_audio_drain = AsyncMock(return_value=True)
+    engine._recover_failed_deferred_transfer = AsyncMock()
+    engine._deferred_transfer_silent_commit_timeout = lambda _: 0.01
+    from src.tools.telephony import deferred_transfer
+    async def commit(context):
+        assert not session.pending_deferred_transfer.get('_preparing')
+        session.pending_deferred_transfer = None
+        return {'status': 'success'}
+    commit_mock = AsyncMock(side_effect=commit)
+    monkeypatch.setattr(deferred_transfer, 'commit_pending_deferred_transfer', commit_mock)
+    result = await engine._commit_pending_deferred_transfer_for_call(session.call_id, session, expected_action_id=action['id'])
+    assert result['status'] == 'pending'
+    assert session.pending_deferred_transfer is action
+    commit_mock.assert_not_awaited()
+    action['_preparing'] = False
+    # Every native provider reports delivery through this existing event;
+    # a silent reply must still commit through its watchdog.
+    await engine.on_provider_event({'type': 'DeferredTransferArmed', 'call_id': session.call_id, 'action_id': action['id']})
+    tasks = list(engine._call_bg_tasks.get(session.call_id) or [])
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
+        commit_mock.assert_awaited_once()
+        engine._recover_failed_deferred_transfer.assert_not_awaited()
+    finally:
+        for task in tasks:
+            if not task.done(): task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cancelled', [False, True])
+async def test_cancelled_predial_leg_keeps_independent_cleanup_owner_until_delete_is_accepted(cancelled):
+    from src.tools.telephony.cancel_transfer import CancelTransferTool
+    engine, session, ctx = await setup_engine()
+    engine._predial_transfer_channel_to_call_id = {}
+    engine._seen_aux_channels = set()
+    engine.ari_client.engine = engine
+    session.current_action = {'type': 'predial_transfer', 'deferred_action_id': 'pending', 'predial_channel_id': 'leg'}
+    session.pending_deferred_transfer = {'id': 'pending', 'kind': 'transfer', 'payload': {'predial': {'channel_id': 'leg'}}}
+    engine.ari_client.hangup_channel.side_effect = [asyncio.CancelledError() if cancelled else False, True]
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+            await CancelTransferTool().execute({}, ctx)
+    else:
+        assert (await CancelTransferTool().execute({}, ctx))['status'] == 'success'
+    assert session.pending_deferred_transfer is None
+    retry = engine._deferred_predial_forced_hangup_tasks['leg']
+    assert engine._predial_transfer_channel_to_call_id['leg'] == 'caller'
+    await asyncio.wait_for(retry, timeout=2)
+    assert 'leg' not in engine._deferred_predial_forced_hangup_tasks
+    assert 'leg' not in engine._predial_transfer_channel_to_call_id
+
+
+@pytest.mark.asyncio
+async def test_hangup_ready_without_provider_or_fallback_audio_marks_drain_unconfirmed():
+    engine, session, ctx = await setup_engine()
+    engine.config.tools = {}
+    await HangupCallTool().execute({'next_step': 'survey'}, ctx)
+    await engine.on_provider_event({'type': 'HangupReady', 'call_id': 'caller', 'reason': 'farewell_no_audio', 'had_audio': False})
+    assert session.completion_action['result'] == 'accepted'
+    assert session.completion_action['audio_drained'] is False
+
+
+@pytest.mark.asyncio
+async def test_pipeline_farewell_waits_for_pbx_even_after_local_token_retires():
+    engine, _, _ = await setup_engine()
+    engine.playback_manager = SimpleNamespace(play_audio=AsyncMock(), wait_for_playback_end=AsyncMock(return_value=True), on_playback_finished=AsyncMock())
+    async def audio(*args):
+        yield b'\xff' * 160
+    pipeline = SimpleNamespace(tts_adapter=SimpleNamespace(synthesize=audio), tts_options={})
+    engine._pipeline_audio_for_file_playback = lambda options, data: data
+    started = asyncio.Event()
+    pid = None
+    async def play(*args, playback_id=None, **kwargs):
+        nonlocal pid
+        pid = playback_id
+        started.set()
+        return playback_id
+    engine.playback_manager.play_audio.side_effect = play
+    task = asyncio.create_task(engine._play_pipeline_completion_farewell('caller', pipeline, 'bye'))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert not task.done()
+        await engine._on_playback_finished({'playback': {'id': pid, 'state': 'done'}})
+        assert await asyncio.wait_for(task, timeout=1) is True
+    finally:
+        if not task.done(): task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('started', [False, True])
+async def test_reserved_completion_is_not_reported_as_a_dispatched_transfer(monkeypatch, started):
+    from src.core import call_history
+    engine, session, _ = await setup_engine()
+    session.transfer_active = True
+    session.transfer_state = 'conversation_completion'
+    session._completion_dispatch_state = {'started': started}
+    session.call_outcome = 'transferred'
+    session.conversation_history = [{'role': 'user', 'content': 'hello'}]
+    history = SimpleNamespace(_enabled=True, save=AsyncMock(return_value=True), get_by_call_id=AsyncMock(return_value=SimpleNamespace(id='row')))
+    monkeypatch.setattr(call_history, 'get_call_history_store_async', AsyncMock(return_value=history))
+    await engine._persist_call_history(session, 'caller')
+    assert history.save.await_args.args[0].outcome == ('transferred' if started else 'completed')
+
+
+@pytest.mark.asyncio
+async def test_retrying_failed_hangup_does_not_replay_a_rejected_completion():
+    engine, session, ctx = await setup_engine()
+    await HangupCallTool().execute({'next_step': 'survey'}, ctx)
+    engine.ari_client.continue_in_dialplan.return_value = False
+    engine.ari_client.hangup_channel.return_value = False
+    await engine._terminate_call_after_audio('caller', reason='rejected', call_outcome='agent_hangup')
+    engine.ari_client.hangup_channel.return_value = True
+    await engine._terminate_call_after_audio('caller', reason='retry-delete', call_outcome='agent_hangup')
+    engine.ari_client.continue_in_dialplan.assert_awaited_once()
+    assert engine.ari_client.hangup_channel.await_count == 4

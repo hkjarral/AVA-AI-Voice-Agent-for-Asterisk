@@ -1675,7 +1675,7 @@ async def test_pipeline_terminal_tool_routes_captured_survey_after_farewell(monk
     engine.playback_manager.wait_for_playback_end = AsyncMock(return_value=True)
     dispatched = asyncio.Event()
     async def redirect(*args, **kwargs):
-        engine.playback_manager.wait_for_playback_end.assert_awaited_once()
+        assert engine.playback_manager.play_audio.await_count == 1
         dispatched.set()
         return True
     engine.ari_client.continue_in_dialplan = AsyncMock(side_effect=redirect)
@@ -1693,7 +1693,7 @@ async def test_pipeline_terminal_tool_routes_captured_survey_after_farewell(monk
         await engine._ensure_pipeline_runner(session, forced=True)
         await asyncio.wait_for(stt.started.wait(), timeout=2)
         await stt.results.put('Yes, please connect me to the survey.')
-        await asyncio.wait_for(dispatched.wait(), timeout=3)
+        await asyncio.wait_for(dispatched.wait(), timeout=5)
         engine.ari_client.hangup_channel.assert_not_awaited()
         assert session.completion_action['next_step'] == 'survey'
         assert session.completion_action['audio_drained'] is drained

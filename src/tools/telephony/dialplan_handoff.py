@@ -13,7 +13,9 @@ async def continue_to_dialplan(*, context: ToolExecutionContext, target: str,
     release_ownership: Optional[Callable[[dict], Awaitable[bool]]] = None,
     before_dispatch: Optional[Callable[[], Awaitable[None]]] = None,
     expected_session=None, expected_deferred_id: Optional[str] = None,
-    dispatch_state: Optional[dict] = None) -> Dict[str, Any]:
+    dispatch_state: Optional[dict] = None, expected_completion_action: Optional[dict] = None,
+    on_dispatch_started: Optional[Callable[[], None]] = None) -> Dict[str, Any]:
+    target = str(target).strip()
     # Bind identity before any target-validation await. Channel IDs may re-enter.
     session = expected_session if expected_session is not None else await context.get_session()
     dispatch_state = dispatch_state if dispatch_state is not None else {}
@@ -70,7 +72,7 @@ async def continue_to_dialplan(*, context: ToolExecutionContext, target: str,
     default_claim = claim_ownership is None and isinstance(context.session_store, SessionStore)
     if default_claim:
         claim_ownership = lambda changes: context.session_store.claim_dialplan_handoff(
-            session, changes, action_id, expected_deferred_id=expected_deferred_id)
+            session, changes, action_id, expected_deferred_id=expected_deferred_id, expected_completion_action=expected_completion_action)
         release_ownership = lambda previous: context.session_store.restore_dialplan_handoff(session, previous, action_id)
     previous_transfer_state = {
         "transfer_active": bool(getattr(session, "transfer_active", False)),
@@ -99,13 +101,15 @@ async def continue_to_dialplan(*, context: ToolExecutionContext, target: str,
         if isinstance(context.session_store, SessionStore):
             current = await context.session_store.get_by_call_id(context.call_id)
             owned = (await context.session_store.owns_dialplan_handoff(
-                session, action_id, expected_deferred_id=expected_deferred_id)
+                session, action_id, expected_deferred_id=expected_deferred_id, expected_completion_action=expected_completion_action)
                 if default_claim else current is session and not session.cleanup_in_progress
                 and not session.cleanup_completed and bool(getattr(session, "transfer_active", False))
                 and not session.pending_deferred_transfer)
             if not owned:
                 await release_preparation()
                 return {"status": "failed", "ownership_lost": True}
+        if on_dispatch_started is not None:
+            on_dispatch_started()  # Synchronous; no await between metadata and the POST.
     except asyncio.CancelledError:
         await release_preparation()
         raise

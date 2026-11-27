@@ -7,6 +7,7 @@ This tool implements the canonical `blind_transfer` tool and replaces the legacy
 
 from typing import Dict, Any, Optional, Tuple, List, Callable, Awaitable
 import asyncio
+import aiohttp
 import structlog
 
 from ..base import Tool, ToolDefinition, ToolParameter, ToolCategory
@@ -289,12 +290,24 @@ class UnifiedTransferTool(Tool):
                     "timeout": dial_timeout_sec,
                 },
             )
+        except (aiohttp.ClientConnectorError, aiohttp.InvalidURL):
+            from src.core.session_store import SessionStore
+            if isinstance(context.session_store, SessionStore):
+                await context.session_store.retire_failed_predial(session, action.get("id"))
+            else:
+                session.current_action = None
+                await context.session_store.upsert_call(session)
+            logger.warning("Predial originate could not be dispatched", call_id=context.call_id, exc_info=True)
+            return
         except Exception:
             logger.warning("Predial transfer originate failed", call_id=context.call_id, endpoint=endpoint, exc_info=True)
             return
 
         if not isinstance(result, dict) or not result.get("id"):
             logger.warning("Predial transfer originate returned no channel", call_id=context.call_id, endpoint=endpoint, response=result)
+            if not (isinstance(result, dict) and (result.get("request_started") is False
+                    or isinstance(result.get("status"), int) and 400 <= result["status"] < 500)):
+                return  # No channel ID is not proof that a possibly submitted POST was rejected.
             from src.core.session_store import SessionStore
             if isinstance(context.session_store, SessionStore):
                 await context.session_store.retire_failed_predial(session, action.get("id"))
@@ -317,7 +330,13 @@ class UnifiedTransferTool(Tool):
             engine = getattr(context.ari_client, "engine", None)
             if engine and hasattr(engine, "_unregister_predial_transfer_channel"):
                 engine._unregister_predial_transfer_channel(predial_channel_id)
-            await context.ari_client.hangup_channel(predial_channel_id)
+            retained = engine and callable(getattr(engine, "_schedule_deferred_predial_forced_hangup_retry", None))
+            if retained:
+                engine.register_predial_transfer_channel(context.call_id, predial_channel_id)
+                engine._schedule_deferred_predial_forced_hangup_retry(call_id=context.call_id, channel_id=predial_channel_id)
+            accepted = await context.ari_client.hangup_channel(predial_channel_id)
+            if retained and accepted is True:
+                engine._release_deferred_predial_hangup_ownership(predial_channel_id)
             return
         action["payload"] = {
             **(action.get("payload") if isinstance(action.get("payload"), dict) else {}),

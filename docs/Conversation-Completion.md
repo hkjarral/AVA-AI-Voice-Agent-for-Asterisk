@@ -148,12 +148,32 @@ and preserves its configured priority.
 
 The phone call continues after handoff, but the current AI conversation ends.
 If the IVR sends the same live channel back into AVA, cleanup finishes before
-admission of a fresh conversation. Every new conversation uses a history call ID
+admission of a fresh conversation. Cleanup claims retain the exact conversation
+identity; a delayed StasisEnd from an earlier entry cannot retire the new one.
+Every new conversation uses a history call ID
 of `<caller_channel_id>:<conversation_id>`; existing records keep their IDs.
 Diagnostics retain the original caller channel ID and a unique conversation ID.
 Calendly bookings use the same conversation history key, so History erasure
 scrubs only that conversation's booking evidence. Post-call tools run for each completed AI conversation, not at
 the final end of the entire PBX call.
+
+## Mapping the issue #904 proposal
+
+The proposed `after_farewell` example was not a released configuration schema.
+Use the shared inventory and completion settings in this implementation:
+
+| Issue proposal | Implemented configuration |
+| --- | --- |
+| `action: hangup` | `completion.default_next_step: hangup` |
+| `action: continue_dialplan` | Add a dialplan destination, allow its key, then select it as the completion default or tool `next_step` |
+| `context`, `extension`, `priority` | Destination `dialplan_context`, `target`, `priority` |
+| `on_failure: hangup` | Fixed missing-target/definite-rejection fallback; no separate `on_failure` selector |
+
+There is one deliberate safety exception to the proposal's indeterminate-failure
+wording: a timeout or lost ARI response cannot prove rejection. The PBX may have
+accepted the handoff, so AVA observes and retains caller protection rather than
+disconnecting a caller now owned by an IVR or another destination. Confirmed
+rejection uses hangup; unresolved outcomes require PBX inspection.
 
 ## Handoff outcomes, recovery and rollback
 

@@ -12,6 +12,13 @@ def valid_key(value: Any) -> bool:
     # function names or dialplan expressions. Preserve spaces and Unicode.
     return isinstance(value, str) and bool(value.strip()) and value == value.strip() and bool(KEY.fullmatch(value))
 
+def executable_route(route: Any) -> bool:
+    if not isinstance(route, dict) or not isinstance(route.get("type"), str) or route["type"] not in ROUTE_TYPES:
+        return False
+    target = route.get("target")
+    return (isinstance(target, (str, int)) and not isinstance(target, bool)
+            and bool(str(target).strip()) and not UNSAFE.search(str(target)))
+
 def normalize_completion(raw: Any, *, agent: bool = False) -> dict:
     if raw is None:
         return {}
@@ -57,12 +64,14 @@ def validate_completion_config(tools: dict) -> None:
             if route.get("attended_allowed") or route.get("live_agent"):
                 raise ValueError("Dialplan destinations support blind transfer and completion only")
     live_agent = (tools.get("transfer") or {}).get("live_agent_destination_key")
+    if live_agent is not None and not isinstance(live_agent, str):
+        raise ValueError("Live agent destination key must be a string")
     if isinstance(destinations.get(live_agent), dict) and destinations[live_agent].get("type") == "dialplan":
         raise ValueError("Live agent override cannot use a dialplan destination")
     default = policy.get("default_next_step", "hangup")
     if default != "hangup":
         route = destinations.get(default)
-        if default not in policy.get("destination_keys", []) or not isinstance(route, dict) or route.get("type") not in ROUTE_TYPES:
+        if default not in policy.get("destination_keys", []) or not executable_route(route):
             raise ValueError("Default completion destination must be allowed and configured")
         if route.get("requires_opt_in") is True:
             raise ValueError("Opt-in destinations cannot be automatic completion defaults")
@@ -77,7 +86,7 @@ def effective_completion(config: dict, override: Any = None) -> dict:
         keys = [key for key in keys if key in agent["destination_keys"]]
     transfer = tools.get("transfer") or {}
     routes = transfer.get("destinations") or {}
-    keys = [key for key in keys if isinstance(routes.get(key), dict) and routes[key].get("type") in ROUTE_TYPES]
+    keys = [key for key in keys if executable_route(routes.get(key))]
     if transfer.get("enabled") is False or hangup.get("enabled") is False:
         keys = []
     default = agent.get("default_next_step", base.get("default_next_step", "hangup"))

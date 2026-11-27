@@ -109,7 +109,7 @@ class SessionStore:
             session.pending_deferred_transfer = {**pending, **action}
             return True
 
-    async def cancel_deferred_transfer(self, session: CallSession, expected_id: str) -> bool:
+    async def cancel_deferred_transfer(self, session: CallSession, expected_id: str, *, on_cancel=None) -> bool:
         async with self._lock:
             pending = session.pending_deferred_transfer or {}
             if (self._sessions_by_call_id.get(session.call_id) is not session
@@ -117,6 +117,8 @@ class SessionStore:
                     or session.handoff_action_id or getattr(session, "transfer_active", False)
                     or pending.get("id") != expected_id):
                 return False
+            if on_cancel is not None:
+                on_cancel()  # Synchronous ownership transfer before the routing slot is cleared.
             session.current_action = None
             session.pending_deferred_transfer = None
             session.transfer_context = None
@@ -149,13 +151,14 @@ class SessionStore:
                 session.current_action = None
 
     async def claim_dialplan_handoff(self, session: CallSession, changes: dict, action_id: str,
-                                     *, expected_deferred_id: Optional[str] = None) -> bool:
+                                     *, expected_deferred_id: Optional[str] = None, expected_completion_action: Optional[dict] = None) -> bool:
         async with self._lock:
             action = session.current_action or {}
             if (self._sessions_by_call_id.get(session.call_id) is not session
                     or session.cleanup_in_progress or session.cleanup_completed
                     or getattr(session, "transfer_active", False) or getattr(session, "transfer_state", None)
                     or session.transfer_destination
+                    or (session.completion_action and session.completion_action is not expected_completion_action)
                     or ((session.pending_deferred_transfer or {}).get("id") != expected_deferred_id)
                     or (isinstance(action, dict) and action.get("type") in {
                         "attended_transfer", "predial_transfer", "blind_transfer", "queue_transfer", "ring_group_transfer", "voicemail"})):
@@ -166,11 +169,12 @@ class SessionStore:
             return True
 
     async def owns_dialplan_handoff(self, session: CallSession, action_id: str,
-                                    *, expected_deferred_id: Optional[str] = None) -> bool:
+                                    *, expected_deferred_id: Optional[str] = None, expected_completion_action: Optional[dict] = None) -> bool:
         async with self._lock:
             return (self._sessions_by_call_id.get(session.call_id) is session
                     and not session.cleanup_in_progress and not session.cleanup_completed
                     and session.handoff_action_id == action_id
+                    and (not session.completion_action or session.completion_action is expected_completion_action)
                     and bool(getattr(session, "transfer_active", False))
                     and (session.pending_deferred_transfer or {}).get("id") == expected_deferred_id)
 

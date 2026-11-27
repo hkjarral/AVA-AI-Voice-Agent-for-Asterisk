@@ -109,13 +109,25 @@ class CancelTransferTool(Tool):
             # any IO. A dispatched (or uncertain) handoff cannot be cancelled.
             from src.core.session_store import SessionStore
             cancelled_atomically = False
+            retained_predial = bool(channel_id and (action.get("type") == "predial_transfer" or predial_payload))
+            on_cancel = None
+            if retained_predial:
+                if not (engine and callable(getattr(engine, "register_predial_transfer_channel", None))
+                        and callable(getattr(engine, "_schedule_deferred_predial_forced_hangup_retry", None))):
+                    return {"status": "error", "message": "Destination cleanup is unavailable; cancellation was not confirmed."}
+                def on_cancel():
+                    engine.register_predial_transfer_channel(context.call_id, channel_id)
+                    engine._schedule_deferred_predial_forced_hangup_retry(call_id=context.call_id, channel_id=channel_id)
             if isinstance(context.session_store, SessionStore) and pending_deferred:
                 cancelled_atomically = await context.session_store.cancel_deferred_transfer(
-                    session, pending_deferred.get("id"),
+                    session, pending_deferred.get("id"), on_cancel=on_cancel,
                 )
                 if not cancelled_atomically:
                     return {"status": "error", "message": "The transfer has already started or changed; cancellation was not confirmed."}
             
+            if not cancelled_atomically and on_cancel is not None:
+                on_cancel()
+
             # Hangup the transfer channel if it exists
             if channel_id:
                 try:
@@ -123,12 +135,12 @@ class CancelTransferTool(Tool):
                     # BEFORE hanging up so the agent leg teardown doesn't trigger full call cleanup.
                     if action.get("type") == "attended_transfer" and engine and hasattr(engine, "_unregister_attended_transfer_agent_channel"):
                         engine._unregister_attended_transfer_agent_channel(channel_id)
-                    if (action.get("type") == "predial_transfer" or predial_payload) and engine and hasattr(engine, "_unregister_predial_transfer_channel"):
-                        engine._unregister_predial_transfer_channel(channel_id)
                 except Exception:
                     pass
                 try:
-                    await context.ari_client.hangup_channel(channel_id)
+                    accepted = await context.ari_client.hangup_channel(channel_id)
+                    if retained_predial and accepted is True:
+                        engine._release_deferred_predial_hangup_ownership(channel_id)
                     logger.info(f"Hung up transfer channel: {channel_id}")
                 except Exception as e:
                     logger.warning(f"Failed to hangup transfer channel: {e}")

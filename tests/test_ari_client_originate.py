@@ -73,3 +73,15 @@ async def test_originate_channel_without_variables_omits_json_body():
         "app": "asterisk-ai-voice-agent",
         "timeout": "60",
     }
+
+
+@pytest.mark.asyncio
+async def test_invalid_http_url_is_reported_as_definitely_undispatched():
+    import aiohttp
+    client = ARIClient.__new__(ARIClient)
+    client.http_url = 'invalid-local-ari-url'
+    client.http_session = Mock()
+    client.http_session.request.side_effect = aiohttp.InvalidURL('invalid-local-ari-url')
+    result = await client.send_command('POST', 'channels')
+    assert result['request_started'] is False
+    assert result['status'] == 503

@@ -188,6 +188,7 @@ async def test_local_farewell_fallback_clears_boundary_and_marks_agent_hangup():
         reason="local:farewell:fallback_timeout",
         call_outcome="agent_hangup",
         audio_drain_confirmed=False,
+        expected_session=session,
     )
 
 
