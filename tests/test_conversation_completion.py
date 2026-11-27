@@ -434,3 +434,14 @@ async def test_completion_cannot_take_over_predial_before_deferred_action_is_sto
     session.current_action = {'type': 'predial_transfer', 'deferred_action_id': 'ringing'}
     assert (await HangupCallTool().execute({'next_step': 'survey'}, ctx))['status'] == 'error'
     assert not session.completion_action
+
+
+@pytest.mark.parametrize('key', ['Live Agent', '受付メニュー'])
+def test_completion_reuses_existing_inventory_labels_with_spaces_and_unicode(key):
+    cfg = config()
+    cfg['tools']['transfer']['destinations'][key] = cfg['tools']['transfer']['destinations'].pop('menu')
+    cfg['tools']['hangup_call']['completion'] = {'destination_keys': [key], 'default_next_step': key}
+    generation = ToolRuntimeGeneration.build(generation_id=1, config=cfg)
+    scoped = resolve_agent_tool_config(generation.config, {'hangup_call': {'destination_keys': [key], 'default_next_step': key}})
+    assert resolve_completion(scoped.config)['next_step'] == key
+    assert resolve_completion(scoped.config, key, supplied=True)['route']['dialplan_context'] == 'ava-menu'

@@ -125,6 +125,9 @@ if the model omits `next_step`:
 Omitting an Agent field inherits it. `destination_keys: []` explicitly denies
 completion handoffs. The per-call schema exposes only `hangup` and effective
 completion destination keys. Completion resolves exact keys, never fuzzy matches.
+Existing destination labels with spaces or Unicode are supported, for example
+`Live Agent` or `受付メニュー`; use the saved key exactly. Blank labels, surrounding
+whitespace, control characters and labels longer than 128 characters are rejected.
 
 Example destination dialplan (the operator owns its contents):
 

@@ -4,8 +4,13 @@ import re
 from typing import Any
 
 ROUTE_TYPES = {"extension", "queue", "ringgroup", "dialplan"}
-KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+KEY = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
 UNSAFE = re.compile(r"[,()\r\n\x00]")
+
+def valid_key(value: Any) -> bool:
+    # These are existing inventory labels carried as JSON enum values, not
+    # function names or dialplan expressions. Preserve spaces and Unicode.
+    return isinstance(value, str) and bool(value.strip()) and value == value.strip() and bool(KEY.fullmatch(value))
 
 def normalize_completion(raw: Any, *, agent: bool = False) -> dict:
     if raw is None:
@@ -17,12 +22,12 @@ def normalize_completion(raw: Any, *, agent: bool = False) -> dict:
     result = {}
     if "default_next_step" in raw:
         value = raw["default_next_step"]
-        if not isinstance(value, str) or not KEY.fullmatch(value):
+        if not valid_key(value):
             raise ValueError("Default next step must be hangup or a destination key")
         result["default_next_step"] = value
     if "destination_keys" in raw:
         keys = raw["destination_keys"]
-        if not isinstance(keys, list) or any(not isinstance(k, str) or not KEY.fullmatch(k) or k == "hangup" for k in keys):
+        if not isinstance(keys, list) or any(not valid_key(k) or k == "hangup" for k in keys):
             raise ValueError("Completion destinations must be a list of destination keys; hangup is reserved")
         result["destination_keys"] = list(dict.fromkeys(keys))
     return result
