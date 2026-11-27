@@ -445,3 +445,39 @@ def test_completion_reuses_existing_inventory_labels_with_spaces_and_unicode(key
     scoped = resolve_agent_tool_config(generation.config, {'hangup_call': {'destination_keys': [key], 'default_next_step': key}})
     assert resolve_completion(scoped.config)['next_step'] == key
     assert resolve_completion(scoped.config, key, supplied=True)['route']['dialplan_context'] == 'ava-menu'
+
+
+@pytest.mark.asyncio
+async def test_reentry_audio_starts_a_new_consumer_after_previous_cleanup(monkeypatch):
+    from src.config import AppConfig
+    engine = Engine(AppConfig(default_provider='local', providers={'local': {'enabled': True}},
+        asterisk={'host': '127.0.0.1', 'username': 'u', 'password': 'p'},
+        llm={'initial_greeting': '', 'prompt': 'Help'},
+        audio_transport='audiosocket', downstream_mode='stream'))
+    engine.ari_client.hangup_channel = AsyncMock(return_value=True)
+    engine._persist_call_history = AsyncMock()
+    engine._execute_post_call_tools = AsyncMock()
+    first = CallSession(call_id='returning', caller_channel_id='returning', provider_name='local')
+    first.transfer_active = True
+    await engine.session_store.upsert_call(first)
+    retired_queue = asyncio.Queue()
+    retired_queue.put_nowait(b'old audio')
+    engine._provider_stream_queues[first.call_id] = retired_queue
+    engine._provider_stream_formats[first.call_id] = {'encoding': 'slin', 'sample_rate': 8000}
+    engine._provider_coalesce_buf[first.call_id] = bytearray(b'old partial frame')
+    engine._segment_tts_active.add(first.call_id)
+    await engine._cleanup_call(first.call_id)
+    assert first.cleanup_completed
+    assert first.call_id not in engine._provider_stream_queues
+    assert first.call_id not in engine._provider_stream_formats
+    assert first.call_id not in engine._provider_coalesce_buf
+    assert first.call_id not in engine._segment_tts_active
+    second = CallSession(call_id='returning', caller_channel_id='returning', provider_name='local')
+    await engine.session_store.upsert_call(second)
+    engine.streaming_playback_manager.start_streaming_playback = AsyncMock(return_value='new-stream')
+    await engine.on_provider_event({'type': 'AgentAudio', 'call_id': second.call_id,
+        'data': b'\xff' * 160, 'encoding': 'ulaw', 'sample_rate': 8000})
+    engine.streaming_playback_manager.start_streaming_playback.assert_awaited_once()
+    assert engine._provider_stream_queues[second.call_id] is not retired_queue
+    assert retired_queue.qsize() == 1
+    await engine._cleanup_call(second.call_id)

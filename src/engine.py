@@ -11954,6 +11954,18 @@ class Engine:
                     if channel_id == caller_id:
                         self.conn_to_channel.pop(conn_id, None)
                 self.streaming_playback_manager.cleanup_call(resolved_call_id)
+                # A live channel can return from dialplan with the same ID.
+                # An engine queue without its retired playback consumer would
+                # swallow the new conversation's audio and prevent drain.
+                for attr in (
+                    "_provider_stream_queues", "_provider_stream_formats", "_provider_coalesce_buf",
+                    "_provider_stream_ids", "_provider_segment_start_ts", "_provider_chunk_seq",
+                    "_provider_bytes", "_enqueued_bytes", "_downstream_file_audio_events",
+                ):
+                    getattr(self, attr, {}).pop(resolved_call_id, None)
+                for attr in ("_segment_tts_active", "_runtime_alignment_logged",
+                             "_transport_card_logged", "_downstream_file_streaming_logged"):
+                    getattr(self, attr, set()).discard(resolved_call_id)
                 try:
                     self.audio_capture.close_call(resolved_call_id)
                 except Exception:
